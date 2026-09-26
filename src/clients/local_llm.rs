@@ -6,8 +6,12 @@ pub async fn health_check(config: &AppConfig) {
 
     match response {
         Ok(res) => {
-            println!("jarvis-ai is online");
-            println!("Status: {}", res.status());
+            if res.status().is_success() {
+                println!("jarvis-ai is online");
+            } else {
+                println!("jarvis-ai is online");
+                println!("Status: {}", res.status());
+            }
         }
 
         Err(err) => {
