@@ -3,14 +3,20 @@ mod config;
 
 use config::AppConfig;
 
-use crate::clients::local_llm;
+use crate::clients::local_llm::{self, LocalLlm};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load()?;
 
     // temporary while we're building Slice 1
-    local_llm::health_check(&config).await;
+    let local_llm = LocalLlm::new(&config);
+    local_llm.health_check().await;
+
+    local_llm
+        .complete("Reply with Exactly: JARVIS ONLINE")
+        .await?;
 
     Ok(())
 }
+
