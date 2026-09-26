@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use rig_core::providers::openai;
 
 pub async fn health_check(config: &AppConfig) {
-    let response = reqwest::get(&config.local_llm_base_url).await;
+    let response = reqwest::get(&config.local_llm_health_url).await;
 
     match response {
         Ok(res) => {
