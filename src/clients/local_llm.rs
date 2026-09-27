@@ -6,6 +6,7 @@ use rig_core::providers::openai;
 
 pub struct LocalLlm {
     model: openai::CompletionModel,
+    http_client: reqwest::Client,
     health_url: String,
 }
 
@@ -19,15 +20,20 @@ impl LocalLlm {
 
         let model = client.completion_model(&config.local_llm_model);
 
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .expect("Failed to create HTTP client");
+
         Self {
             model,
+            http_client,
             health_url: config.local_llm_health_url.clone(),
         }
     }
     pub async fn health_check(&self) -> Result<(), Box<dyn std::error::Error>> {
         // await?  <- ? if Ok helps to unwrap the value and keep going. If Err, immediately return that error from the current function
-        let response = reqwest::get(&self.health_url).await?;
-
+        let response = self.http_client.get(&self.health_url).send().await?;
         // returns Err if 404/500/503 etc.
         response.error_for_status()?;
         Ok(())
