@@ -24,24 +24,13 @@ impl LocalLlm {
             health_url: config.local_llm_health_url.clone(),
         }
     }
-    pub async fn health_check(&self) {
-        let response = reqwest::get(&self.health_url).await;
+    pub async fn health_check(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // await?  <- ? if Ok helps to unwrap the value and keep going. If Err, immediately return that error from the current function
+        let response = reqwest::get(&self.health_url).await?;
 
-        match response {
-            Ok(res) => {
-                if res.status().is_success() {
-                    println!("jarvis-ai is online");
-                } else {
-                    println!("jarvis-ai health check failed");
-                    println!("Status: {}", res.status());
-                }
-            }
-
-            Err(err) => {
-                println!("jarvis-ai is offline");
-                println!("Error: {}", err);
-            }
-        }
+        // returns Err if 404/500/503 etc.
+        response.error_for_status()?;
+        Ok(())
     }
     pub async fn complete(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let request = self.model.completion_request(prompt).build();
