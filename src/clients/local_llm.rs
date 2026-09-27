@@ -10,6 +10,13 @@ pub struct LocalLlm {
     health_url: String,
 }
 
+async fn within_deadline<F: std::future::Future>(
+    duration: std::time::Duration,
+    future: F,
+) -> Result<F::Output, tokio::time::error::Elapsed> {
+    tokio::time::timeout(duration, future).await
+}
+
 impl LocalLlm {
     pub fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let client = openai::CompletionsClient::builder()
@@ -39,8 +46,10 @@ impl LocalLlm {
     pub async fn complete(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let request = self.model.completion_request(prompt).build();
         let timeout_duration = std::time::Duration::from_secs(30);
-        let response =
-            tokio::time::timeout(timeout_duration, self.model.completion(request)).await??;
+
+        let response = within_deadline(timeout_duration, self.model.completion(request))
+            .await
+            .map_err(|_| "Local LLM completion timed out after 30s")??;
         let mut output = String::new();
         for content in response.choice {
             match content {
@@ -57,3 +66,7 @@ impl LocalLlm {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/local_llm_tests.rs"]
+mod local_llm_tests;
