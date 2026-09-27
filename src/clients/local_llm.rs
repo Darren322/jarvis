@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use rig_core::client::CompletionClient;
+use rig_core::completion::AssistantContent;
 use rig_core::completion::CompletionModel;
 use rig_core::providers::openai;
 
@@ -42,13 +43,22 @@ impl LocalLlm {
             }
         }
     }
-    pub async fn complete(&self, prompt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn complete(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let request = self.model.completion_request(prompt).build();
-
         let response = self.model.completion(request).await?;
-
-        println!("Response : {:?}", response.choice);
-
-        Ok(())
+        let mut output = String::new();
+        for content in response.choice {
+            match content {
+                AssistantContent::Text(text) => {
+                    output.push_str(&text.text);
+                }
+                _ => {}
+            }
+        }
+        if output.is_empty() {
+            Err("Local LLM returned no text".into())
+        } else {
+            Ok(output)
+        }
     }
 }
