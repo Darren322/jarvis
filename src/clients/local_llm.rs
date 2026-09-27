@@ -11,25 +11,23 @@ pub struct LocalLlm {
 }
 
 impl LocalLlm {
-    pub fn new(config: &AppConfig) -> Self {
+    pub fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let client = openai::CompletionsClient::builder()
             .api_key("local")
             .base_url(&config.local_llm_base_url)
-            .build()
-            .expect("Failed to crete local LLM client");
+            .build()?;
 
         let model = client.completion_model(&config.local_llm_model);
 
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .expect("Failed to create HTTP client");
+            .build()?;
 
-        Self {
+        Ok(Self {
             model,
             http_client,
             health_url: config.local_llm_health_url.clone(),
-        }
+        })
     }
     pub async fn health_check(&self) -> Result<(), Box<dyn std::error::Error>> {
         // await?  <- ? if Ok helps to unwrap the value and keep going. If Err, immediately return that error from the current function

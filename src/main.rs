@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load()?;
 
     // temporary while we're building Slice 1
-    let local_llm = LocalLlm::new(&config);
+    let local_llm = LocalLlm::new(&config)?;
     local_llm.health_check().await?;
 
     let response = local_llm
@@ -20,3 +20,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Response: {}", response);
     Ok(())
 }
+
