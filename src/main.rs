@@ -1,6 +1,7 @@
 mod app;
 mod clients;
 mod config;
+mod services;
 
 use crate::app::App;
 use config::AppConfig;

@@ -1,22 +1,24 @@
 use crate::clients::local_llm::LocalLlm;
 use crate::config::AppConfig;
+use crate::services::assistant::Assistant;
 
 pub struct App {
-    local_llm: LocalLlm,
+    assistant: Assistant,
 }
 
 impl App {
     pub fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let local_llm = LocalLlm::new(config)?;
+        let assistant = Assistant::new(local_llm);
 
-        Ok(Self { local_llm })
+        Ok(Self { assistant })
     }
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.local_llm.health_check().await?;
+        self.assistant.health_check().await?;
 
         let response = self
-            .local_llm
-            .complete("Reply with Exactly: JARVIS ONLINE")
+            .assistant
+            .respond("Reply with Exactly: JARVIS ONLINE")
             .await?;
 
         println!("Response: {}", response);
