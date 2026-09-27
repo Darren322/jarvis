@@ -38,7 +38,9 @@ impl LocalLlm {
     }
     pub async fn complete(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
         let request = self.model.completion_request(prompt).build();
-        let response = self.model.completion(request).await?;
+        let timeout_duration = std::time::Duration::from_secs(30);
+        let response =
+            tokio::time::timeout(timeout_duration, self.model.completion(request)).await??;
         let mut output = String::new();
         for content in response.choice {
             match content {
