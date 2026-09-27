@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use rig_core::{completion::ToolDefinition, serde_json::json};
 use sysinfo::System;
 
 #[derive(Debug)]
@@ -40,5 +41,17 @@ pub fn collect_system_status() -> SystemStatus {
         uptime_seconds: System::uptime(),
         total_memory_bytes: system.total_memory(),
         used_memory_bytes: system.used_memory(),
+    }
+}
+
+pub fn definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "system_status".to_string(),
+        description: "Get the current system status of the Jarvis app host.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
     }
 }

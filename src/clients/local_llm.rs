@@ -1,7 +1,8 @@
 use crate::config::AppConfig;
 use rig_core::client::CompletionClient;
-use rig_core::completion::AssistantContent;
 use rig_core::completion::CompletionModel;
+use rig_core::completion::CompletionResponse;
+use rig_core::completion::ToolDefinition;
 use rig_core::providers::openai;
 
 pub struct LocalLlm {
@@ -43,27 +44,19 @@ impl LocalLlm {
         response.error_for_status()?;
         Ok(())
     }
-    pub async fn complete(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let request = self.model.completion_request(prompt).build();
+    pub async fn complete(
+        &self,
+        prompt: &str,
+        tools: Vec<ToolDefinition>,
+    ) -> Result<CompletionResponse, Box<dyn std::error::Error>> {
+        let request = self.model.completion_request(prompt).tools(tools).build();
         let timeout_duration = std::time::Duration::from_secs(30);
 
         let response = within_deadline(timeout_duration, self.model.completion(request))
             .await
             .map_err(|_| "Local LLM completion timed out after 30s")??;
-        let mut output = String::new();
-        for content in response.choice {
-            match content {
-                AssistantContent::Text(text) => {
-                    output.push_str(&text.text);
-                }
-                _ => {}
-            }
-        }
-        if output.is_empty() {
-            Err("Local LLM returned no text".into())
-        } else {
-            Ok(output)
-        }
+
+        Ok(response)
     }
 }
 
