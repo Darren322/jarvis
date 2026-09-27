@@ -13,10 +13,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_llm = LocalLlm::new(&config);
     local_llm.health_check().await;
 
-    local_llm
+    let response = local_llm
         .complete("Reply with Exactly: JARVIS ONLINE")
         .await?;
 
+    println!("Response: {}", response);
     Ok(())
 }
-
