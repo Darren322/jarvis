@@ -1,13 +1,15 @@
-use std::time::SystemTime;
-
 use rig_core::serde::Serialize;
+use serde_with::{TimestampMilliSeconds, serde_as};
+use std::time::SystemTime;
 use sysinfo::System;
 
+#[serde_as]
 #[derive(Debug, Serialize)]
 pub struct SystemStatus {
     pub source_node: Option<String>,
 
-    #[serde(skip)]
+    #[serde_as(as = "TimestampMilliSeconds<i64>")]
+    #[serde(rename = "observed_at_unix_ms")]
     pub observed_at: SystemTime,
     pub uptime_seconds: u64,
     pub total_memory_bytes: u64,

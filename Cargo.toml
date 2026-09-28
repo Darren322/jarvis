@@ -9,6 +9,7 @@ reqwest = { version = "0.13.5", features = ["json"] }
 rig-agent = "=0.42.0"
 rig-core = "=0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_with = { version = "3.24.0", default-features = false, features = ["std", "macros"] }
 sysinfo = "0.39.6"
 tokio = { version = "1.53.1", features = ["full"] }
 
