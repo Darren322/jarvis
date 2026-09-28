@@ -1,11 +1,17 @@
 use std::time::SystemTime;
 
-use rig_core::{completion::ToolDefinition, serde_json::json};
+use rig_core::{
+    completion::ToolDefinition,
+    serde::Serialize,
+    serde_json::{self, json},
+};
 use sysinfo::System;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct SystemStatus {
     pub source_node: Option<String>,
+
+    #[serde(skip)]
     pub observed_at: SystemTime,
     pub uptime_seconds: u64,
     pub total_memory_bytes: u64,
@@ -29,7 +35,6 @@ impl SystemStatus {
         format!("{days}d {hours:02}h {minutes:02}m {seconds:02}s")
     }
 }
-
 pub fn collect_system_status() -> SystemStatus {
     let mut system = System::new();
 
@@ -54,4 +59,8 @@ pub fn definition() -> ToolDefinition {
             "additionalProperties": false
         }),
     }
+}
+pub fn execute() -> Result<serde_json::Value, serde_json::Error> {
+    let status = collect_system_status();
+    serde_json::to_value(status)
 }

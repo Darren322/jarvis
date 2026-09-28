@@ -19,6 +19,7 @@ impl App {
         let response = self
             .assistant
             .respond("Reply with Exactly: JARVIS ONLINE")
+            //.respond("Use the system_status tool to check the system status.")
             .await?;
 
         println!("Response: {:#?}", response);
