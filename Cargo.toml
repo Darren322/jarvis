@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 dotenvy = "0.15.7"
 reqwest = { version = "0.13.5", features = ["json"] }
+rig-agent = "=0.42.0"
 rig-core = "=0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }
 sysinfo = "0.39.6"
 tokio = { version = "1.53.1", features = ["full"] }
+
+[dev-dependencies]
+rig-agent = { version = "=0.42.0", features = ["test-utils"] }
