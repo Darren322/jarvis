@@ -1,5 +1,5 @@
 use rig_agent::AgentBuilder;
-use rig_core::message::AssistantContent;
+use rig_core::message::{AssistantContent, Message, ToolChoice, UserContent};
 use rig_core::serde_json::json;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use std::{
@@ -67,6 +67,8 @@ async fn executes_system_status_once_then_returns_final_text() {
         MockTurn::text("System status retrieved."),
     ]);
 
+    let model_handle = model.clone();
+
     let agent = AgentBuilder::new(model).tool(tool).build();
 
     let assistant = Assistant::new(agent);
@@ -76,10 +78,45 @@ async fn executes_system_status_once_then_returns_final_text() {
         .await
         .expect("valid tool roundtrip should succeed");
 
+    let requests = model_handle.requests();
+
     assert_eq!(response.output, "System status retrieved.");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
-}
+    assert_eq!(model_handle.request_count(), 2);
 
+    assert_eq!(requests[0].tools.len(), 1);
+    assert_eq!(requests[0].tools[0].name, "system_status");
+    assert_eq!(requests[0].max_tokens, Some(1026));
+    assert_eq!(requests[0].tool_choice, Some(ToolChoice::Auto));
+
+    assert!(requests[1].tools.is_empty());
+    assert_eq!(requests[1].tool_choice, Some(ToolChoice::None));
+
+    let Message::Assistant {
+        content: assistant_content,
+        ..
+    } = &requests[1].chat_history[1]
+    else {
+        panic!("expected assistant tool-call message");
+    };
+
+    let AssistantContent::ToolCall(tool_call) = &assistant_content[0] else {
+        panic!("expected tool call");
+    };
+
+    let Message::User {
+        content: user_content,
+    } = &requests[1].chat_history[2]
+    else {
+        panic!("expected user tool-result message");
+    };
+
+    let UserContent::ToolResult(tool_result) = &user_content[0] else {
+        panic!("expected tool result");
+    };
+
+    assert_eq!(tool_call.id, tool_result.call);
+}
 #[tokio::test]
 async fn rejects_multiple_tool_calls_before_execution() {
     let executions = Arc::new(AtomicUsize::new(0));
@@ -120,6 +157,8 @@ async fn rejects_second_tool_call_after_execution() {
         MockTurn::tool_call("call-2", "system_status", json!({})),
     ]);
 
+    let model_handle = model.clone();
+
     let agent = AgentBuilder::new(model).tool(tool).build();
 
     let assistant = Assistant::new(agent);
@@ -127,6 +166,8 @@ async fn rejects_second_tool_call_after_execution() {
     let result = assistant.respond("Check the system status.").await;
 
     assert!(result.is_err());
+
+    assert_eq!(model_handle.request_count(), 2);
 
     assert_eq!(
         executions.load(Ordering::SeqCst),
