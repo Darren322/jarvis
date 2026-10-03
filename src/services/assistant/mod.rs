@@ -20,6 +20,8 @@ impl Assistant {
             .runner(prompt)
             .add_hook(JarvisPolicyHook)
             .max_turns(2)
+            .tool_concurrency(1)
+            .max_tokens(1026)
             .max_invalid_tool_call_retries(0)
             .without_memory()
             .run();

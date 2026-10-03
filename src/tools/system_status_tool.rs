@@ -6,6 +6,7 @@ use rig_core::serde_json::json;
 use crate::tools::system_status::{SystemStatus, collect_system_status};
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemStatusArgs {}
 
 #[derive(Debug, Default)]
