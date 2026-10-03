@@ -135,6 +135,18 @@ fn validate_content(contents: &[AssistantContent]) -> Result<(), PolicyRejection
     // The `!` means `matches!` is a macro; it does NOT mean "not".
     // Internally, `matches!` is essentially shorthand for a `match` expression.
 
+    let has_leaked_tool_call = contents.iter().any(|content| {
+        matches!(
+            content,
+            AssistantContent::Text(text)
+                if text.text.trim_start()
+                    .starts_with("<|tool_call>call:")
+        )
+    });
+
+    if has_leaked_tool_call {
+        return Err(PolicyRejection::Content);
+    }
     if !has_valid_content {
         return Err(PolicyRejection::Content);
     }
