@@ -27,4 +27,12 @@ async fn system_status_tool_returns_status() {
 
     assert!(result.total_memory_bytes > 0);
     assert!(result.used_memory_bytes <= result.total_memory_bytes);
+
+    let json =
+        rig_core::serde_json::to_value(&result).expect("system status should serialize to JSON");
+
+    assert!(json.get("source_node").is_some());
+    assert!(json.get("uptime_seconds").is_some());
+    assert!(json.get("total_memory_bytes").is_some());
+    assert!(json.get("used_memory_bytes").is_some());
 }
