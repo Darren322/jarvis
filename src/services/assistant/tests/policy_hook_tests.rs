@@ -1,4 +1,5 @@
 use rig_agent::AgentBuilder;
+use rig_core::completion::FinishReason;
 use rig_core::message::{AssistantContent, Message, ToolChoice, UserContent};
 use rig_core::serde_json::json;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -7,7 +8,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::services::assistant::Assistant;
+use crate::services::assistant::agent::Assistant;
 use rig_agent::tool::{Tool, ToolContext};
 
 #[derive(Debug, serde::Deserialize)]
@@ -82,7 +83,10 @@ async fn executes_system_status_once_then_returns_final_text() {
 
     // Request 1 proposes the tool; request 2 gives the final answer.
     let model = MockCompletionModel::from_turns([
-        MockTurn::tool_call("call-1", "system_status", json!({})),
+        MockTurn::from_contents([
+            AssistantContent::text("Let me check the system status."),
+            AssistantContent::tool_call("call-1", "system_status", json!({})),
+        ]),
         MockTurn::text("System status retrieved."),
     ]);
 
@@ -122,10 +126,16 @@ async fn executes_system_status_once_then_returns_final_text() {
         panic!("expected assistant tool-call message");
     };
 
-    let AssistantContent::ToolCall(tool_call) = &assistant_content[0] else {
-        panic!("expected tool call");
-    };
-
+    let tool_call = assistant_content
+        .iter()
+        .find_map(|content| {
+            if let AssistantContent::ToolCall(tool_call) = content {
+                Some(tool_call)
+            } else {
+                None
+            }
+        })
+        .expect("expected tool call");
     // Find the matching tool result Rig added to history.
     let Message::User {
         content: user_content,
@@ -433,4 +443,72 @@ async fn rejects_empty_assistant_content() {
         0,
         "empty content must not execute any tool"
     );
+}
+
+#[tokio::test]
+async fn phase4_rejects_invalid_model_turns_before_execution() {
+    let cases = [
+        ("whitespace only", MockTurn::text("   ")),
+        (
+            "reasoning only",
+            MockTurn::from_contents([AssistantContent::reasoning("checking")]),
+        ),
+        (
+            "image with valid tool call",
+            MockTurn::from_contents([
+                AssistantContent::image_base64("AAAA", None, None),
+                AssistantContent::tool_call("call-1", "system_status", json!({})),
+            ]),
+        ),
+        (
+            "length with valid tool call",
+            MockTurn::tool_call("call-1", "system_status", json!({}))
+                .with_finish_reason(FinishReason::Length),
+        ),
+        (
+            "content filter with valid tool call",
+            MockTurn::tool_call("call-1", "system_status", json!({}))
+                .with_finish_reason(FinishReason::ContentFilter),
+        ),
+        (
+            "other finish reason with valid tool call",
+            MockTurn::tool_call("call-1", "system_status", json!({}))
+                .with_finish_reason(FinishReason::Other("provider_error".to_string())),
+        ),
+        (
+            "literal tool-call markup",
+            MockTurn::text("<|tool_call>call:system_status{}"),
+        ),
+    ];
+
+    for (case_name, turn) in cases {
+        let executions = Arc::new(AtomicUsize::new(0));
+
+        let tool = CountingSystemStatusTool {
+            executions: Arc::clone(&executions),
+            should_fail: false,
+        };
+
+        let model = MockCompletionModel::from_turns([turn]);
+        let model_handle = model.clone();
+
+        let agent = AgentBuilder::new(model).tool(tool).build();
+        let assistant = Assistant::new(agent);
+
+        let result = assistant.respond("Check the system status.").await;
+
+        assert!(result.is_err(), "{case_name} should be rejected");
+
+        assert_eq!(
+            model_handle.request_count(),
+            1,
+            "{case_name} should stop after one model request"
+        );
+
+        assert_eq!(
+            executions.load(Ordering::SeqCst),
+            0,
+            "{case_name} must not execute the tool body"
+        );
+    }
 }

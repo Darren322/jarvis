@@ -36,3 +36,21 @@ async fn system_status_tool_returns_status() {
     assert!(json.get("total_memory_bytes").is_some());
     assert!(json.get("used_memory_bytes").is_some());
 }
+
+#[test]
+fn system_status_args_accepts_empty_object() {
+    let result =
+        rig_core::serde_json::from_value::<SystemStatusArgs>(rig_core::serde_json::json!({}));
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn system_status_args_rejects_unknown_fields() {
+    let result =
+        rig_core::serde_json::from_value::<SystemStatusArgs>(rig_core::serde_json::json!({
+            "unexpected": true
+        }));
+
+    assert!(result.is_err());
+}
