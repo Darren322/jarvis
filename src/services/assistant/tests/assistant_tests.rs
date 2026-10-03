@@ -1,6 +1,8 @@
 use rig_agent::AgentBuilder;
 use rig_core::test_utils::MockCompletionModel;
 
+use crate::tools::system_status_tool::SystemStatusTool;
+
 use super::*;
 
 #[tokio::test]
@@ -17,7 +19,7 @@ async fn deadline_expires_for_pending_future() {
 #[tokio::test]
 async fn assistant_text_run() {
     let model = MockCompletionModel::text("JARVIS ONLINE");
-    let agent = AgentBuilder::new(model).build();
+    let agent = AgentBuilder::new(model).tool(SystemStatusTool).build();
     let assistant = Assistant::new(agent);
 
     let response = assistant

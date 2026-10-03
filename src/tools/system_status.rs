@@ -1,4 +1,4 @@
-use rig_core::serde::Serialize;
+use serde::Serialize;
 use serde_with::{TimestampMilliSeconds, serde_as};
 use std::time::SystemTime;
 use sysinfo::System;

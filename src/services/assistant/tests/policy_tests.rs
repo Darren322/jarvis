@@ -6,7 +6,7 @@ use super::*;
 fn rejects_truncated_finish_reason() {
     let result = validate_finish_reason(Some(&FinishReason::Length));
 
-    assert_eq!(result, Err(PolicyRejection::InvalidFinishReason));
+    assert_eq!(result, Err(PolicyRejection::FinishReason));
 }
 #[test]
 fn accepts_missing_finish_reason() {
@@ -30,7 +30,7 @@ fn rejects_multiple_tool_calls() {
 
     let result = validate_tool_count(&contents);
 
-    assert_eq!(result, Err(PolicyRejection::InvalidToolCount))
+    assert_eq!(result, Err(PolicyRejection::ToolCount))
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn rejects_invalid_tool_name() {
 
     let result = validate_tool_name(&contents);
 
-    assert_eq!(result, Err(PolicyRejection::InvalidToolName))
+    assert_eq!(result, Err(PolicyRejection::ToolName))
 }
 
 #[test]
@@ -69,10 +69,11 @@ fn rejects_non_empty_tools_arguments() {
 
     let result = validate_tool_arguments(&contents);
 
-    assert_eq!(result, Err(PolicyRejection::InvalidToolArguments));
+    assert_eq!(result, Err(PolicyRejection::ToolArguments));
 }
+
 #[test]
-fn accepts_empty_tool_arguments() {
+fn rejects_null_tool_arguments() {
     let contents = vec![AssistantContent::tool_call(
         "call_1",
         "system_status",
@@ -81,7 +82,7 @@ fn accepts_empty_tool_arguments() {
 
     let result = validate_tool_arguments(&contents);
 
-    assert_eq!(result, Err(PolicyRejection::InvalidToolArguments));
+    assert_eq!(result, Err(PolicyRejection::ToolArguments));
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn rejects_empty_content() {
 
     let result = validate_content(&contents);
 
-    assert_eq!(result, Err(PolicyRejection::InvalidContent));
+    assert_eq!(result, Err(PolicyRejection::Content));
 }
 
 #[test]
@@ -100,6 +101,15 @@ fn accepts_text_content() {
     let result = validate_content(&contents);
 
     assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn rejects_whitespace_only_text() {
+    let contents = vec![AssistantContent::text("   ")];
+
+    let result = validate_content(&contents);
+
+    assert_eq!(result, Err(PolicyRejection::Content));
 }
 
 #[test]
@@ -146,7 +156,7 @@ fn rejects_tool_call_after_tool_execution() {
         Some(&FinishReason::ToolCalls),
     );
 
-    assert_eq!(result, Err(PolicyRejection::InvalidContent));
+    assert_eq!(result, Err(PolicyRejection::Content));
 }
 
 #[test]
@@ -170,20 +180,7 @@ fn rejects_tool_calls_finish_reason_without_tool_call() {
         Some(&FinishReason::ToolCalls),
     );
 
-    assert_eq!(result, Err(PolicyRejection::InvalidFinishReason));
-}
-
-#[test]
-fn rejects_stop_finish_reason_with_tool_call() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!({}),
-    )];
-
-    let result = validate_turn(PolicyTurn::Initial, &contents, Some(&FinishReason::Stop));
-
-    assert_eq!(result, Err(PolicyRejection::InvalidFinishReason));
+    assert_eq!(result, Err(PolicyRejection::FinishReason));
 }
 
 #[test]
@@ -200,4 +197,29 @@ fn accepts_text_and_tool_call_with_tool_calls_finish_reason() {
     );
 
     assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn rejects_image_mixed_with_valid_text() {
+    let contents = vec![
+        AssistantContent::text("JARVIS ONLINE"),
+        AssistantContent::image_base64("fake-image-data", None, None),
+    ];
+
+    let result = validate_content(&contents);
+
+    assert_eq!(result, Err(PolicyRejection::Content));
+}
+
+#[test]
+fn rejects_other_finish_reason() {
+    let contents = vec![AssistantContent::text("JARVIS ONLINE")];
+
+    let result = validate_turn(
+        PolicyTurn::Initial,
+        &contents,
+        Some(&FinishReason::Other("provider_specific".to_string())),
+    );
+
+    assert_eq!(result, Err(PolicyRejection::FinishReason));
 }

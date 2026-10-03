@@ -2,7 +2,10 @@ use rig_agent::{Agent, agent::PromptResponse};
 
 mod error;
 mod policy;
+mod policy_hook;
 pub use error::AssistantError;
+
+use crate::services::assistant::policy_hook::JarvisPolicyHook;
 
 pub struct Assistant {
     agent: Agent,
@@ -15,7 +18,8 @@ impl Assistant {
         let run = self
             .agent
             .runner(prompt)
-            .max_turns(1)
+            .add_hook(JarvisPolicyHook)
+            .max_turns(2)
             .max_invalid_tool_call_retries(0)
             .without_memory()
             .run();

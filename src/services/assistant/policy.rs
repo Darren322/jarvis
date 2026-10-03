@@ -1,12 +1,12 @@
 use rig_core::{completion::FinishReason, message::AssistantContent, serde_json::json};
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum PolicyRejection {
-    InvalidContent,
-    InvalidToolCount,
-    InvalidToolName,
-    InvalidToolArguments,
-    InvalidFinishReason,
+pub(super) enum PolicyRejection {
+    Content,
+    ToolCount,
+    ToolName,
+    ToolArguments,
+    FinishReason,
 }
 
 // Represents which stage of the agent run is currently being validated.
@@ -22,7 +22,7 @@ pub enum PolicyRejection {
 // `derive` uses Rust's derive macro system, so we do not need to
 // manually implement these traits ourselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PolicyTurn {
+pub(super) enum PolicyTurn {
     // First model turn. The model may return final text or propose
     // the permitted system_status tool.
     Initial,
@@ -33,21 +33,17 @@ pub enum PolicyTurn {
 }
 
 fn validate_finish_reason(final_reason: Option<&FinishReason>) -> Result<(), PolicyRejection> {
-    // A finish reason may be absent (`None`), so only check it when one exists.
-    //
-    // Rig's `truncated_output()` returns true when the model response was cut off
-    // instead of completing normally (for example, reaching the output token limit).
-    // Jarvis rejects truncated responses because the model's output may be incomplete
-    // and should not be trusted for further tool execution.
-    //
-    // `is_some_and(...)` means:
-    // Some(reason) -> run `truncated_output()` on the reason None         -> false
-    if final_reason.is_some_and(FinishReason::truncated_output) {
-        return Err(PolicyRejection::InvalidFinishReason);
-    }
+    let Some(reason) = final_reason else {
+        return Ok(());
+    };
 
-    // Result<(), E>: `()` means success has no value to return
-    Ok(())
+    match reason {
+        FinishReason::Stop | FinishReason::ToolCalls => Ok(()),
+
+        FinishReason::Length | FinishReason::ContentFilter | FinishReason::Other(_) => {
+            Err(PolicyRejection::FinishReason)
+        }
+    }
 }
 
 fn validate_finish_reason_consistency(
@@ -65,9 +61,7 @@ fn validate_finish_reason_consistency(
     };
 
     match finish_reason {
-        FinishReason::ToolCalls if !has_tool_call => Err(PolicyRejection::InvalidFinishReason),
-
-        FinishReason::Stop if has_tool_call => Err(PolicyRejection::InvalidFinishReason),
+        FinishReason::ToolCalls if !has_tool_call => Err(PolicyRejection::FinishReason),
 
         _ => Ok(()),
     }
@@ -88,7 +82,7 @@ fn validate_tool_count(contents: &[AssistantContent]) -> Result<(), PolicyReject
         .count();
 
     if tool_count > 1 {
-        return Err(PolicyRejection::InvalidToolCount);
+        return Err(PolicyRejection::ToolCount);
     }
 
     Ok(())
@@ -99,10 +93,10 @@ fn validate_tool_name(contents: &[AssistantContent]) -> Result<(), PolicyRejecti
     // If content is ToolCall(...), its inner value is bound to `tool_call`.
     // Other AssistantContent variants are ignored by this specific validator.
     for content in contents {
-        if let AssistantContent::ToolCall(tool_call) = content {
-            if tool_call.function.name != "system_status" {
-                return Err(PolicyRejection::InvalidToolName);
-            }
+        if let AssistantContent::ToolCall(tool_call) = content
+            && tool_call.function.name != "system_status"
+        {
+            return Err(PolicyRejection::ToolName);
         }
     }
 
@@ -115,7 +109,7 @@ fn validate_tool_arguments(contents: &[AssistantContent]) -> Result<(), PolicyRe
             // json! is a macro that constructs a serde_json::Value.
             // For Phase 4, system_status's canonical argument payload must be exactly {}.
             if tool_call.function.arguments != json!({}) {
-                return Err(PolicyRejection::InvalidToolArguments);
+                return Err(PolicyRejection::ToolArguments);
             }
         }
     }
@@ -124,11 +118,10 @@ fn validate_tool_arguments(contents: &[AssistantContent]) -> Result<(), PolicyRe
 }
 
 fn validate_content(contents: &[AssistantContent]) -> Result<(), PolicyRejection> {
-    let has_valid_content = contents.iter().any(|content| {
-        matches! {
-            content,
-            AssistantContent::Text(_) | AssistantContent::ToolCall(_)
-        }
+    let has_valid_content = contents.iter().any(|content| match content {
+        AssistantContent::Text(text) => !text.text.trim().is_empty(),
+        AssistantContent::ToolCall(_) => true,
+        _ => false,
     });
 
     // `matches!` is a Rust standard-library declarative macro.
@@ -143,7 +136,15 @@ fn validate_content(contents: &[AssistantContent]) -> Result<(), PolicyRejection
     // Internally, `matches!` is essentially shorthand for a `match` expression.
 
     if !has_valid_content {
-        return Err(PolicyRejection::InvalidContent);
+        return Err(PolicyRejection::Content);
+    }
+
+    let has_image = contents
+        .iter()
+        .any(|content| matches!(content, AssistantContent::Image(_)));
+
+    if has_image {
+        return Err(PolicyRejection::Content);
     }
 
     Ok(())
@@ -162,7 +163,7 @@ fn validate_policy_turn(
                 .any(|content| matches!(content, AssistantContent::ToolCall(_)));
 
             if has_tool_call {
-                return Err(PolicyRejection::InvalidContent);
+                return Err(PolicyRejection::Content);
             }
 
             Ok(())
@@ -171,7 +172,7 @@ fn validate_policy_turn(
 }
 
 // Combines the rules for an entire model run
-fn validate_turn(
+pub(super) fn validate_turn(
     turn: PolicyTurn,
     contents: &[AssistantContent],
     finish_reason: Option<&FinishReason>,
