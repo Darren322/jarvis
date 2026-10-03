@@ -1,6 +1,7 @@
 use rig_agent::{Agent, agent::PromptResponse};
 
 mod error;
+mod policy;
 pub use error::AssistantError;
 
 pub struct Assistant {
