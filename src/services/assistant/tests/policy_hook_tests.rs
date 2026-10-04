@@ -8,7 +8,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::services::assistant::agent::Assistant;
+use crate::services::assistant::{
+    agent::Assistant,
+    error::AssistantError,
+    run_report::{RunOutcome, ToolStageOutcome},
+};
 use rig_agent::tool::{Tool, ToolContext};
 
 #[derive(Debug, serde::Deserialize)]
@@ -103,9 +107,15 @@ async fn executes_system_status_once_then_returns_final_text() {
 
     let requests = model_handle.requests();
 
-    assert_eq!(response.output, "System status retrieved.");
+    assert_eq!(response.response.output, "System status retrieved.");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(model_handle.request_count(), 2);
+    assert_eq!(response.report.tool_stages.len(), 1);
+    let tool_stage = &response.report.tool_stages[0];
+    assert_eq!(tool_stage.turn, 1);
+    assert_eq!(tool_stage.name, "system_status");
+    assert!(!tool_stage.internal_call_id.is_empty());
+    assert!(matches!(tool_stage.outcome, ToolStageOutcome::Success));
 
     // First request may use system_status.
     assert_eq!(requests[0].tools.len(), 1);
@@ -330,7 +340,15 @@ async fn failed_tool_execution_continues_to_final_text() {
         .expect("tool failure should still allow final explanation");
 
     // The user still receives a useful final response.
-    assert_eq!(response.output, "System status could not be retrieved.");
+    assert_eq!(
+        response.response.output,
+        "System status could not be retrieved."
+    );
+    assert_eq!(response.report.tool_stages.len(), 1);
+    assert!(matches!(
+        response.report.tool_stages[0].outcome,
+        ToolStageOutcome::Error
+    ));
 
     // Failure still consumes the one permitted operation attempt.
     assert_eq!(
@@ -400,7 +418,8 @@ async fn direct_text_returns_without_tool_execution() {
         .await
         .expect("direct text should succeed");
 
-    assert_eq!(response.output, "Hello from Jarvis.");
+    assert_eq!(response.response.output, "Hello from Jarvis.");
+    assert!(response.report.tool_stages.is_empty());
 
     // Direct text should finish after one model request.
     assert_eq!(model_handle.request_count(), 1);
@@ -428,7 +447,9 @@ async fn rejects_empty_assistant_content() {
 
     let result = assistant.respond("Say something.").await;
 
-    assert!(result.is_err(), "empty assistant content must be rejected");
+    let error = result.expect_err("empty assistant content must be rejected");
+    assert!(matches!(&error.error, AssistantError::Prompt(_)));
+    assert!(matches!(&error.report.outcome, RunOutcome::PromptFailed));
 
     // Policy should reject immediately after the first model response.
     assert_eq!(

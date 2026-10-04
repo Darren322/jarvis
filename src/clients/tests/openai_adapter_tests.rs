@@ -10,7 +10,9 @@ use wiremock::{
 };
 
 use crate::{
-    clients::local_llm::LocalLlm, config::AppConfig, services::assistant::Assistant,
+    clients::local_llm::LocalLlm,
+    config::AppConfig,
+    services::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
 };
 
@@ -32,10 +34,16 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
         .collect()
 }
 
-fn prompt_error(error: &dyn std::error::Error) -> &PromptError {
-    std::error::Error::source(error)
-        .and_then(|source| source.downcast_ref::<PromptError>())
-        .expect("assistant error should wrap the Rig prompt error")
+fn prompt_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> &'a PromptError {
+    let mut source = error;
+    loop {
+        if let Some(prompt_error) = source.downcast_ref::<PromptError>() {
+            return prompt_error;
+        }
+        source = source
+            .source()
+            .expect("assistant error chain should retain the Rig prompt error");
+    }
 }
 
 #[tokio::test]
@@ -286,8 +294,26 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         .await
         .expect("system status roundtrip should succeed");
 
-    assert_eq!(response.output, "System status retrieved.");
-    assert_eq!(response.requests(), 2);
+    assert_eq!(response.response.output, "System status retrieved.");
+    assert_eq!(response.response.requests(), 2);
+    assert!(response.report.observations_available);
+    assert_eq!(response.report.model_stages.len(), 2);
+    let expected_usage = rig_core::completion::Usage {
+        input_tokens: 1,
+        output_tokens: 1,
+        total_tokens: 2,
+        cached_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        tool_use_prompt_tokens: 0,
+        reasoning_tokens: 0,
+    };
+    for stage in &response.report.model_stages {
+        assert!(stage.completed);
+        match &stage.usage {
+            CallUsage::Normalized(usage) => assert_eq!(usage, &expected_usage),
+            CallUsage::Unavailable => panic!("OpenAI usage should reach the run report"),
+        }
+    }
 
     let request_bodies = request_bodies(&server).await;
     assert_eq!(request_bodies.len(), 2);
@@ -373,6 +399,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
     assert!(used_memory_bytes <= total_memory_bytes);
 
     let transcript_tool_result = response
+        .response
         .messages
         .as_ref()
         .expect("assistant response should retain the run transcript")
@@ -451,7 +478,7 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
     let result = assistant.respond("Check the system status.").await;
     let error = result.expect_err("length-terminated response must be rejected");
     assert!(matches!(
-        prompt_error(&error),
+        prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
             if reason == "Phase 4 policy: FinishReason"
     ));
@@ -514,7 +541,7 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
     let result = assistant.respond("Check the system status.").await;
     let error = result.expect_err("content-filtered response must be rejected");
     assert!(matches!(
-        prompt_error(&error),
+        prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
             if reason == "Phase 4 policy: FinishReason"
     ));
@@ -577,7 +604,7 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
     let result = assistant.respond("Check the system status.").await;
     let error = result.expect_err("unknown finish reason must be rejected");
     assert!(matches!(
-        prompt_error(&error),
+        prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
             if reason == "Phase 4 policy: FinishReason"
     ));
@@ -641,7 +668,7 @@ async fn openai_adapter_rejects_unknown_tool_call() {
     let result = assistant.respond("Reboot the system.").await;
     let error = result.expect_err("unregistered tool must be rejected");
     assert!(matches!(
-        prompt_error(&error),
+        prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
             if reason == "Invalid tool call rejected by Phase 4 policy"
     ));
@@ -704,7 +731,7 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
     let result = assistant.respond("Check the system status.").await;
     let error = result.expect_err("invalid system_status arguments must be rejected");
     assert!(matches!(
-        prompt_error(&error),
+        prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
             if reason == "Phase 4 policy: ToolArguments"
     ));

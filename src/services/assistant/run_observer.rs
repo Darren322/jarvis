@@ -1,8 +1,7 @@
 use crate::services::assistant::run_report::{
-    ModelStage, ToolStage, ToolStageOutcome, ToolStart, classify_usage,
+    CallUsage, ModelStage, RunOutcome, RunReport, ToolStage, ToolStageOutcome, classify_usage,
 };
 
-use super::run_report::ObservedRun;
 use rig_agent::agent::{
     ToolResultEvent,
     hook::{
@@ -11,113 +10,207 @@ use rig_agent::agent::{
     },
 };
 use std::{
+    collections::HashMap,
+    mem,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
+#[derive(Clone, Default)]
 pub(crate) struct RunObserver {
     observed: Arc<Mutex<ObservedRun>>,
 }
 
+#[derive(Default)]
+struct ObservedRun {
+    model_starts: HashMap<usize, Instant>,
+    tool_starts: HashMap<String, ToolStart>,
+    model_stages: Vec<ModelStage>,
+    tool_stages: Vec<ToolStage>,
+}
+
+struct ToolStart {
+    turn: usize,
+    name: String,
+    started_at: Instant,
+}
+
 impl RunObserver {
-    pub(crate) fn new(observed: Arc<Mutex<ObservedRun>>) -> Self {
-        Self { observed }
+    /// Finalize the observations after Rig has dropped its hook clone.
+    ///
+    /// A poisoned mutex makes every value inside it unreliable, so this path
+    /// reports observations as unavailable without recovering or exposing the
+    /// poisoned measurements.
+    pub(crate) fn finish(self, outcome: RunOutcome, elapsed: Duration) -> RunReport {
+        let observed = match self.observed.lock() {
+            Ok(mut observed) => mem::take(&mut *observed),
+            Err(_) => return RunReport::unavailable(outcome, elapsed),
+        };
+
+        observed.finish(outcome, elapsed)
+    }
+}
+
+impl ObservedRun {
+    fn start_tool(
+        &mut self,
+        turn: usize,
+        internal_call_id: String,
+        name: String,
+        started_at: Instant,
+    ) {
+        self.tool_starts.insert(
+            internal_call_id,
+            ToolStart {
+                turn,
+                name,
+                started_at,
+            },
+        );
+    }
+
+    fn finish_tool(
+        &mut self,
+        turn: usize,
+        internal_call_id: String,
+        name: String,
+        outcome: ToolStageOutcome,
+        finished_at: Instant,
+    ) {
+        let start = self.tool_starts.remove(&internal_call_id);
+        let (turn, name, elapsed) = match start {
+            Some(start) => (
+                start.turn,
+                start.name,
+                Some(finished_at.saturating_duration_since(start.started_at)),
+            ),
+            None => (turn, name, None),
+        };
+
+        self.tool_stages.push(ToolStage {
+            turn,
+            internal_call_id,
+            name,
+            outcome,
+            elapsed,
+        });
+    }
+
+    fn finish(mut self, outcome: RunOutcome, elapsed: Duration) -> RunReport {
+        for (turn, _) in self.model_starts.drain() {
+            self.model_stages.push(ModelStage {
+                turn,
+                completed: false,
+                elapsed: None,
+                usage: CallUsage::Unavailable,
+            });
+        }
+
+        for (internal_call_id, start) in self.tool_starts.drain() {
+            self.tool_stages.push(ToolStage {
+                turn: start.turn,
+                internal_call_id,
+                name: start.name,
+                outcome: ToolStageOutcome::Incomplete,
+                elapsed: None,
+            });
+        }
+
+        self.model_stages.sort_by_key(|stage| stage.turn);
+        self.tool_stages.sort_by(|left, right| {
+            left.turn
+                .cmp(&right.turn)
+                .then_with(|| left.internal_call_id.cmp(&right.internal_call_id))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        RunReport::observed(outcome, elapsed, self.model_stages, self.tool_stages)
     }
 }
 
 impl AgentHook for RunObserver {
-    fn on_completion_call(
+    async fn on_completion_call(
         &self,
         ctx: &HookContext,
         _event: CompletionCall<'_>,
-    ) -> impl Future<Output = CompletionCallAction> + rig_core::wasm_compat::WasmCompatSend {
-        async move {
-            {
-                // lock
-                let mut observed = self.observed.lock().unwrap();
-
-                observed.model_starts.insert(ctx.turn(), Instant::now());
-            } // unlock
-
-            CompletionCallAction::Continue
+    ) -> CompletionCallAction {
+        if let Ok(mut observed) = self.observed.lock() {
+            observed.model_starts.insert(ctx.turn(), Instant::now());
         }
+
+        CompletionCallAction::Continue
     }
 
-    fn on_completion_response(
+    async fn on_completion_response(
         &self,
         ctx: &HookContext,
         event: rig_agent::agent::CompletionResponseEvent<'_>,
-    ) -> impl Future<Output = rig_agent::agent::ObservationAction> + rig_core::wasm_compat::WasmCompatSend
-    {
-        async move {
-            {
-                let mut observed = self.observed.lock().unwrap();
+    ) -> ObservationAction {
+        let usage = classify_usage(event.usage);
 
-                if let Some(start) = observed.model_starts.remove(&ctx.turn()) {
-                    observed.model_stages.push(ModelStage {
-                        turn: ctx.turn(),
-                        completed: true,
-                        elapsed: Some(start.elapsed()),
-                        usage: classify_usage(event.usage.clone()),
-                    });
-                }
-            }
-            ObservationAction::Continue
+        if let Ok(mut observed) = self.observed.lock() {
+            let elapsed = observed
+                .model_starts
+                .remove(&ctx.turn())
+                .map(|started_at| started_at.elapsed());
+            observed.model_stages.push(ModelStage {
+                turn: ctx.turn(),
+                completed: true,
+                elapsed,
+                usage,
+            });
         }
-    }
-    fn on_tool_call(
-        &self,
-        _ctx: &HookContext,
-        event: ToolCall<'_>,
-    ) -> impl Future<Output = ToolCallAction> + rig_core::wasm_compat::WasmCompatSend {
-        async move {
-            {
-                let mut observed = self.observed.lock().unwrap();
 
-                observed.tool_starts.insert(
-                    event.internal_call_id.to_string(),
-                    ToolStart {
-                        name: event.tool_name.to_string(),
-                        started_at: Instant::now(),
-                    },
-                );
-            }
-
-            ToolCallAction::Run
-        }
+        ObservationAction::Continue
     }
 
-    fn on_tool_result(
+    async fn on_tool_call(&self, ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+        if let Ok(mut observed) = self.observed.lock() {
+            observed.start_tool(
+                ctx.turn(),
+                event.internal_call_id.to_string(),
+                event.tool_name.to_string(),
+                Instant::now(),
+            );
+        }
+
+        ToolCallAction::Run
+    }
+
+    async fn on_tool_result(
         &self,
-        _ctx: &HookContext,
+        ctx: &HookContext,
         event: ToolResultEvent<'_>,
-    ) -> impl Future<Output = ToolResultAction> + rig_core::wasm_compat::WasmCompatSend {
-        async move {
-            {
-                let mut observed = self.observed.lock().unwrap();
-
-                if let Some(start) = observed
-                    .tool_starts
-                    .remove(&event.internal_call_id.to_string())
-                {
-                    let outcome = if event.raw_result.is_success() {
-                        ToolStageOutcome::Success
-                    } else if event.raw_result.is_error() {
-                        ToolStageOutcome::Error
-                    } else if event.raw_result.is_refused() {
-                        ToolStageOutcome::Refused
-                    } else {
-                        ToolStageOutcome::Skipped
-                    };
-
-                    observed.tool_stages.push(ToolStage {
-                        name: start.name,
-                        outcome,
-                        elapsed: Some(start.started_at.elapsed()),
-                    });
-                }
-            }
-            ToolResultAction::Keep
+    ) -> ToolResultAction {
+        if let Ok(mut observed) = self.observed.lock() {
+            observed.finish_tool(
+                ctx.turn(),
+                event.internal_call_id.to_string(),
+                event.tool_name.to_string(),
+                classify_tool_result(event.raw_result),
+                Instant::now(),
+            );
         }
+
+        ToolResultAction::Keep
     }
 }
+
+fn classify_tool_result(result: &rig_core::tool::ToolResult) -> ToolStageOutcome {
+    // Rig 0.42 keeps its disposition enum private but exposes these four
+    // mutually exclusive predicates. The final branch is the only remaining
+    // disposition in this pinned version: Skipped.
+    if result.is_success() {
+        ToolStageOutcome::Success
+    } else if result.is_error() {
+        ToolStageOutcome::Error
+    } else if result.is_refused() {
+        ToolStageOutcome::Refused
+    } else {
+        ToolStageOutcome::Skipped
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/run_observer_tests.rs"]
+mod tests;
