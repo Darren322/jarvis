@@ -38,37 +38,31 @@ impl AgentHook for JarvisPolicyHook {
 
         async move { action }
     }
-    fn on_model_turn_finished(
+    async fn on_model_turn_finished(
         &self,
         _ctx: &rig_agent::prelude::HookContext,
         event: rig_agent::agent::ModelTurnFinished<'_>,
-    ) -> impl Future<Output = rig_agent::agent::ModelTurnAction> + rig_core::wasm_compat::WasmCompatSend
-    {
-        async move {
-            let policy_turn = match event.turn {
-                1 => PolicyTurn::Initial,
-                2 => PolicyTurn::AfterTool,
-                _ => return ModelTurnAction::stop("Unexpected model turn"),
-            };
+    ) -> rig_agent::agent::ModelTurnAction {
+        let policy_turn = match event.turn {
+            1 => PolicyTurn::Initial,
+            2 => PolicyTurn::AfterTool,
+            _ => return ModelTurnAction::stop("Unexpected model turn"),
+        };
 
-            match validate_turn(policy_turn, event.content, event.finish_reason) {
-                Ok(()) => ModelTurnAction::Continue,
-                Err(reason) => ModelTurnAction::stop(format!("Phase 4 policy: {reason:?}")),
-            }
+        match validate_turn(policy_turn, event.content, event.finish_reason) {
+            Ok(()) => ModelTurnAction::Continue,
+            Err(reason) => ModelTurnAction::stop(format!("Phase 4 policy: {reason:?}")),
         }
     }
 
-    fn on_invalid_tool_call(
+    async fn on_invalid_tool_call(
         &self,
         _ctx: &rig_agent::prelude::HookContext,
         _event: &rig_agent::agent::InvalidToolCallContext,
-    ) -> impl Future<Output = Option<rig_agent::agent::InvalidToolCallAction>>
-    + rig_core::wasm_compat::WasmCompatSend {
-        async {
-            Some(InvalidToolCallAction::Stop {
-                reason: "Invalid tool call rejected by Phase 4 policy".to_string(),
-            })
-        }
+    ) -> Option<rig_agent::agent::InvalidToolCallAction> {
+        Some(InvalidToolCallAction::Stop {
+            reason: "Invalid tool call rejected by Phase 4 policy".to_string(),
+        })
     }
 }
 

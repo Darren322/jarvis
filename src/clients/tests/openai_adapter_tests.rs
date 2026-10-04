@@ -1,7 +1,8 @@
 use rig_agent::AgentBuilder;
+use rig_agent::completion::PromptError;
 use rig_core::{
     completion::{CompletionModel, CompletionRequest},
-    message::{AssistantContent, Message},
+    message::{AssistantContent, Message, UserContent},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -12,6 +13,30 @@ use crate::{
     clients::local_llm::LocalLlm, config::AppConfig, services::assistant::Assistant,
     tools::system_status_tool::SystemStatusTool,
 };
+
+async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value> {
+    let requests = server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled");
+
+    requests
+        .iter()
+        .map(|request| {
+            assert_eq!(request.method.to_string(), "POST");
+            assert_eq!(request.url.path(), "/chat/completions");
+            request
+                .body_json()
+                .expect("completion request should contain JSON")
+        })
+        .collect()
+}
+
+fn prompt_error(error: &dyn std::error::Error) -> &PromptError {
+    std::error::Error::source(error)
+        .and_then(|source| source.downcast_ref::<PromptError>())
+        .expect("assistant error should wrap the Rig prompt error")
+}
 
 #[tokio::test]
 async fn openai_adapter_parses_plain_text_response() {
@@ -73,7 +98,17 @@ async fn openai_adapter_parses_plain_text_response() {
         .await
         .expect("OpenAI response should deserialize");
 
-    assert_eq!(response.choice.len(), 1);
+    let text = response
+        .choice
+        .iter()
+        .find_map(|content| match content {
+            AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .expect("Rig should parse assistant text");
+
+    assert_eq!(text, "JARVIS ONLINE");
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -159,10 +194,12 @@ async fn openai_adapter_parses_system_status_tool_call() {
         .expect("expected Rig to parse a tool call");
 
     assert_eq!(tool_call.function.name, "system_status");
+    assert_eq!(tool_call.id, "call-1");
     assert_eq!(
         tool_call.function.arguments,
         rig_core::serde_json::json!({})
     );
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -251,10 +288,114 @@ async fn openai_adapter_completes_system_status_roundtrip() {
 
     assert_eq!(response.output, "System status retrieved.");
     assert_eq!(response.requests(), 2);
+
+    let request_bodies = request_bodies(&server).await;
+    assert_eq!(request_bodies.len(), 2);
+    let first_request = &request_bodies[0];
+    assert_eq!(first_request["tool_choice"], "auto");
+    assert_eq!(first_request["max_tokens"], 1026);
+
+    let first_tools = first_request["tools"]
+        .as_array()
+        .expect("first request should offer the system status tool");
+    assert_eq!(first_tools.len(), 1);
+    assert_eq!(
+        first_tools[0],
+        rig_core::serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "system_status",
+                "description": "Returns the current system status, including hostname, uptime, and memory usage.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }
+            }
+        })
+    );
+
+    let second_request = &request_bodies[1];
+    assert!(second_request.get("tools").is_none());
+    assert_eq!(second_request["tool_choice"], "none");
+    assert_eq!(second_request["max_tokens"], 1026);
+
+    let second_messages = second_request["messages"]
+        .as_array()
+        .expect("second request should include conversation history");
+    let assistant_messages = second_messages
+        .iter()
+        .filter(|message| message["role"] == "assistant" && message["tool_calls"].is_array())
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_messages.len(), 1);
+    let assistant_tool_calls = assistant_messages[0]["tool_calls"]
+        .as_array()
+        .expect("assistant message should contain tool calls");
+    assert_eq!(assistant_tool_calls.len(), 1);
+    let assistant_tool_call = &assistant_tool_calls[0];
+    assert_eq!(assistant_tool_call["id"], "call-1");
+    assert_eq!(assistant_tool_call["function"]["name"], "system_status");
+    assert_eq!(
+        rig_core::serde_json::from_str::<rig_core::serde_json::Value>(
+            assistant_tool_call["function"]["arguments"]
+                .as_str()
+                .expect("tool call arguments should be JSON text")
+        )
+        .expect("tool call arguments should parse as JSON"),
+        rig_core::serde_json::json!({})
+    );
+
+    let tool_results = second_messages
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .collect::<Vec<_>>();
+    assert_eq!(tool_results.len(), 1);
+    let tool_result = tool_results[0];
+    assert_eq!(tool_result["tool_call_id"], "call-1");
+
+    let status_json: rig_core::serde_json::Value = rig_core::serde_json::from_str(
+        tool_result["content"]
+            .as_str()
+            .expect("system status tool result should serialize as JSON text"),
+    )
+    .expect("system status tool result should contain structured JSON");
+    assert!(status_json.get("source_node").is_some());
+    assert!(status_json["source_node"].is_null() || status_json["source_node"].is_string());
+    assert!(status_json["observed_at_unix_ms"].as_i64().is_some());
+    assert!(status_json["uptime_seconds"].as_u64().is_some());
+    let total_memory_bytes = status_json["total_memory_bytes"]
+        .as_u64()
+        .expect("total_memory_bytes should be an unsigned integer");
+    let used_memory_bytes = status_json["used_memory_bytes"]
+        .as_u64()
+        .expect("used_memory_bytes should be an unsigned integer");
+    assert!(total_memory_bytes > 0);
+    assert!(used_memory_bytes <= total_memory_bytes);
+
+    let transcript_tool_result = response
+        .messages
+        .as_ref()
+        .expect("assistant response should retain the run transcript")
+        .iter()
+        .find_map(|message| match message {
+            Message::User { content } => content.iter().find_map(|content| match content {
+                UserContent::ToolResult(result) if result.call.as_str() == "call-1" => Some(result),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("transcript should retain the matching tool result");
+    assert_eq!(transcript_tool_result.name, "system_status");
+    let transcript_status = transcript_tool_result
+        .content
+        .iter()
+        .find_map(|content| content.as_json())
+        .expect("transcript should retain structured status JSON");
+    assert_eq!(transcript_status, &status_json);
 }
 
 #[tokio::test]
-async fn openai_adapter_rejects_length_before_tool_execution() {
+async fn openai_adapter_rejects_length_terminated_tool_call() {
     let server = MockServer::start().await;
 
     let tool_call_response =
@@ -308,11 +449,13 @@ async fn openai_adapter_rejects_length_before_tool_execution() {
     let assistant = Assistant::new(agent);
 
     let result = assistant.respond("Check the system status.").await;
-
-    assert!(
-        result.is_err(),
-        "length-terminated response must be rejected"
-    );
+    let error = result.expect_err("length-terminated response must be rejected");
+    assert!(matches!(
+        prompt_error(&error),
+        PromptError::PromptCancelled { reason, .. }
+            if reason == "Phase 4 policy: FinishReason"
+    ));
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -369,11 +512,13 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
     let assistant = Assistant::new(agent);
 
     let result = assistant.respond("Check the system status.").await;
-
-    assert!(
-        result.is_err(),
-        "content-filtered response must be rejected"
-    );
+    let error = result.expect_err("content-filtered response must be rejected");
+    assert!(matches!(
+        prompt_error(&error),
+        PromptError::PromptCancelled { reason, .. }
+            if reason == "Phase 4 policy: FinishReason"
+    ));
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -430,8 +575,13 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
     let assistant = Assistant::new(agent);
 
     let result = assistant.respond("Check the system status.").await;
-
-    assert!(result.is_err(), "unknown finish reason must be rejected");
+    let error = result.expect_err("unknown finish reason must be rejected");
+    assert!(matches!(
+        prompt_error(&error),
+        PromptError::PromptCancelled { reason, .. }
+            if reason == "Phase 4 policy: FinishReason"
+    ));
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -489,8 +639,13 @@ async fn openai_adapter_rejects_unknown_tool_call() {
     let assistant = Assistant::new(agent);
 
     let result = assistant.respond("Reboot the system.").await;
-
-    assert!(result.is_err(), "unregistered tool must be rejected");
+    let error = result.expect_err("unregistered tool must be rejected");
+    assert!(matches!(
+        prompt_error(&error),
+        PromptError::PromptCancelled { reason, .. }
+            if reason == "Invalid tool call rejected by Phase 4 policy"
+    ));
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
 
 #[tokio::test]
@@ -547,9 +702,11 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
     let assistant = Assistant::new(agent);
 
     let result = assistant.respond("Check the system status.").await;
-
-    assert!(
-        result.is_err(),
-        "invalid system_status arguments must be rejected"
-    );
+    let error = result.expect_err("invalid system_status arguments must be rejected");
+    assert!(matches!(
+        prompt_error(&error),
+        PromptError::PromptCancelled { reason, .. }
+            if reason == "Phase 4 policy: ToolArguments"
+    ));
+    assert_eq!(request_bodies(&server).await.len(), 1);
 }
