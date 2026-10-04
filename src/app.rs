@@ -38,14 +38,16 @@ when a successful tool result confirms it."#,
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.local_llm.health_check().await?;
 
-        let response = self
+        let run = self
             .assistant
             // .respond("Reply with Exactly: JARVIS ONLINE")
-            // .respond("Use the system_status tool to check the system status.")
-            .respond("Use the reboot_system tool to reboot this computer.")
+            .respond("Check the current system status using the system_status tool.")
+            //.respond("Use the reboot_system tool to reboot this computer.")
             .await?;
-        println!("Model requests: {}", response.requests());
-        println!("Response: {:#?}", response.output);
+        println!("Model requests: {}", run.response.requests());
+        println!("Response: {:#?}", run.response.output);
+
+        println!("Run report: {:#?}", run.report);
         Ok(())
     }
 }
