@@ -67,5 +67,5 @@ impl AgentHook for JarvisPolicyHook {
 }
 
 #[cfg(test)]
-#[path = "tests/policy_hook_tests.rs"]
+#[path = "../../../tests/unit/services/assistant/policy_hook_tests.rs"]
 mod policy_hook_tests;

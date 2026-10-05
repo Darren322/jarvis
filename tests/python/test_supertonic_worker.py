@@ -13,7 +13,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-WORKER_PATH = Path(__file__).with_name("supertonic_worker.py")
+WORKER_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "scripts"
+    / "tts"
+    / "supertonic_worker.py"
+)
 SPEC = importlib.util.spec_from_file_location("jarvis_supertonic_worker", WORKER_PATH)
 worker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worker)

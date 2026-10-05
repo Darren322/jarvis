@@ -101,5 +101,5 @@ fn finalize_response(
 }
 
 #[cfg(test)]
-#[path = "tests/assistant_tests.rs"]
+#[path = "../../../tests/unit/services/assistant/assistant_tests.rs"]
 mod assistant_tests;

@@ -212,5 +212,5 @@ fn classify_tool_result(result: &rig_core::tool::ToolResult) -> ToolStageOutcome
 }
 
 #[cfg(test)]
-#[path = "tests/run_observer_tests.rs"]
+#[path = "../../../tests/unit/services/assistant/run_observer_tests.rs"]
 mod tests;
