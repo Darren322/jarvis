@@ -4,6 +4,11 @@
     "model": "supertonic-3",
     "precision": "int8",
     "package_id": "sherpa-onnx-supertonic-3-tts-int8-2026-05-11",
+    "source": {
+      "release_archive": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
+      "mirror_repository": "csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11",
+      "mirror_revision": "cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4"
+    },
     "files": {
       "text_encoder.int8.onnx": {
         "sha256": "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff"
@@ -29,7 +34,9 @@
     "name": "M5",
     "sid": 0,
     "source": {
-      "file": "M5.json",
+      "repository": "Supertone/supertonic-3",
+      "revision": "724fb5abbf5502583fb520898d45929e62f02c0b",
+      "file": "voice_styles/M5.json",
       "sha256": "dd22b92740314321f8ae11c5e87f8dd60d060f15dd3a632b5adf77f471f77af2"
     },
     "converter": {
