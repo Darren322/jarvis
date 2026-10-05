@@ -53,15 +53,19 @@ offline provisioning mode. Normal Jarvis inference loads only local files.
 ## Enable speech
 
 Keep the existing required `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_HEALTH_URL`, and
-`LOCAL_LLM_MODEL` settings. From the Jarvis checkout:
+`LOCAL_LLM_MODEL` settings in the checkout's local `.env` file. Add these speech
+settings there once:
 
-```sh
-export JARVIS_TTS_PYTHON="$HOME/.local/share/jarvis/tts/venv/bin/python"
-export JARVIS_TTS_MODEL_DIR="$HOME/.local/share/jarvis/tts/models/supertonic-3-int8-m5"
-export JARVIS_TTS_WORKER="$PWD/scripts/tts/supertonic_worker.py"
-export JARVIS_TTS_THREADS=2
-cargo run --locked --offline
+```dotenv
+JARVIS_TTS_PYTHON="$HOME/.local/share/jarvis/tts/venv/bin/python"
+JARVIS_TTS_MODEL_DIR="$HOME/.local/share/jarvis/tts/models/supertonic-3-int8-m5"
+JARVIS_TTS_WORKER=scripts/tts/supertonic_worker.py
+JARVIS_TTS_THREADS=2
 ```
+
+Start Jarvis from the checkout with `./run.sh`. It runs `cargo check --locked`
+first, then starts `cargo run --locked` if the check succeeds. You can also call
+the script by its full path from another directory.
 
 Omitting `JARVIS_TTS_MODEL_DIR` disables speech. The interpreter must be an
 absolute path. The default worker path is `scripts/tts/supertonic_worker.py`
