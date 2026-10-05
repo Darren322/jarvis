@@ -56,7 +56,7 @@ async fn assistant_text_run_returns_success_report_without_tools() {
     let assistant = Assistant::new(agent);
 
     let run = assistant
-        .respond("Reply with exactly: JARVIS ONLINE")
+        .respond("Reply with exactly: JARVIS ONLINE", &[])
         .await
         .expect("assistant should return a text response");
 
@@ -91,11 +91,11 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
 
     let first = assistant
-        .respond("first run")
+        .respond("first run", &[])
         .await
         .expect("first run succeeds");
     let second = assistant
-        .respond("independent second run")
+        .respond("independent second run", &[])
         .await
         .expect("second run succeeds");
 
@@ -125,7 +125,7 @@ async fn assistant_run_times_out_and_reports_incomplete_model_stage() {
     let assistant = Assistant::new(agent);
 
     let error = assistant
-        .respond("Hello")
+        .respond("Hello", &[])
         .await
         .expect_err("pending model should hit the Assistant deadline");
 
@@ -144,7 +144,7 @@ async fn provider_prompt_failure_reports_incomplete_model_stage_and_keeps_error_
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
 
     let error = assistant
-        .respond("Hello")
+        .respond("Hello", &[])
         .await
         .expect_err("provider failure must be returned");
 

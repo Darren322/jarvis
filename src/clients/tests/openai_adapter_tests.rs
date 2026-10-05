@@ -82,6 +82,7 @@ async fn openai_adapter_parses_plain_text_response() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -164,6 +165,7 @@ async fn openai_adapter_parses_system_status_tool_call() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -279,6 +281,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -290,7 +293,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
     let assistant = Assistant::new(agent);
 
     let response = assistant
-        .respond("Check the system status.")
+        .respond("Check the system status.", &[])
         .await
         .expect("system status roundtrip should succeed");
 
@@ -465,6 +468,7 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -475,7 +479,7 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
 
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status.").await;
+    let result = assistant.respond("Check the system status.", &[]).await;
     let error = result.expect_err("length-terminated response must be rejected");
     assert!(matches!(
         prompt_error(error.as_ref()),
@@ -528,6 +532,7 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -538,7 +543,7 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
 
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status.").await;
+    let result = assistant.respond("Check the system status.", &[]).await;
     let error = result.expect_err("content-filtered response must be rejected");
     assert!(matches!(
         prompt_error(error.as_ref()),
@@ -591,6 +596,7 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -601,7 +607,7 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
 
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status.").await;
+    let result = assistant.respond("Check the system status.", &[]).await;
     let error = result.expect_err("unknown finish reason must be rejected");
     assert!(matches!(
         prompt_error(error.as_ref()),
@@ -654,6 +660,7 @@ async fn openai_adapter_rejects_unknown_tool_call() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -665,7 +672,7 @@ async fn openai_adapter_rejects_unknown_tool_call() {
 
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Reboot the system.").await;
+    let result = assistant.respond("Reboot the system.", &[]).await;
     let error = result.expect_err("unregistered tool must be rejected");
     assert!(matches!(
         prompt_error(error.as_ref()),
@@ -718,6 +725,7 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
         local_llm_base_url: server.uri(),
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
+        archive_path: "data/jarvis.sqlite3".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -728,7 +736,7 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
 
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status.").await;
+    let result = assistant.respond("Check the system status.", &[]).await;
     let error = result.expect_err("invalid system_status arguments must be rejected");
     assert!(matches!(
         prompt_error(error.as_ref()),

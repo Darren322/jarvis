@@ -101,7 +101,7 @@ async fn executes_system_status_once_then_returns_final_text() {
     let assistant = Assistant::new(agent);
 
     let response = assistant
-        .respond("Check the system status.")
+        .respond("Check the system status.", &[])
         .await
         .expect("valid tool roundtrip should succeed");
 
@@ -181,7 +181,9 @@ async fn rejects_multiple_tool_calls_before_execution() {
     let agent = AgentBuilder::new(model).tool(tool).build();
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status twice.").await;
+    let result = assistant
+        .respond("Check the system status twice.", &[])
+        .await;
 
     assert!(result.is_err());
 
@@ -218,7 +220,7 @@ async fn rejects_second_tool_call_after_execution() {
     let agent = AgentBuilder::new(model).tool(tool).build();
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Check the system status.").await;
+    let result = assistant.respond("Check the system status.", &[]).await;
 
     assert!(result.is_err());
 
@@ -259,7 +261,7 @@ async fn rejects_invalid_arguments_before_execution() {
         let agent = AgentBuilder::new(model).tool(tool).build();
         let assistant = Assistant::new(agent);
 
-        let result = assistant.respond("Check the system status.").await;
+        let result = assistant.respond("Check the system status.", &[]).await;
 
         assert!(result.is_err());
         assert_eq!(
@@ -296,7 +298,7 @@ async fn rejects_unavailable_tool_call() {
     let agent = AgentBuilder::new(model).tool(tool).build();
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Call the forbidden tool.").await;
+    let result = assistant.respond("Call the forbidden tool.", &[]).await;
 
     assert!(result.is_err(), "unavailable tool call should be rejected");
 
@@ -335,7 +337,7 @@ async fn failed_tool_execution_continues_to_final_text() {
     let assistant = Assistant::new(agent);
 
     let response = assistant
-        .respond("Check the system status.")
+        .respond("Check the system status.", &[])
         .await
         .expect("tool failure should still allow final explanation");
 
@@ -414,7 +416,7 @@ async fn direct_text_returns_without_tool_execution() {
     let assistant = Assistant::new(agent);
 
     let response = assistant
-        .respond("Say hello.")
+        .respond("Say hello.", &[])
         .await
         .expect("direct text should succeed");
 
@@ -445,7 +447,7 @@ async fn rejects_empty_assistant_content() {
     let agent = AgentBuilder::new(model).tool(tool).build();
     let assistant = Assistant::new(agent);
 
-    let result = assistant.respond("Say something.").await;
+    let result = assistant.respond("Say something.", &[]).await;
 
     let error = result.expect_err("empty assistant content must be rejected");
     assert!(matches!(&error.error, AssistantError::Prompt(_)));
@@ -516,7 +518,7 @@ async fn phase4_rejects_invalid_model_turns_before_execution() {
         let agent = AgentBuilder::new(model).tool(tool).build();
         let assistant = Assistant::new(agent);
 
-        let result = assistant.respond("Check the system status.").await;
+        let result = assistant.respond("Check the system status.", &[]).await;
 
         assert!(result.is_err(), "{case_name} should be rejected");
 
