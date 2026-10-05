@@ -31,7 +31,13 @@ impl std::fmt::Display for PlaybackError {
             Self::EnumerateDevices(error) => {
                 write!(f, "failed to list audio output devices: {error}")
             }
-            Self::OpenDevice(error) => write!(f, "failed to open audio output device: {error}"),
+            Self::OpenDevice(error) => {
+                write!(f, "failed to open audio output device: {error}")?;
+                if let Some(source) = std::error::Error::source(error) {
+                    write!(f, ": {source}")?;
+                }
+                Ok(())
+            }
             Self::RequestedDeviceNotFound(name) => {
                 write!(
                     f,
@@ -89,7 +95,7 @@ impl AudioPlayer {
             .with_error_callback(move |_| {
                 callback_state.store(true, Ordering::Release);
             })
-            .open_stream()
+            .open_sink_or_fallback()
             .map_err(PlaybackError::OpenDevice)?;
 
         Ok(Self {

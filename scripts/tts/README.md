@@ -84,6 +84,11 @@ PCM routes, so prefer an identifier when choosing a particular route. Invalid
 optional settings warn once and preserve text chat. Resource initialization
 starts only for an eligible answer.
 
+Audio opening tries the selected device's initial stream configuration, then
+Rodio's supported configurations on that same device if needed. Opening failures
+include the underlying CPAL error. After a speech failure, exit and restart
+Jarvis before retrying; speech stays disabled for the failed session.
+
 The existing generation settings are English, speaker ID 0, speed 1.0, and eight
 steps. These preserve the current worker rather than the earlier speed 1.05
 proposal. Their latency and voice quality need an integrated Pi measurement.
