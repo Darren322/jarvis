@@ -14,6 +14,7 @@ MAX_TEXT_BYTES = 4096
 EXPECTED_SAMPLE_RATE = 44100
 MAX_AUDIO_SAMPLES = 5_292_000
 MAX_WAV_BYTES = 16 * 1024 * 1024
+MAX_REQUEST_BYTES = 32 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,6 +153,11 @@ def main() -> int:
     print(json.dumps(ready), flush=True)
 
     for line in sys.stdin:
+        if len(line.encode("utf-8")) > MAX_REQUEST_BYTES:
+            result = error_result(None, "request_too_large")
+            print(json.dumps(result), flush=True)
+            continue
+
         line = line.strip()
 
         if not line:
@@ -159,7 +165,12 @@ def main() -> int:
 
         try:
             request = json.loads(line)
-            result = handle_request(tts, request)
+
+            if not isinstance(request, dict):
+                result = error_result(None, "invalid_request")
+            else:
+                result = handle_request(tts, request)
+
         except json.JSONDecodeError:
             result = {
                 "type": "result",
