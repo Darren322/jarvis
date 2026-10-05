@@ -11,7 +11,7 @@ use wiremock::{
 
 use crate::{
     clients::local_llm::LocalLlm,
-    config::AppConfig,
+    config::{AppConfig, OptionalTtsConfig},
     services::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
 };
@@ -83,6 +83,7 @@ async fn openai_adapter_parses_plain_text_response() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -166,6 +167,7 @@ async fn openai_adapter_parses_system_status_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -282,6 +284,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -469,6 +472,7 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -533,6 +537,7 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -597,6 +602,7 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -661,6 +667,7 @@ async fn openai_adapter_rejects_unknown_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -726,6 +733,7 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        tts: OptionalTtsConfig::Disabled,
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");

@@ -44,6 +44,7 @@ pub enum WorkerResponse {
     Error {
         protocol: u32,
         id: Option<String>,
-        error: String,
+        #[serde(rename = "error")]
+        _error: String,
     },
 }
