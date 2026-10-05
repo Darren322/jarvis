@@ -4,8 +4,16 @@ import argparse
 import json
 import os
 import sys
+import numpy as np
+import soundfile as sf
 
 import sherpa_onnx
+
+PROTOCOL_VERSION = 1
+MAX_TEXT_BYTES = 4096
+EXPECTED_SAMPLE_RATE = 44100
+MAX_AUDIO_SAMPLES = 5_292_000
+MAX_WAV_BYTES = 16 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,10 +54,6 @@ def load_tts(args: argparse.Namespace) -> sherpa_onnx.OfflineTts:
     return sherpa_onnx.OfflineTts(config)
 
 
-MAX_TEXT_BYTES = 4096
-PROTOCOL_VERSION = 1
-
-
 def error_result(operation_id, error):
     return {
         "type": "error",
@@ -79,6 +83,14 @@ def handle_request(tts: sherpa_onnx.OfflineTts, request: dict) -> dict:
     if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         return error_result(operation_id, "text_too_large")
 
+    output_path = request.get("output_path")
+
+    if not isinstance(output_path, str) or not output_path:
+        return error_result(operation_id, "invalid_output_path")
+
+    if not os.path.isabs(output_path):
+        return error_result(operation_id, "invalid_output_path")
+
     generation = sherpa_onnx.GenerationConfig()
     generation.sid = 0
     generation.speed = 1.0
@@ -87,12 +99,41 @@ def handle_request(tts: sherpa_onnx.OfflineTts, request: dict) -> dict:
 
     audio = tts.generate(text, generation)
 
+    samples = np.asarray(audio.samples, dtype=np.float32)
+    sample_rate = int(audio.sample_rate)
+
+    if samples.ndim != 1:
+        return error_result(operation_id, "invalid_audio")
+
+    if samples.size == 0 or samples.size > MAX_AUDIO_SAMPLES:
+        return error_result(operation_id, "invalid_audio")
+
+    if not np.all(np.isfinite(samples)):
+        return error_result(operation_id, "invalid_audio")
+
+    if sample_rate != EXPECTED_SAMPLE_RATE:
+        return error_result(operation_id, "invalid_audio")
+
+    sf.write(
+        output_path,
+        samples,
+        sample_rate,
+        subtype="PCM_16",
+        format="WAV",
+    )
+    wav_size = os.path.getsize(output_path)
+
+    if wav_size > MAX_WAV_BYTES:
+        os.remove(output_path)
+        return error_result(operation_id, "invalid_audio")
+
     return {
         "type": "completed",
         "protocol": PROTOCOL_VERSION,
         "id": operation_id,
-        "sample_rate": audio.sample_rate,
-        "num_samples": len(audio.samples),
+        "sample_rate": sample_rate,
+        "num_samples": int(samples.size),
+        "wav_bytes": wav_size,
     }
 
 
