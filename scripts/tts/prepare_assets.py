@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-import sys
 import argparse
 import hashlib
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from pathlib import Path
@@ -75,20 +75,63 @@ def generate_voice_bin(
         )
 
 
+def write_manifest(
+    path: Path,
+    lock: dict,
+) -> None:
+    manifest = {
+        "schema_version": 1,
+        "engine": lock["supertonic"]["model"],
+        "precision": lock["supertonic"]["precision"],
+        "package_id": lock["supertonic"]["package_id"],
+        "voice": lock["voice"]["name"],
+        "sid": lock["voice"]["sid"],
+        "files": {},
+    }
+
+    for filename, metadata in lock["supertonic"]["files"].items():
+        manifest["files"][filename] = {
+            "sha256": metadata["sha256"],
+        }
+
+    manifest["files"]["voice.bin"] = {
+        "sha256": lock["voice"]["generated"]["sha256"],
+    }
+
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+
+
+def verify_staged_bundle(
+    staging_dir: Path,
+    lock: dict,
+) -> None:
+    for filename, metadata in lock["supertonic"]["files"].items():
+        verify_file(
+            staging_dir / filename,
+            metadata["sha256"],
+        )
+
+    verify_file(
+        staging_dir / "voice.bin",
+        lock["voice"]["generated"]["sha256"],
+    )
+
+
 def main() -> int:
     args = parse_args()
 
     with LOCK_PATH.open("r", encoding="utf-8") as f:
         lock = json.load(f)
 
-    # Verify the existing INT8 model bundle.
+    # Verify the existing research/source assets before staging anything.
     for filename, metadata in lock["supertonic"]["files"].items():
         verify_file(
             args.model_dir / filename,
             metadata["sha256"],
         )
 
-    # Verify the official M5 source before using it.
     verify_file(
         args.m5_json,
         lock["voice"]["source"]["sha256"],
@@ -102,38 +145,67 @@ def main() -> int:
         file=converter["file"],
     )
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_parent = args.output_dir.parent
+    output_parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="jarvis-converter-") as temp:
+    with tempfile.TemporaryDirectory(
+        prefix=".jarvis-tts-stage-",
+        dir=output_parent,
+    ) as temp:
+        staging_dir = Path(temp) / "bundle"
+        staging_dir.mkdir()
+
+        # Copy only the locked runtime model files.
+        for filename in lock["supertonic"]["files"]:
+            shutil.copy2(
+                args.model_dir / filename,
+                staging_dir / filename,
+            )
+
         converter_path = Path(temp) / "generate_voices_bin.py"
 
-        download_file(converter_url, converter_path)
+        download_file(
+            converter_url,
+            converter_path,
+        )
 
         verify_file(
             converter_path,
             converter["sha256"],
         )
 
-        staged_voice = Path(temp) / "voice.bin"
-
         generate_voice_bin(
             args.m5_json,
             converter_path,
-            staged_voice,
+            staging_dir / "voice.bin",
         )
 
-        verify_file(
-            staged_voice,
-            lock["voice"]["generated"]["sha256"],
+        # Nothing is promoted until the complete staged bundle verifies.
+        verify_staged_bundle(
+            staging_dir,
+            lock,
         )
 
-        final_voice = args.output_dir / "voice.bin"
-        shutil.copy2(staged_voice, final_voice)
+        write_manifest(
+            staging_dir / "manifest.json",
+            lock,
+        )
 
-    print("Verified Supertonic INT8 assets.")
+        # Replace a previously prepared runtime bundle only after staging
+        # has completed successfully.
+        if args.output_dir.exists():
+            if args.output_dir.is_dir():
+                shutil.rmtree(args.output_dir)
+            else:
+                args.output_dir.unlink()
+
+        staging_dir.rename(args.output_dir)
+
+    print("Verified Supertonic INT8 source assets.")
     print("Verified official M5.json.")
     print("Verified sherpa-onnx voice converter.")
-    print(f"Prepared M5-only voice.bin: {final_voice}")
+    print("Verified complete staged runtime bundle.")
+    print(f"Prepared runtime bundle: {args.output_dir}")
 
     return 0
 
