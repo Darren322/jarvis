@@ -15,6 +15,7 @@ EXPECTED_SAMPLE_RATE = 44100
 MAX_AUDIO_SAMPLES = 5_292_000
 MAX_WAV_BYTES = 16 * 1024 * 1024
 MAX_REQUEST_BYTES = 32 * 1024
+MAX_RESPONSE_BYTES = 4 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,6 +24,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--voice-style", required=True)
     parser.add_argument("--threads", type=int, default=2)
     return parser.parse_args()
+
+
+def emit_frame(frame: dict) -> None:
+    encoded = json.dumps(frame, separators=(",", ":"))
+
+    if len(encoded.encode("utf-8")) > MAX_RESPONSE_BYTES:
+        encoded = json.dumps(
+            error_result(None, "response_too_large"),
+            separators=(",", ":"),
+        )
+
+    print(encoded, flush=True)
 
 
 def load_tts(args: argparse.Namespace) -> sherpa_onnx.OfflineTts:
@@ -145,17 +158,24 @@ def main() -> int:
 
     ready = {
         "type": "ready",
+        "protocol": PROTOCOL_VERSION,
         "pid": os.getpid(),
+        "engine": "supertonic-3",
+        "precision": "int8",
+        "voice": "M5",
+        "language": "en",
+        "provider": "cpu",
+        "threads": args.threads,
         "sample_rate": tts.sample_rate,
         "num_speakers": tts.num_speakers,
     }
 
-    print(json.dumps(ready), flush=True)
+    emit_frame(ready)
 
     for line in sys.stdin:
         if len(line.encode("utf-8")) > MAX_REQUEST_BYTES:
             result = error_result(None, "request_too_large")
-            print(json.dumps(result), flush=True)
+            emit_frame(result)
             continue
 
         line = line.strip()
@@ -172,22 +192,16 @@ def main() -> int:
                 result = handle_request(tts, request)
 
         except json.JSONDecodeError:
-            result = {
-                "type": "result",
-                "ok": False,
-                "error": "invalid JSON",
-            }
-        except Exception as exc:
-            result = {
-                "type": "result",
-                "ok": False,
-                "error": f"synthesis failed: {exc}",
-            }
+            result = error_result(None, "invalid_json")
 
-        print(json.dumps(result), flush=True)
+        except Exception:
+            result = error_result(None, "worker_error")
+
+        emit_frame(result)
 
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
