@@ -28,8 +28,8 @@ fn decodes_bounded_mono_pcm16_wav() {
     assert_eq!(decoded.samples[1], 0.0);
     assert!(decoded.samples[2] > 0.999 && decoded.samples[2] < 1.0);
     assert!(decoded.duration < Duration::from_millis(1));
-    assert!(decoded.playback_deadline() > Duration::from_secs(2));
-    assert!(decoded.playback_deadline() < Duration::from_millis(2_001));
+    assert!(decoded.playback_deadline() > Duration::from_secs(3));
+    assert!(decoded.playback_deadline() < Duration::from_millis(3_001));
     let maximum = ValidatedWav {
         samples: Vec::new(),
         duration: Duration::from_secs(120),

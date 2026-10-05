@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use rodio::{
     Player,
@@ -15,6 +16,21 @@ use rodio::{
 
 const OUTPUT_CHANNELS: u16 = 1;
 const OUTPUT_SAMPLE_RATE: u32 = 44_100;
+const SPEECH_CUE_SAMPLE_COUNT: usize = OUTPUT_SAMPLE_RATE as usize;
+const SPEECH_CUE_FREQUENCY_HZ: f64 = 440.0;
+const SPEECH_CUE_PEAK: f32 = 1_600.0 / 32_768.0;
+pub(super) const SPEECH_CUE_DURATION: Duration = Duration::from_secs(1);
+
+fn prepend_speech_cue(samples: Vec<f32>) -> Vec<f32> {
+    let mut prefixed = Vec::with_capacity(SPEECH_CUE_SAMPLE_COUNT + samples.len());
+    prefixed.extend((0..SPEECH_CUE_SAMPLE_COUNT).map(|sample_index| {
+        let phase = std::f64::consts::TAU * SPEECH_CUE_FREQUENCY_HZ * sample_index as f64
+            / f64::from(OUTPUT_SAMPLE_RATE);
+        phase.sin() as f32 * SPEECH_CUE_PEAK
+    }));
+    prefixed.extend(samples);
+    prefixed
+}
 
 #[derive(Debug)]
 pub enum PlaybackError {
@@ -114,6 +130,7 @@ impl AudioPlayer {
         }
 
         self.stop();
+        let samples = prepend_speech_cue(samples);
 
         let source = SamplesBuffer::new(
             OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
@@ -150,3 +167,7 @@ impl AudioPlayer {
         *self.device.config()
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/services/tts/playback_tests.rs"]
+mod tests;

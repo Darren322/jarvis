@@ -89,6 +89,13 @@ Rodio's supported configurations on that same device if needed. Opening failures
 include the underlying CPAL error. After a speech failure, exit and restart
 Jarvis before retrying; speech stays disabled for the failed session.
 
+Each spoken answer begins with a quiet one-second 440 Hz cue, immediately
+followed by the original speech. This adds one second before the words. The
+cue was selected after the same M5 WAV lost its opening words with `aplay` and
+with a silent lead-in, but played fully with this tone before it. Integrated
+Pi playback still needs confirmation after deploying the patch. `/stop` and
+new-prompt interruption stop the cue and speech together.
+
 The existing generation settings are English, speaker ID 0, speed 1.0, and eight
 steps. These preserve the current worker rather than the earlier speed 1.05
 proposal. Their latency and voice quality need an integrated Pi measurement.
@@ -109,8 +116,9 @@ speech. IPC requests are bounded to 32 KiB and responses to 4 KiB. Startup has a
 Blocking audio initialization is bounded to 60 seconds and WAV decoding to 30
 seconds; their handles remain owned if a deadline expires.
 Audio must be nonempty 44,100 Hz mono 16-bit PCM WAV, at most 16 MiB and 120
-seconds. Playback polls every 20 ms with a validated-duration-plus-two-second
-deadline. Temporary audio is private and ephemeral.
+seconds. Playback polls every 20 ms with a deadline of validated speech duration
+plus the one-second cue and two seconds of grace, at most 123 seconds. Temporary
+audio is private and ephemeral.
 
 Rodio source completion does not prove the hardware has drained; see the
 [Rodio 0.22.2 output API](https://docs.rs/rodio/0.22.2/rodio/stream/struct.DeviceSinkBuilder.html).
