@@ -51,7 +51,6 @@ currently fetches the pinned converter; the setup script does not offer a fully
 offline provisioning mode. Normal Jarvis inference loads only local files.
 
 ## Enable speech
-
 Keep the existing required `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_HEALTH_URL`, and
 `LOCAL_LLM_MODEL` settings in the checkout's local `.env` file. Add these speech
 settings there once:
@@ -71,9 +70,19 @@ Omitting `JARVIS_TTS_MODEL_DIR` disables speech. The interpreter must be an
 absolute path. The default worker path is `scripts/tts/supertonic_worker.py`
 resolved at startup; deploy the adjacent `assets.lock.json` with that script.
 Threads default to 2 and must be 1–4. `JARVIS_AUDIO_DEVICE` optionally chooses an
-exact Rust audio device name; omit it to use the default output. ALSA `aplay`
-card strings are not Rust device names. Invalid optional settings warn once and
-preserve text chat. Resource initialization starts only for an eligible answer.
+exact CPAL device identifier or device description; omit it to use the default
+output. On the locked CPAL ALSA backend, identifiers have the form `alsa:<PCM>`.
+For the USB route reported on Darren's Pi, select it explicitly in `.env`:
+
+```dotenv
+JARVIS_AUDIO_DEVICE="alsa:plughw:CARD=Device,DEV=0"
+```
+
+This selects the enumerated USB PCM route; a plain ALSA route without the `alsa:`
+prefix is not a CPAL identifier. Device descriptions can be shared by multiple
+PCM routes, so prefer an identifier when choosing a particular route. Invalid
+optional settings warn once and preserve text chat. Resource initialization
+starts only for an eligible answer.
 
 The existing generation settings are English, speaker ID 0, speed 1.0, and eight
 steps. These preserve the current worker rather than the earlier speed 1.05

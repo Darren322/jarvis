@@ -107,7 +107,7 @@ impl std::fmt::Display for SpeechError {
             Self::WorkerLaunch(_) => write!(f, "failed to launch speech worker"),
             Self::WorkerStartup(_) => write!(f, "speech worker failed to start"),
             Self::Synthesis(_) => write!(f, "speech synthesis failed"),
-            Self::Playback(_) => write!(f, "speech playback failed"),
+            Self::Playback(error) => write!(f, "speech playback failed: {error}"),
             Self::PlaybackDeviceFailed => write!(f, "audio output device reported an error"),
             Self::PlaybackTimedOut => write!(f, "speech playback timed out"),
             Self::PlaybackInitializationTimedOut => {

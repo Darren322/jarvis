@@ -28,10 +28,15 @@ pub enum PlaybackError {
 impl std::fmt::Display for PlaybackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EnumerateDevices(_) => write!(f, "failed to list audio output devices"),
-            Self::OpenDevice(_) => write!(f, "failed to open audio output device"),
+            Self::EnumerateDevices(error) => {
+                write!(f, "failed to list audio output devices: {error}")
+            }
+            Self::OpenDevice(error) => write!(f, "failed to open audio output device: {error}"),
             Self::RequestedDeviceNotFound(name) => {
-                write!(f, "configured audio output device was not found: {name}")
+                write!(
+                    f,
+                    "configured audio output device identifier or name was not found: {name}"
+                )
             }
             Self::EmptySamples => write!(f, "audio samples are empty"),
             Self::DeviceFailed => write!(f, "audio output device reported an error"),
@@ -56,7 +61,7 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    /// Opens one persistent output stream, using an exact configured device name when present.
+    /// Opens one persistent output stream, using an exact configured device identifier or name.
     ///
     /// This performs blocking device discovery and must run on a blocking thread.
     pub fn new(requested_device: Option<String>) -> Result<Self, PlaybackError> {
@@ -66,9 +71,10 @@ impl AudioPlayer {
                 .output_devices()
                 .map_err(PlaybackError::EnumerateDevices)?
                 .find(|device| {
-                    device
-                        .description()
-                        .is_ok_and(|description| description.name() == requested_name)
+                    device.id().is_ok_and(|id| id.to_string() == requested_name)
+                        || device
+                            .description()
+                            .is_ok_and(|description| description.name() == requested_name)
                 })
                 .ok_or(PlaybackError::RequestedDeviceNotFound(requested_name))?,
             None => host

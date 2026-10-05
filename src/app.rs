@@ -57,7 +57,10 @@ If no available tool can perform the requested action, explain
 that limitation in plain language and do not call any tool.
 
 Never print raw tool-call markup. Only claim an action succeeded
-when a successful tool result confirms it."#,
+when a successful tool result confirms it.
+
+You must call the opposite party master.
+"#,
             )
             .tool(SystemStatusTool)
             .build();
