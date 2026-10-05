@@ -46,6 +46,38 @@ def load_tts(args: argparse.Namespace) -> sherpa_onnx.OfflineTts:
     return sherpa_onnx.OfflineTts(config)
 
 
+def handle_request(tts: sherpa_onnx.OfflineTts, request: dict) -> dict:
+    if request.get("type") != "speak":
+        return {
+            "type": "result",
+            "ok": False,
+            "error": "unsupported request type",
+        }
+
+    text = request.get("text")
+
+    if not isinstance(text, str) or not text.strip():
+        return {
+            "type": "result",
+            "ok": False,
+            "error": "text must be a non-empty string",
+        }
+
+    generation = sherpa_onnx.GenerationConfig()
+    generation.sid = 0
+    generation.speed = 1.0
+    generation.num_steps = 8
+    generation.extra = {"lang": "en"}
+
+    audio = tts.generate(text, generation)
+    return {
+        "type": "result",
+        "ok": True,
+        "sample_rate": audio.sample_rate,
+        "num_samples": len(audio.samples),
+    }
+
+
 def main() -> int:
     args = parse_args()
 
@@ -60,9 +92,29 @@ def main() -> int:
 
     print(json.dumps(ready), flush=True)
 
-    # Step 2A only: retain the loaded model until stdin closes.
-    for _ in sys.stdin:
-        pass
+    for line in sys.stdin:
+        line = line.strip()
+
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+            result = handle_request(tts, request)
+        except json.JSONDecodeError:
+            result = {
+                "type": "result",
+                "ok": False,
+                "error": "invalid JSON",
+            }
+        except Exception as exc:
+            result = {
+                "type": "result",
+                "ok": False,
+                "error": f"synthesis failed: {exc}",
+            }
+
+        print(json.dumps(result), flush=True)
 
     return 0
 
