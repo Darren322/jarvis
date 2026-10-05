@@ -44,7 +44,12 @@ impl App {
         prompt: &str,
     ) -> Result<rig_agent::agent::PromptResponse, Box<dyn std::error::Error>> {
         self.local_llm.health_check().await?;
-        Ok(self.assistant.respond(prompt).await?)
+        let run = self
+            .assistant
+            .respond(prompt, &[])
+            .await
+            .map_err(|error| error as Box<dyn std::error::Error>)?;
+        Ok(run.response)
     }
 }
 RUST

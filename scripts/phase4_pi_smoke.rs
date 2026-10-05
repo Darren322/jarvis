@@ -2,6 +2,7 @@ mod app;
 mod clients;
 mod config;
 mod services;
+mod storage;
 mod tools;
 
 use app::App;
