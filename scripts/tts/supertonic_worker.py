@@ -46,22 +46,38 @@ def load_tts(args: argparse.Namespace) -> sherpa_onnx.OfflineTts:
     return sherpa_onnx.OfflineTts(config)
 
 
+MAX_TEXT_BYTES = 4096
+PROTOCOL_VERSION = 1
+
+
+def error_result(operation_id, error):
+    return {
+        "type": "error",
+        "protocol": PROTOCOL_VERSION,
+        "id": operation_id,
+        "error": error,
+    }
+
+
 def handle_request(tts: sherpa_onnx.OfflineTts, request: dict) -> dict:
+    operation_id = request.get("id")
+
+    if request.get("protocol") != PROTOCOL_VERSION:
+        return error_result(operation_id, "unsupported_protocol")
+
     if request.get("type") != "speak":
-        return {
-            "type": "result",
-            "ok": False,
-            "error": "unsupported request type",
-        }
+        return error_result(operation_id, "unsupported_request")
+
+    if not isinstance(operation_id, str) or not operation_id:
+        return error_result(None, "invalid_id")
 
     text = request.get("text")
 
     if not isinstance(text, str) or not text.strip():
-        return {
-            "type": "result",
-            "ok": False,
-            "error": "text must be a non-empty string",
-        }
+        return error_result(operation_id, "invalid_text")
+
+    if len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+        return error_result(operation_id, "text_too_large")
 
     generation = sherpa_onnx.GenerationConfig()
     generation.sid = 0
@@ -70,9 +86,11 @@ def handle_request(tts: sherpa_onnx.OfflineTts, request: dict) -> dict:
     generation.extra = {"lang": "en"}
 
     audio = tts.generate(text, generation)
+
     return {
-        "type": "result",
-        "ok": True,
+        "type": "completed",
+        "protocol": PROTOCOL_VERSION,
+        "id": operation_id,
         "sample_rate": audio.sample_rate,
         "num_samples": len(audio.samples),
     }
