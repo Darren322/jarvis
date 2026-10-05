@@ -1,0 +1,20 @@
+sherpa-onnx==1.13.8 \
+    --hash=sha256:916ec38242e779ee3a99f7b161bd1bf3b02a7fad34cb073d091021c0469e0b58
+
+sherpa-onnx-core==1.13.8 \
+    --hash=sha256:a51a03d55c376c32e15dd63ea852236042ba91a5cd73e253bbf7cf21f6582ba9
+
+numpy==2.5.3 \
+    --hash=sha256:c76d5dde9f445058f83d0c02af00557a4db91de9a9a57c0df87d1535001d654b
+
+soundfile==0.14.0 \
+    --hash=sha256:e85724a90bc99a6e8062c0b4ddf725f53b2a3b70afd4da875e9d2cfc4e92f377
+
+cffi==2.1.1 \
+    --hash=sha256:f16c709686a78c727bbbf059f92b0bf41c6fc60deec706d2dc19f529175a6125
+
+pycparser==3.0 \
+    --hash=sha256:5f6f9dbccdbe23d54fab1c279cc6efccd43286749517d2d88b2ecb00a2ed8673
+
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
