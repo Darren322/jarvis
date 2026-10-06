@@ -199,7 +199,11 @@ impl SpeechOutput {
         self.disabled
     }
 
-    pub async fn speak(&mut self, text: &str) -> Result<(), SpeechError> {
+    pub async fn speak(
+        &mut self,
+        text: &str,
+        playback_started: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<(), SpeechError> {
         if text.len() > MAX_SPEECH_TEXT_BYTES {
             return Err(SpeechError::TextTooLarge);
         }
@@ -338,6 +342,7 @@ impl SpeechOutput {
             .as_mut()
             .expect("active operation remains during playback")
             .stage = SpeechStage::Playing;
+        let _ = playback_started.send(());
 
         let playback_deadline = tokio::time::Instant::now() + playback_deadline;
         loop {

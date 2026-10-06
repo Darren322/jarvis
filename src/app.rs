@@ -5,6 +5,7 @@ use std::{
 
 use rig_agent::AgentBuilder;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::sync::oneshot;
 
 use crate::clients::local_llm::LocalLlm;
 use crate::config::{AppConfig, OptionalTtsConfig};
@@ -101,7 +102,15 @@ You must call the opposite party master.
 
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
-        run_input_loop(&self.assistant, &mut session, &mut speech, &mut input).await
+        let mut present_answer = |answer: &str| println!("Jarvis: {answer}");
+        run_input_loop(
+            &self.assistant,
+            &mut session,
+            &mut speech,
+            &mut input,
+            &mut present_answer,
+        )
+        .await
     }
 }
 
@@ -109,7 +118,11 @@ trait SpeechControl {
     type Error: std::fmt::Display;
 
     fn is_disabled(&self) -> bool;
-    async fn speak(&mut self, text: &str) -> Result<(), Self::Error>;
+    async fn speak(
+        &mut self,
+        text: &str,
+        playback_started: oneshot::Sender<()>,
+    ) -> Result<(), Self::Error>;
     async fn cancel(&mut self) -> Result<(), Self::Error>;
     async fn shutdown(&mut self) -> Result<(), Self::Error>;
 }
@@ -121,8 +134,12 @@ impl SpeechControl for SpeechOutput {
         SpeechOutput::is_disabled(self)
     }
 
-    async fn speak(&mut self, text: &str) -> Result<(), Self::Error> {
-        SpeechOutput::speak(self, text).await
+    async fn speak(
+        &mut self,
+        text: &str,
+        playback_started: oneshot::Sender<()>,
+    ) -> Result<(), Self::Error> {
+        SpeechOutput::speak(self, text, playback_started).await
     }
 
     async fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -141,17 +158,19 @@ enum SpeechWait {
     InputError { error: io::Error },
 }
 
-async fn run_input_loop<R, S>(
+async fn run_input_loop<R, S, P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
     speech: &mut Option<S>,
     input: &mut R,
+    present_answer: &mut P,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
     S: SpeechControl,
+    P: FnMut(&str),
 {
-    let result = run_input_loop_inner(assistant, session, speech, input).await;
+    let result = run_input_loop_inner(assistant, session, speech, input, present_answer).await;
 
     if let Some(speech) = speech.as_mut()
         && let Err(error) = speech.shutdown().await
@@ -162,15 +181,17 @@ where
     result
 }
 
-async fn run_input_loop_inner<R, S>(
+async fn run_input_loop_inner<R, S, P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
     speech: &mut Option<S>,
     input: &mut R,
+    present_answer: &mut P,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
     S: SpeechControl,
+    P: FnMut(&str),
 {
     let mut speech_available = speech.as_ref().is_some_and(|speech| !speech.is_disabled());
     let mut next_input = None;
@@ -219,11 +240,16 @@ where
                         Ok(run) => {
                             print_run_diagnostics(&run.report);
                             let answer = run.response.output();
-                            println!("Jarvis: {answer}");
 
                             if speech_available && let Some(speech) = speech.as_mut() {
-                                match watch_speech(speech, answer, input, &mut speech_available)
-                                    .await
+                                match watch_speech(
+                                    speech,
+                                    answer,
+                                    input,
+                                    &mut speech_available,
+                                    present_answer,
+                                )
+                                .await
                                 {
                                     SpeechWait::Completed(line) => {
                                         next_input = Some(line);
@@ -246,6 +272,8 @@ where
                                         return Err(error.into());
                                     }
                                 }
+                            } else {
+                                present_answer(answer);
                             }
                         }
                         Err(error) => {
@@ -259,37 +287,49 @@ where
     }
 }
 
-async fn watch_speech<R, S>(
+async fn watch_speech<R, S, P>(
     speech: &mut S,
     text: &str,
     input: &mut R,
     speech_available: &mut bool,
+    present_answer: &mut P,
 ) -> SpeechWait
 where
     R: AsyncBufRead + Unpin,
     S: SpeechControl,
+    P: FnMut(&str),
 {
-    print!("You> ");
-    if let Err(error) = io::stdout().flush() {
-        return SpeechWait::InputError { error };
-    }
-
-    let mut speech_future = Box::pin(speech.speak(text));
+    let (playback_started_tx, mut playback_started_rx) = oneshot::channel();
+    let mut speech_future = Box::pin(speech.speak(text, playback_started_tx));
+    let mut input_future = Box::pin(read_input_line(&mut *input));
+    let mut answer_presented = false;
 
     loop {
         enum Event<E> {
             Speech(Result<(), E>),
             Input(io::Result<InputLine>),
+            PlaybackStarted(Result<(), oneshot::error::RecvError>),
         }
 
-        let mut input_future = Box::pin(read_input_line(&mut *input));
         let event = tokio::select! {
             biased;
             line = input_future.as_mut() => Event::Input(line),
+            started = &mut playback_started_rx, if !answer_presented => {
+                Event::PlaybackStarted(started)
+            }
             result = &mut speech_future => Event::Speech(result),
         };
 
         match event {
+            Event::PlaybackStarted(Ok(())) | Event::PlaybackStarted(Err(_)) => {
+                // A closed notification channel also triggers visible fallback.
+                answer_presented = true;
+                if let Err(error) = show_answer_and_prompt(present_answer, text) {
+                    drop(speech_future);
+                    report_speech_cleanup(speech.cancel().await);
+                    return SpeechWait::InputError { error };
+                }
+            }
             Event::Speech(result) => {
                 drop(speech_future);
                 if let Err(error) = result {
@@ -297,6 +337,11 @@ where
                     if speech.is_disabled() {
                         *speech_available = false;
                     }
+                }
+                if !answer_presented
+                    && let Err(error) = show_answer_and_prompt(present_answer, text)
+                {
+                    return SpeechWait::InputError { error };
                 }
 
                 return match input_future.as_mut().await {
@@ -306,31 +351,68 @@ where
             }
             Event::Input(Ok(InputLine::Rejected(reason))) => {
                 eprintln!("Input rejected: {}", reason.message());
-                print!("You> ");
-                if let Err(error) = io::stdout().flush() {
+                drop(input_future);
+                input_future = Box::pin(read_input_line(&mut *input));
+                if answer_presented && let Err(error) = print_input_prompt() {
                     drop(speech_future);
                     report_speech_cleanup(speech.cancel().await);
                     return SpeechWait::InputError { error };
                 }
             }
             Event::Input(Ok(InputLine::Prompt(prompt))) if prompt.trim() == "/stop" => {
+                if !answer_presented
+                    && let Err(error) = show_answer_and_prompt(present_answer, text)
+                {
+                    drop(speech_future);
+                    report_speech_cleanup(speech.cancel().await);
+                    return SpeechWait::InputError { error };
+                }
                 println!("Stopping speech.");
                 drop(speech_future);
                 let cleanup_ok = report_speech_cleanup(speech.cancel().await);
                 return SpeechWait::Stopped { cleanup_ok };
             }
             Event::Input(Ok(line)) => {
+                if !answer_presented
+                    && let Err(error) = show_answer_and_prompt(present_answer, text)
+                {
+                    drop(speech_future);
+                    report_speech_cleanup(speech.cancel().await);
+                    return SpeechWait::InputError { error };
+                }
                 drop(speech_future);
                 let cleanup_ok = report_speech_cleanup(speech.cancel().await);
                 return SpeechWait::Input { line, cleanup_ok };
             }
             Event::Input(Err(error)) => {
+                if !answer_presented
+                    && let Err(prompt_error) = show_answer_and_prompt(present_answer, text)
+                {
+                    drop(speech_future);
+                    report_speech_cleanup(speech.cancel().await);
+                    return SpeechWait::InputError {
+                        error: prompt_error,
+                    };
+                }
                 drop(speech_future);
                 report_speech_cleanup(speech.cancel().await);
                 return SpeechWait::InputError { error };
             }
         }
     }
+}
+
+fn show_answer_and_prompt<P>(present_answer: &mut P, answer: &str) -> io::Result<()>
+where
+    P: FnMut(&str),
+{
+    present_answer(answer);
+    print_input_prompt()
+}
+
+fn print_input_prompt() -> io::Result<()> {
+    print!("You> ");
+    io::stdout().flush()
 }
 
 fn report_speech_cleanup<E: std::fmt::Display>(result: Result<(), E>) -> bool {

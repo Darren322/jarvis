@@ -104,10 +104,12 @@ async fn oversized_text_skips_speech_without_disabling_session() {
     });
 
     let oversized_text = "x".repeat(MAX_SPEECH_TEXT_BYTES + 1);
+    let (playback_started, playback_started_rx) = tokio::sync::oneshot::channel();
     assert!(matches!(
-        speech.speak(&oversized_text).await,
+        speech.speak(&oversized_text, playback_started).await,
         Err(SpeechError::TextTooLarge)
     ));
+    assert!(playback_started_rx.await.is_err());
     assert!(!speech.is_disabled());
 }
 
