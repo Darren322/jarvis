@@ -10,7 +10,7 @@ use tokio::{task::JoinHandle, time::timeout};
 use crate::config::TtsConfig;
 
 use super::{
-    playback::{AudioPlayer, PlaybackError},
+    playback::{AudioPlayer, PlaybackError, WAKE_NOISE_DURATION},
     supertonic_worker::{SupertonicWorker, WorkerError},
 };
 
@@ -21,7 +21,7 @@ const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
 const MAX_WAV_SAMPLES: usize = 5_292_000;
 const MAX_WAV_BYTES: u64 = 16 * 1024 * 1024;
 const PLAYBACK_GRACE: Duration = Duration::from_secs(2);
-const MAX_PLAYBACK_DURATION: Duration = Duration::from_secs(122);
+const MAX_PLAYBACK_DURATION: Duration = Duration::from_millis(122_700);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const PLAYER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(60);
 const WAV_DECODE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,6 +35,7 @@ struct ValidatedWav {
 impl ValidatedWav {
     fn playback_deadline(&self) -> Duration {
         self.duration
+            .saturating_add(WAKE_NOISE_DURATION)
             .saturating_add(PLAYBACK_GRACE)
             .min(MAX_PLAYBACK_DURATION)
     }

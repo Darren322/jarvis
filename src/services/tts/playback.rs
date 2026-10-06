@@ -15,6 +15,9 @@ use rodio::{
 
 const OUTPUT_CHANNELS: u16 = 1;
 const OUTPUT_SAMPLE_RATE: u32 = 44_100;
+pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration::from_millis(700);
+const WAKE_NOISE_SAMPLE_COUNT: usize = (OUTPUT_SAMPLE_RATE as usize * 7) / 10;
+const WAKE_NOISE_PCM16_LIMIT: i16 = 75;
 
 #[derive(Debug)]
 pub enum PlaybackError {
@@ -114,6 +117,7 @@ impl AudioPlayer {
         }
 
         self.stop();
+        let samples = prepend_wake_noise(samples);
 
         let source = SamplesBuffer::new(
             OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
@@ -150,3 +154,25 @@ impl AudioPlayer {
         *self.device.config()
     }
 }
+
+fn prepend_wake_noise(speech_samples: Vec<f32>) -> Vec<f32> {
+    let mut samples = Vec::with_capacity(WAKE_NOISE_SAMPLE_COUNT + speech_samples.len());
+    // A fixed non-cryptographic sequence is enough to produce unobtrusive audio noise.
+    let mut state = 0x9E37_79B9_u32;
+
+    for _ in 0..WAKE_NOISE_SAMPLE_COUNT {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        let pcm16 =
+            (state % (WAKE_NOISE_PCM16_LIMIT as u32 * 2 + 1)) as i16 - WAKE_NOISE_PCM16_LIMIT;
+        samples.push(f32::from(pcm16) / 32_768.0);
+    }
+
+    samples.extend(speech_samples);
+    samples
+}
+
+#[cfg(test)]
+#[path = "../../../tests/unit/services/tts/playback_tests.rs"]
+mod tests;

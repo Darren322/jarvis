@@ -28,13 +28,19 @@ fn decodes_bounded_mono_pcm16_wav() {
     assert_eq!(decoded.samples[1], 0.0);
     assert!(decoded.samples[2] > 0.999 && decoded.samples[2] < 1.0);
     assert!(decoded.duration < Duration::from_millis(1));
-    assert!(decoded.playback_deadline() > Duration::from_secs(2));
-    assert!(decoded.playback_deadline() < Duration::from_millis(2_001));
+    assert!(decoded.playback_deadline() > Duration::from_millis(2_700));
+    assert!(decoded.playback_deadline() < Duration::from_millis(2_701));
+    let empty = ValidatedWav {
+        samples: Vec::new(),
+        duration: Duration::ZERO,
+    };
+    assert_eq!(empty.playback_deadline(), Duration::from_millis(2_700));
     let maximum = ValidatedWav {
         samples: Vec::new(),
         duration: Duration::from_secs(120),
     };
-    assert_eq!(maximum.playback_deadline(), MAX_PLAYBACK_DURATION);
+    assert_eq!(MAX_PLAYBACK_DURATION, Duration::from_millis(122_700));
+    assert_eq!(maximum.playback_deadline(), Duration::from_millis(122_700));
 }
 
 #[test]
