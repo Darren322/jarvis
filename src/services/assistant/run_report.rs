@@ -35,12 +35,12 @@ pub(crate) enum CallUsage {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ModelStage {
     pub(crate) turn: usize,
-    /// True when Rig delivered the matching completion-response hook. This
-    /// describes the observation cycle, not provider-level success.
+    /// True when Rig delivered the matching `ModelTurnFinished` event. This
+    /// records a completed model call even if Jarvis policy later rejects it.
     pub(crate) completed: bool,
     /// Host-side elapsed time from this observer's completion-call hook to
-    /// the completion-response hook. This includes Rig request preparation
-    /// and model dispatch, so it is not provider-only latency.
+    /// `ModelTurnFinished`. This includes Rig request preparation and model
+    /// dispatch, so it is not provider-only latency.
     pub(crate) elapsed: Option<Duration>,
     pub(crate) usage: CallUsage,
 }

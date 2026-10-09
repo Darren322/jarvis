@@ -5,8 +5,8 @@ use crate::services::assistant::run_report::{
 use rig_agent::agent::{
     ToolResultEvent,
     hook::{
-        AgentHook, CompletionCall, CompletionCallAction, HookContext, ObservationAction, ToolCall,
-        ToolCallAction, ToolResultAction,
+        AgentHook, CompletionCall, CompletionCallAction, HookContext, ModelTurnAction,
+        ModelTurnFinished, ToolCall, ToolCallAction, ToolResultAction,
     },
 };
 use std::{
@@ -141,27 +141,31 @@ impl AgentHook for RunObserver {
         CompletionCallAction::Continue
     }
 
-    async fn on_completion_response(
+    async fn on_model_turn_finished(
         &self,
-        ctx: &HookContext,
-        event: rig_agent::agent::CompletionResponseEvent<'_>,
-    ) -> ObservationAction {
+        _ctx: &HookContext,
+        event: ModelTurnFinished<'_>,
+    ) -> ModelTurnAction {
         let usage = classify_usage(event.usage);
 
         if let Ok(mut observed) = self.observed.lock() {
             let elapsed = observed
                 .model_starts
-                .remove(&ctx.turn())
+                .remove(&event.turn)
                 .map(|started_at| started_at.elapsed());
             observed.model_stages.push(ModelStage {
-                turn: ctx.turn(),
+                turn: event.turn,
                 completed: true,
                 elapsed,
                 usage,
             });
         }
 
-        ObservationAction::Continue
+        // LEARNING: Rig raises this common lifecycle event after it has
+        // assembled a model turn on both its blocking and streaming paths.
+        // Returning `Continue` keeps this observer passive so later policy
+        // hooks can still accept or reject the turn.
+        ModelTurnAction::Continue
     }
 
     async fn on_tool_call(&self, ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {

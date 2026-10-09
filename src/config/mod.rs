@@ -1,12 +1,16 @@
 use std::{env, path::PathBuf};
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
+const DEFAULT_EMBEDDING_MODEL_DIR: &str = "data/embeddings";
+const DEFAULT_MEMORY_INDEX_DIR: &str = "data/memory-index";
 
 pub struct AppConfig {
     pub local_llm_base_url: String,
     pub local_llm_health_url: String,
     pub local_llm_model: String,
     pub archive_path: String,
+    pub embedding_model_dir: PathBuf,
+    pub memory_index_dir: PathBuf,
     pub tts: OptionalTtsConfig,
 }
 
@@ -38,15 +42,32 @@ impl AppConfig {
         let local_llm_model = env::var("LOCAL_LLM_MODEL")?;
         let archive_path =
             env::var("JARVIS_ARCHIVE_PATH").unwrap_or_else(|_| DEFAULT_ARCHIVE_PATH.to_string());
+        let embedding_model_dir = configured_path(
+            env::var_os("JARVIS_EMBEDDING_MODEL_DIR"),
+            DEFAULT_EMBEDDING_MODEL_DIR,
+        );
+        let memory_index_dir = configured_path(
+            env::var_os("JARVIS_MEMORY_INDEX_DIR"),
+            DEFAULT_MEMORY_INDEX_DIR,
+        );
 
         Ok(Self {
             local_llm_base_url,
             local_llm_health_url,
             local_llm_model,
             archive_path,
+            embedding_model_dir,
+            memory_index_dir,
             tts: load_tts_config(),
         })
     }
+}
+
+fn configured_path(value: Option<std::ffi::OsString>, default: &str) -> PathBuf {
+    value
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(default))
 }
 
 fn load_tts_config() -> OptionalTtsConfig {
@@ -149,3 +170,7 @@ fn resolve_from(current_dir: &std::path::Path, path: PathBuf) -> PathBuf {
         current_dir.join(path)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/config_tests.rs"]
+mod tests;

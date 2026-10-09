@@ -4,7 +4,11 @@ Jarvis uses one local Python worker for Supertonic 3 INT8 with the official M5
 voice, and a retained Rust audio output for playback. Python performs inference
 only. Assistant, Rig, conversation history, and the archive remain text based.
 
-Speech is optional. Jarvis prints a successful final answer before speaking it.
+Speech is optional. With speech enabled, Jarvis prepares the complete audio and
+shows the successful final answer when playback is queued. Text-only replies
+appear immediately. If speech fails or is cancelled before playback, the answer
+still appears once. This aligns presentation with playback submission; it does
+not shorten generation or establish the exact time sound reaches the speaker.
 Speech failures leave text chat usable and never retry the model or archive save.
 There is no runtime download, cloud fallback, microphone, or speech queue.
 
@@ -89,12 +93,13 @@ Rodio's supported configurations on that same device if needed. Opening failures
 include the underlying CPAL error. After a speech failure, exit and restart
 Jarvis before retrying; speech stays disabled for the failed session.
 
-Each spoken answer begins with a quiet one-second 440 Hz cue, immediately
-followed by the original speech. This adds one second before the words. The
-cue was selected after the same M5 WAV lost its opening words with `aplay` and
-with a silent lead-in, but played fully with this tone before it. Integrated
-Pi playback still needs confirmation after deploying the patch. `/stop` and
-new-prompt interruption stop the cue and speech together.
+Each spoken answer begins with 0.7 seconds of low-level noise equivalent to
+PCM16 samples from -75 to +75, immediately followed by the unchanged speech
+in the same retained output path. This adds 700 ms before the words. Darren
+reports that this prefix prevents opening-word cutoff with the Raspberry Pi's
+Jieli USB speaker and is much less noticeable than the previous 440 Hz tone.
+`/stop` and new-prompt interruption stop the noise and speech together.
+Integrated Jarvis playback still needs confirmation after deploying this patch.
 
 The existing generation settings are English, speaker ID 0, speed 1.0, and eight
 steps. These preserve the current worker rather than the earlier speed 1.05
@@ -117,8 +122,8 @@ Blocking audio initialization is bounded to 60 seconds and WAV decoding to 30
 seconds; their handles remain owned if a deadline expires.
 Audio must be nonempty 44,100 Hz mono 16-bit PCM WAV, at most 16 MiB and 120
 seconds. Playback polls every 20 ms with a deadline of validated speech duration
-plus the one-second cue and two seconds of grace, at most 123 seconds. Temporary
-audio is private and ephemeral.
+plus the 0.7-second noise prefix and two seconds of grace, at most 122.7 seconds. Temporary audio is private and
+ephemeral.
 
 Rodio source completion does not prove the hardware has drained; see the
 [Rodio 0.22.2 output API](https://docs.rs/rodio/0.22.2/rodio/stream/struct.DeviceSinkBuilder.html).

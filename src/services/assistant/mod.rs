@@ -6,6 +6,7 @@ mod run_observer;
 mod run_report;
 
 pub use agent::Assistant;
+pub(crate) use agent::AssistantTextDelta;
 pub(crate) use error::AssistantError;
 pub(crate) use run_report::{AssistantRun, AssistantRunError};
 pub(crate) use run_report::{CallUsage, RunReport};

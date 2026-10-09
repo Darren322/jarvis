@@ -1,14 +1,20 @@
 use super::*;
+use futures_util::StreamExt;
 use rig_agent::{
     AgentBuilder,
-    agent::hook::{HookContext, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent},
+    agent::{
+        MultiTurnStreamItem,
+        hook::{
+            AgentHook, HookContext, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
+        },
+    },
     tool::{Tool, ToolContext, ToolExecutionError},
 };
 use rig_core::{
     completion::{AssistantContent, Usage},
     message::{ToolCall as MessageToolCall, ToolFunction},
     serde_json::{self, json},
-    test_utils::{MockCompletionModel, MockTurn},
+    test_utils::{MockCompletionModel, MockStreamEvent, MockTurn},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -137,6 +143,43 @@ fn populated_usage() -> Usage {
         tool_use_prompt_tokens: 5,
         reasoning_tokens: 4,
     }
+}
+
+#[tokio::test]
+async fn observer_records_a_reasoning_only_stream_turn_once_at_the_common_hook() {
+    let expected_usage = populated_usage();
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::reasoning("reasoning-only content"),
+        MockStreamEvent::final_response(expected_usage),
+    ]]);
+    let observer = RunObserver::default();
+    let mut stream = AgentBuilder::new(model)
+        .build()
+        .runner("reasoning-only turn")
+        .add_hook(observer.clone())
+        .max_turns(1)
+        .stream()
+        .await;
+
+    let mut saw_final_response = false;
+    while let Some(item) = stream.next().await {
+        if let MultiTurnStreamItem::FinalResponse(_) =
+            item.expect("reasoning-only stream should finish")
+        {
+            saw_final_response = true;
+        }
+    }
+    assert!(saw_final_response);
+
+    let report = observer.finish(RunOutcome::Success, Duration::from_secs(1));
+    assert_eq!(report.model_stages.len(), 1);
+    assert_eq!(report.model_stages[0].turn, 1);
+    assert!(report.model_stages[0].completed);
+    assert!(report.model_stages[0].elapsed.is_some());
+    assert_eq!(
+        report.model_stages[0].usage,
+        CallUsage::Normalized(expected_usage)
+    );
 }
 
 #[tokio::test]

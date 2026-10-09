@@ -11,9 +11,15 @@ use rig_core::{
 };
 use rusqlite::Connection;
 
-use crate::{services::assistant::Assistant, tools::system_status_tool::SystemStatusTool};
+use crate::{
+    services::assistant::Assistant,
+    storage::{ArchiveOutcome, MemoryEligibility},
+    tools::system_status_tool::SystemStatusTool,
+};
 
-use super::{ConversationSession, MAX_HISTORY_BYTES, serialized_batch_bytes};
+use super::{
+    ConversationSession, MAX_HISTORY_BYTES, merge_source_dependencies, serialized_batch_bytes,
+};
 
 static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
 
@@ -37,6 +43,79 @@ fn archive_path() -> PathBuf {
 
 fn remove_archive(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() {
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_none());
+    let archive = session.archive.as_ref().expect("archive is open");
+    let repository = archive.memory_repository();
+    let recalled = repository
+        .import_source(
+            "/notes/fact.txt".to_owned(),
+            "fact.txt".to_owned(),
+            "The workshop is on Tuesday.".to_owned(),
+        )
+        .await
+        .expect("source should import");
+
+    let answer_b = archive
+        .append_turn_with_memory_and_sources(
+            "When is the workshop?",
+            ArchiveOutcome::Completed("It is on Tuesday.".to_owned()),
+            MemoryEligibility::Eligible,
+            &[recalled.source_id],
+        )
+        .await
+        .expect("answer B should archive");
+    let answer_b_source = answer_b.source_id.expect("eligible answer has a source");
+
+    // Turn C only needs native history at inference time. Its archive lineage must
+    // still include the recalled source that informed turn B, or forgetting that
+    // source could leave C available for later extraction.
+    let dependencies = merge_source_dependencies(&[recalled.source_id, answer_b_source], &[]);
+    let answer_c = archive
+        .append_turn_with_memory_and_sources(
+            "And when is that?",
+            ArchiveOutcome::Completed("Tuesday.".to_owned()),
+            MemoryEligibility::Eligible,
+            &dependencies,
+        )
+        .await
+        .expect("answer C should archive");
+    let answer_c_source = answer_c.source_id.expect("eligible answer has a source");
+    repository
+        .forget_source(recalled.source_id)
+        .await
+        .expect("forget should suppress the source lineage");
+
+    drop(repository);
+    drop(session);
+    let connection = Connection::open(&path).expect("archive database opens");
+    let child_depends_on_recalled: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM source_dependencies
+                WHERE source_id = ?1 AND depends_on_source_id = ?2
+            )",
+            rusqlite::params![answer_c_source.0, recalled.source_id.0],
+            |row| row.get(0),
+        )
+        .expect("C lineage is queryable");
+    let child_is_suppressed: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM source_suppressions WHERE source_id = ?1)",
+            [answer_c_source.0],
+            |row| row.get(0),
+        )
+        .expect("C suppression is queryable");
+    assert!(child_depends_on_recalled);
+    assert!(child_is_suppressed);
+
+    drop(connection);
+    remove_archive(&path);
 }
 
 #[test]

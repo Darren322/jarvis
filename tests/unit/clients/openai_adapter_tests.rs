@@ -10,11 +10,45 @@ use wiremock::{
 };
 
 use crate::{
-    clients::local_llm::LocalLlm,
+    clients::local_llm::{LocalEndpointError, LocalLlm, validate_local_endpoint},
     config::{AppConfig, OptionalTtsConfig},
     services::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
 };
+
+#[test]
+fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations() {
+    for endpoint in [
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://192.168.1.40:1234/v1",
+        "https://[::1]:1234/v1",
+        "https://[fd12:3456::2]:1234/v1",
+        "http://[fe80::1]:1234/v1",
+    ] {
+        assert!(
+            validate_local_endpoint(endpoint).is_ok(),
+            "explicit local endpoint should be accepted"
+        );
+    }
+
+    assert_eq!(
+        validate_local_endpoint("https://api.example.com/v1"),
+        Err(LocalEndpointError::NonLocalHost)
+    );
+    assert_eq!(
+        validate_local_endpoint("http://jarvis.local:1234/v1"),
+        Err(LocalEndpointError::NonLocalHost)
+    );
+    assert_eq!(
+        validate_local_endpoint("http://user:secret@127.0.0.1:1234/v1"),
+        Err(LocalEndpointError::CredentialsNotAllowed)
+    );
+    assert_eq!(
+        validate_local_endpoint("file:///tmp/model"),
+        Err(LocalEndpointError::UnsupportedScheme)
+    );
+}
 
 async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value> {
     let requests = server
@@ -83,6 +117,8 @@ async fn openai_adapter_parses_plain_text_response() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -167,6 +203,8 @@ async fn openai_adapter_parses_system_status_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -284,6 +322,8 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -472,6 +512,8 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -537,6 +579,8 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -602,6 +646,8 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -667,6 +713,8 @@ async fn openai_adapter_rejects_unknown_tool_call() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 
@@ -733,6 +781,8 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
         local_llm_health_url: format!("{}/health", server.uri()),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
+        embedding_model_dir: "data/embeddings".into(),
+        memory_index_dir: "data/memory-index".into(),
         tts: OptionalTtsConfig::Disabled,
     };
 

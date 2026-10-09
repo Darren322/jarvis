@@ -5,18 +5,32 @@ mod services;
 mod storage;
 mod tools;
 
-use std::process::ExitCode;
+use std::{process::ExitCode, time::Duration};
 
 use crate::app::App;
 use config::AppConfig;
 
-// LEARNING: `#[tokio::main]` starts an async runtime around this entry point.
-// An `async fn` creates a future; `.await` can suspend this task for the
-// runtime, though an already-ready future may finish immediately. This differs
-// from blocking Java `Future.get()`.
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+// LEARNING: the explicit runtime is equivalent to the multi-thread runtime
+// created by `#[tokio::main]`, but lets process shutdown use a finite wait for
+// started blocking work.
+fn main() -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = runtime.block_on(run());
+    // LEARNING: Tokio documents that `shutdown_timeout` bounds how long runtime
+    // shutdown waits for blocking tasks. It does not prove native inference or
+    // remote model work completed before this process exits.
+    runtime.shutdown_timeout(Duration::from_secs(5));
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {error}");
