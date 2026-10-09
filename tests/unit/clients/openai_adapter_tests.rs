@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use rig_agent::AgentBuilder;
 use rig_agent::completion::PromptError;
 use rig_core::{
@@ -10,7 +12,9 @@ use wiremock::{
 };
 
 use crate::{
-    clients::local_llm::{LocalEndpointError, LocalLlm, validate_local_endpoint},
+    clients::local_llm::{
+        LocalEndpointError, LocalLlm, validate_local_endpoint, validate_resolved_addresses,
+    },
     config::{AppConfig, OptionalTtsConfig},
     services::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
@@ -25,6 +29,9 @@ fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations(
         "https://[::1]:1234/v1",
         "https://[fd12:3456::2]:1234/v1",
         "http://[fe80::1]:1234/v1",
+        "http://jarvis-ai.local:8080/v1",
+        "http://upper.JARVIS.local.:8080/v1",
+        "http://assistant.lab.local:8080/v1",
     ] {
         assert!(
             validate_local_endpoint(endpoint).is_ok(),
@@ -36,10 +43,19 @@ fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations(
         validate_local_endpoint("https://api.example.com/v1"),
         Err(LocalEndpointError::NonLocalHost)
     );
-    assert_eq!(
-        validate_local_endpoint("http://jarvis.local:1234/v1"),
-        Err(LocalEndpointError::NonLocalHost)
-    );
+    for host in [
+        "jarvis.local.example",
+        ".local",
+        "jarvis..local",
+        "-jarvis.local",
+        "jarvis-.local",
+        "jarvis_ai.local",
+    ] {
+        assert!(
+            validate_local_endpoint(&format!("http://{host}:8080/v1")).is_err(),
+            "invalid .local hostname should be rejected: {host}"
+        );
+    }
     assert_eq!(
         validate_local_endpoint("http://user:secret@127.0.0.1:1234/v1"),
         Err(LocalEndpointError::CredentialsNotAllowed)
@@ -48,6 +64,21 @@ fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations(
         validate_local_endpoint("file:///tmp/model"),
         Err(LocalEndpointError::UnsupportedScheme)
     );
+}
+
+#[test]
+fn local_dns_results_must_be_nonempty_and_exclusively_local() {
+    let loopback: SocketAddr = "127.0.0.1:0".parse().expect("valid loopback socket");
+    let private: SocketAddr = "192.168.1.20:0".parse().expect("valid private socket");
+    let public: SocketAddr = "8.8.8.8:0".parse().expect("valid public socket");
+
+    assert_eq!(
+        validate_resolved_addresses(vec![loopback, private]),
+        Some(vec![loopback, private])
+    );
+    assert_eq!(validate_resolved_addresses(Vec::new()), None);
+    assert_eq!(validate_resolved_addresses(vec![public]), None);
+    assert_eq!(validate_resolved_addresses(vec![loopback, public]), None);
 }
 
 async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value> {
@@ -59,8 +90,15 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
     requests
         .iter()
         .map(|request| {
-            assert_eq!(request.method.to_string(), "POST");
-            assert_eq!(request.url.path(), "/chat/completions");
+            assert_eq!(request.method.as_str(), "POST");
+            assert!(
+                matches!(
+                    request.url.path(),
+                    "/chat/completions" | "/v1/chat/completions"
+                ),
+                "unexpected completion path: {}",
+                request.url.path()
+            );
             request
                 .body_json()
                 .expect("completion request should contain JSON")
@@ -83,9 +121,13 @@ fn prompt_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> &'a PromptE
 #[tokio::test]
 async fn openai_adapter_parses_plain_text_response() {
     let server = MockServer::start().await;
+    let port = reqwest::Url::parse(&server.uri())
+        .expect("WireMock URI should be valid")
+        .port()
+        .expect("WireMock should use a random port");
 
     Mock::given(method("POST"))
-        .and(path("/chat/completions"))
+        .and(path("/v1/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
                 "id": "chatcmpl-test",
@@ -112,9 +154,15 @@ async fn openai_adapter_parses_plain_text_response() {
         .mount(&server)
         .await;
 
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+
     let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
+        local_llm_base_url: format!("http://localhost:{port}/v1"),
+        local_llm_health_url: format!("http://localhost:{port}/health"),
         local_llm_model: "test-model".to_string(),
         archive_path: "data/jarvis.sqlite3".to_string(),
         embedding_model_dir: "data/embeddings".into(),
@@ -155,6 +203,44 @@ async fn openai_adapter_parses_plain_text_response() {
 
     assert_eq!(text, "JARVIS ONLINE");
     assert_eq!(request_bodies(&server).await.len(), 1);
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("WireMock should record completion request");
+    let completion = requests
+        .iter()
+        .find(|request| request.method.as_str() == "POST")
+        .expect("localhost should reach the completion fixture");
+    assert_eq!(completion.url.path(), "/v1/chat/completions");
+    let expected_host = format!("localhost:{port}");
+    assert_eq!(
+        completion
+            .headers
+            .get("host")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_host.as_str())
+    );
+
+    local_llm
+        .health_check()
+        .await
+        .expect("localhost health check should reach the same fixture");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("WireMock should record health request");
+    let health = requests
+        .iter()
+        .find(|request| request.method.as_str() == "GET" && request.url.path() == "/health")
+        .expect("health client should preserve its configured path");
+    assert_eq!(
+        health
+            .headers
+            .get("host")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_host.as_str())
+    );
 }
 
 #[tokio::test]
