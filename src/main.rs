@@ -1,7 +1,11 @@
 mod app;
+mod assistant;
 mod clients;
 mod config;
-mod services;
+mod conversation;
+mod interfaces;
+mod memory;
+mod speech;
 mod storage;
 mod tools;
 

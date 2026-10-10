@@ -6,7 +6,6 @@ use std::{
 use rusqlite::{TransactionBehavior, params};
 use tokio_rusqlite::Connection;
 
-mod jobs;
 mod memory;
 mod schema;
 mod types;
@@ -89,29 +88,6 @@ impl ConversationArchive {
             connection: self.connection.clone(),
             session_id,
         })
-    }
-
-    /// Compatibility path for callers that only need the original archive behavior.
-    #[cfg(test)]
-    pub(crate) async fn append_turn(
-        &self,
-        user_text: &str,
-        outcome: ArchiveOutcome,
-    ) -> Result<(), StorageError> {
-        self.append_turn_with_memory(user_text, outcome, MemoryEligibility::ArchiveOnly)
-            .await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn append_turn_with_memory(
-        &self,
-        user_text: &str,
-        outcome: ArchiveOutcome,
-        eligibility: MemoryEligibility,
-    ) -> Result<ArchiveReceipt, StorageError> {
-        self.append_turn_with_memory_and_sources(user_text, outcome, eligibility, &[])
-            .await
     }
 
     /// Archives a successful turn and links it to the bounded, SQLite-hydrated
@@ -214,9 +190,9 @@ fn unix_time_ms() -> Result<i64, StorageError> {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/storage_tests.rs"]
+#[path = "../tests/unit/storage/archive_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/storage_memory_tests.rs"]
+#[path = "../tests/unit/storage/memory/repository_tests.rs"]
 mod memory_tests;

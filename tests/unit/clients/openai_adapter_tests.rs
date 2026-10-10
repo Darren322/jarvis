@@ -12,11 +12,11 @@ use wiremock::{
 };
 
 use crate::{
+    assistant::{Assistant, CallUsage},
     clients::local_llm::{
         LocalEndpointError, LocalLlm, validate_local_endpoint, validate_resolved_addresses,
     },
     config::{AppConfig, OptionalTtsConfig},
-    services::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
 };
 
