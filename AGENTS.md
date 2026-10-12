@@ -5,18 +5,18 @@
 - Jarvis is a Rust 2024 application. `rig-agent` and `rig-core` are pinned to exactly `0.42.0`.
 - Treat the current working tree (including uncommitted changes), `Cargo.lock`, and phase documents as the source of project facts.
 - Verify library behavior against the locked or cached version and its primary documentation before using an API. Do not treat unversioned skill examples as API authority.
-- Read only the relevant sections of [the architecture roadmap](docs/JARVIS_ARCHITECTURE_ROADMAP.md) and the active [conversation implementation handoff](JARVIS_PHASE_7B_CONVERSATION_IMPLEMENTATION_HANDOFF.md) for phase-specific details.
+- Read only the relevant sections of [the architecture roadmap](docs/JARVIS_ARCHITECTURE_ROADMAP.md) for phase-specific details. Local handoffs and phase reports live in the untracked `notes/` directory.
 
 ## Planning and collaboration
 
 - For implementation plans and material design choices, use the `grilling` skill to work through the open decisions and confirm shared understanding before acting on the plan.
 - Treat explicit user authorization and settled grilling decisions as persistent; do not reconfirm scope that the user has already agreed to.
 - The user has authorized continued autonomous, behavior-preserving batches for the current structure refactor. Treat that authorization as persistent within its approved scope; do not ask again before necessary follow-up batches. It does not authorize semantic changes, dependency or schema changes, external actions, or commits.
-- For implementation work, use `gpt-6-luna` agents at `max` effort. Assign each agent explicit, non-overlapping file ownership; integrate and review the resulting changes.
+- When delegating implementation work to sub-agents, assign each agent explicit, non-overlapping file ownership; integrate and review the resulting changes.
 - Darren's default learning workflow is hands-on Rust: explain one concept, offer one small patch with its rationale, then wait for the user's result or next instruction.
 - Do not implement an entire next phase when the user asks for guided learning or a small change. Follow the requested scope.
 - Preserve existing user changes. Do not commit, push, stage, or rewrite unrelated files unless asked.
-- When nearing the five-hour or weekly usage limit, create or update a handoff Markdown file with actual progress, changed files, decisions, verification evidence, and the next concrete step.
+- When nearing the five-hour or weekly usage limit, create or update a handoff Markdown file under `notes/` with actual progress, changed files, decisions, verification evidence, and the next concrete step.
 - Keep handoffs factual and resumable: distinguish completed work from proposals, name the source revision when known, and include the exact next small action.
 - Do not start a new phase just because its design is documented; follow the user's current authorization and learning pace.
 - Before editing, read the target module and its closest existing pattern; load only the relevant specification and versioned library documentation.

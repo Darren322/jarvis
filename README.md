@@ -23,7 +23,7 @@ cargo clippy --locked --offline --all-targets -- -D warnings
 git diff --check
 ```
 
-See [tests/README.md](tests/README.md) for test boundaries and the separate Python worker check. For this structure batch's status and final verification record, see the [latest audit implementation handoff](JARVIS_LATEST_REPO_AUDIT_IMPLEMENTATION_HANDOFF.md).
+See [tests/README.md](tests/README.md) for test boundaries and the separate Python worker check.
 
 ## Local memory files
 
