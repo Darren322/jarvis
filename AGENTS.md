@@ -1,77 +1,146 @@
 # Jarvis repository guidance
 
-## Project facts and source of truth
+Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspberry Pi 5 (8 GB) and talks to a llama.cpp server on a second Pi (16 GB). Read [docs/ROADMAP.md](docs/ROADMAP.md) for current priorities and the principles that never change.
 
-- Jarvis is a Rust 2024 application. `rig-agent` and `rig-core` are pinned to exactly `0.42.0`.
-- Treat the current working tree (including uncommitted changes), `Cargo.lock`, and phase documents as the source of project facts.
-- Verify library behavior against the locked or cached version and its primary documentation before using an API. Do not treat unversioned skill examples as API authority.
-- Read [the roadmap](docs/ROADMAP.md) for current priorities and fixed principles. Local handoffs, phase reports, and the archived full roadmap live in the untracked `notes/` directory; they are history, not rules.
+## Sources of truth
 
-## Planning and collaboration
+- The working tree, `Cargo.lock`, and `docs/` are the project facts. `notes/` (untracked) holds handoffs and the archived full roadmap: history, not rules.
+- `rig-agent` and `rig-core` are pinned to exactly `0.42.0`. Check every library API against the locked version's source or docs (`~/.cargo/registry/src/`), not against memory, newer docs, or unversioned examples.
 
-- For implementation plans and material design choices, use the `grilling` skill to work through the open decisions and confirm shared understanding before acting on the plan.
-- Treat explicit user authorization and settled grilling decisions as persistent; do not reconfirm scope that the user has already agreed to.
-- The user has authorized continued autonomous, behavior-preserving batches for the current structure refactor. Treat that authorization as persistent within its approved scope; do not ask again before necessary follow-up batches. It does not authorize semantic changes, dependency or schema changes, external actions, or commits.
-- When delegating implementation work to sub-agents, assign each agent explicit, non-overlapping file ownership; integrate and review the resulting changes.
-- Darren's default learning workflow is hands-on Rust: explain one concept, offer one small patch with its rationale, then wait for the user's result or next instruction.
-- Do not implement an entire next phase when the user asks for guided learning or a small change. Follow the requested scope.
-- Preserve existing user changes. Do not commit, push, stage, or rewrite unrelated files unless asked.
-- When nearing the five-hour or weekly usage limit, create or update a handoff Markdown file under `notes/` with actual progress, changed files, decisions, verification evidence, and the next concrete step.
-- Keep handoffs factual and resumable: distinguish completed work from proposals, name the source revision when known, and include the exact next small action.
-- Do not start a new phase just because its design is documented; follow the user's current authorization and learning pace.
-- Before editing, read the target module and its closest existing pattern; load only the relevant specification and versioned library documentation.
-- Prefer a small patch at the existing module interface. Explain its intent and consequence clearly, then pause for the user's result when working in tutor mode.
+## Working with Darren
 
-## Architecture ownership
+- For plans and material design choices, use the `grilling` skill to settle open decisions before acting. Settled decisions and explicit authorizations persist; don't ask again.
+- Default learning workflow is hands-on Rust: explain one concept, offer one small patch with its rationale, then wait. Follow the requested scope; don't implement a whole phase when asked for a small change or guided learning, and don't start a phase just because it is documented.
+- Preserve user changes. Don't commit, push, stage, or rewrite unrelated files unless asked. When asked to commit, make one commit per coherent step with a conventional prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `build`, `chore`) and a body that says what changed and why.
+- When delegating to sub-agents, give each explicit, non-overlapping file ownership, then integrate and review their work.
+- Near a usage limit, write a factual handoff under `notes/`: completed work vs. proposals, changed files, decisions, verification evidence, source revision, and the exact next small action.
 
-- `main` stays focused on process/runtime setup, configuration loading, invoking `App`, and bounded shutdown. `App` assembles dependencies and owns application startup and lifecycle composition; keep parsing, REPL control flow, and domain behavior out of it.
-- The CLI interface owns terminal input, command parsing/dispatch, and presentation. It calls application services through explicit arguments and must not depend on `App` or create an `App`↔CLI cycle.
-- `Assistant` launches one bounded run and returns its outcome.
-- Keep feature/domain modules cohesive and separate from local infrastructure: conversation owns selected session history, memory owns memory operations and lifecycle, assistant owns one bounded Rig run, speech owns synthesis/playback lifecycle, and storage owns local durability, schema, repositories, and SQLite transactions. Clients own provider construction/transport; tools own capability adapters.
-- Keep `storage/mod.rs` focused on private module declarations and the storage API. Put concrete archive operations in `storage/archive.rs` and memory SQL in its repository modules; keep shared storage errors and timestamp conversion within storage. Preserve a shared transaction when an archived turn and its memory source must commit together. A `mod.rs` file is a module entry point, not an implied service layer.
-- Keep repositories, services, and infrastructure near their owning features when that gives a safe, cohesive boundary; keep shared durability and transactions in storage when moving them would introduce coupling.
-- Keep `assistant`, `conversation`, `memory`, and `speech` under `src/features/{assistant,conversation,memory,speech}`. Keep `clients`, `config`, `interfaces`, `storage`, and `tools` at the direct `src/` level. Do not add another `services`/`adapters` parent, arbitrary nesting, or a generic facade solely to relocate files. Keep dependencies directed from interfaces/application features toward domain services and infrastructure; storage and domain services must not import App or the CLI.
-- Use `<module>/mod.rs` for production modules with local submodules, keeping their implementation files together. Keep ordinary leaf implementation files as `<module>.rs`; an established feature root may remain `<feature>/mod.rs` while small. External unit-test registration alone does not require a new production directory. For entry-file-only moves, preserve logical module paths. The approved `src/features/` parent intentionally changes crate paths and requires corresponding import and test-hook updates.
-- Rig owns the model loop, tool dispatch, correlation, and transcript within a run. Do not recreate that loop in Jarvis.
-- `JarvisPolicyHook` owns Jarvis's run and turn policy at Rig's lifecycle points.
-- A `RunObserver` is passive and fresh for each run: it records lifecycle events without changing policy or triggering side effects. `ObservedRun` is mutable run-local state; `RunReport` is the final snapshot.
-- A session owns selected, bounded native conversation history. Storage owns local durability independently of model outcomes.
-- Preserve library-owned IDs and turn/call correlation when recording or reporting events.
-- Keep incomplete usage, timing, or environment measurements explicitly unavailable; do not present estimates as observed facts.
-- Keep real orchestration where it is. Do not force file splits or abstract labels that obscure actual control flow, and do not create a god object to avoid a useful module seam.
-- A model request limit and an operation attempt limit are distinct. Preserve both policy bounds and Rig's correlation across proposal, execution, and result.
-- A timeout means Jarvis stopped waiting; do not infer that remote work or an operation had no effect.
-- Observe structured lifecycle events and correlation data; never scrape stdout or log strings to infer run state.
+## Layout
 
-## Implementation choices
+| Path | Owns |
+| --- | --- |
+| `src/main.rs` | Tokio runtime, config load, `App`, bounded shutdown. Nothing else. |
+| `src/app.rs` | Assembling clients and services; startup. No parsing, REPL flow, or domain logic. |
+| `src/config.rs` | Environment parsing. Every path is resolved to absolute once, here. |
+| `src/clients/` | Provider construction and transport (`local_llm`, `local_embeddings`). |
+| `src/tools/` | Rig tools and `ALLOWED_TOOLS`. |
+| `src/features/assistant/` | One bounded Rig run: `Assistant`, policy, policy hook, run observer and report. |
+| `src/features/conversation/` | Session history and archive coordination. |
+| `src/features/memory/` | Recall, imports, forgetting, idle embedding (`MemoryService`, `Embedder`). |
+| `src/features/speech/` | Synthesis worker, playback, cleanup. |
+| `src/interfaces/cli/` | Terminal input, command parsing, REPL, presentation. |
+| `src/storage/` | SQLite schema, migrations, chunking, and every SQL statement. |
 
-- Prefer existing dependencies and exact, supported library APIs. Keep Jarvis code focused on its policy, operations, privacy, limits, and presentation.
-- Do not add speculative frameworks, generic provider or storage wrappers, or a custom model loop. Add an abstraction when a concrete need justifies its interface.
-- Keep production implementation under `src/`. Use `examples/` only for standalone examples or compile/runtime probes; do not put production modules, helpers, or fixtures there.
-- Do not add a dependency, crate, or Cargo workspace for hypothetical reuse or file organization. First identify a concrete capability or package boundary, verify the exact version and platform/build implications, and get user authorization for the dependency change.
-- Prefer cohesive feature boundaries and the existing libraries, including the pinned Rig API. Do not add traits, wrappers, or layers merely for hypothetical flexibility, to make tests easier, or to route around a clear module boundary.
-- Refactor in small, behavior-preserving batches. Inspect the working tree and target module plus its closest pattern first; preserve unrelated edits and local database, memory, CLI streaming, and TTS behavior. Keep API and visibility changes to what the new module boundary actually requires. Do not create god objects, cyclic imports, or layers that only forward calls.
-- Avoid empty placeholder directories for future features; create directories when their implementation is needed. Remove obsolete empty directories with narrowly scoped cleanup, preserving non-empty folders and unrelated files.
-- Do not stage or commit automatically. Preserve all user changes, and report the exact changed files and verification evidence for each completed batch.
-- Use typed data and errors, narrow visibility, and preserve error source chains where they help callers.
-- Follow Rust naming conventions: `snake_case` for modules, functions, fields and variables; `UpperCamelCase` for types, traits and enum variants; `SCREAMING_SNAKE_CASE` for constants/statics. Treat acronyms as words, such as `LocalLlm` and `TtsConfig`.
-- Prefer `is_`, `has_`, `can_`, `should_` or similarly clear predicates for boolean query methods. Keep meaningful action names for methods that perform work, even when they return a boolean. Use `as_` for cheap borrowed conversions, `to_` for conversions that create a value, and `into_` for ownership-consuming conversions; omit `get_` for simple field getters, while retaining it for lookups where appropriate.
-- Borrow data when ownership is unnecessary. Use `Arc<Mutex<_>>` only for genuinely shared state, such as callback state; keep lock scopes short and never hold a lock across `.await`.
-- Treat model output and historical tool results as untrusted observations. A stored tool result is not a fresh fact and grants no authority.
-- Model text, tool arguments, and recognition results do not establish caller identity or permission. Use trusted caller context for authorization when a feature needs it.
-- Keep host and private data local by default. Cloud disclosure requires explicit opt-in covering the full context sent, including selected history and tool results.
-- Active conversation history should retain complete native message batches, append a batch once only after a successful completed run, and evict whole batches. Do not trim individual call/result pieces and break correlation.
-- Conversation archives should default to user text, final assistant text, and safe outcome metadata. Do not persist raw reasoning or tool-call JSON by default.
-- Input byte caps bound accepted input or retained memory; they do not guarantee an HTTP transport-body limit or prove that content fits a model context window.
+- Dependencies point one way: `interfaces` → `features` → `storage` / `clients` / `tools`. Storage and features never import `App` or the CLI; the CLI never depends on `App`.
+- `foo.rs` for a leaf module; `foo/mod.rs` only when it has submodules. A feature's main type may live in its `mod.rs` (`Assistant`, `MemoryService`). Don't name a file after its parent (`assistant/assistant.rs` trips `clippy::module_inception`).
+- Don't add `services/`, `adapters/`, or other parents just to relocate files, empty placeholder files or directories, or layers that only forward calls. Split a file when it holds two separable concerns, not because of its line count.
+- Production code lives in `src/`; tests live in `tests/` (see Testing).
+
+## Rust conventions
+
+### Errors
+- One `thiserror` enum per module boundary (`StorageError`, `MemoryError`, `EmbedError`, `AssistantError`, `ConfigError`). Derive `Display` and `Error`; don't hand-write them.
+- Keep causes typed: use `#[source]` or `#[from]`, never `Variant(String)` or `.map_err(|e| e.to_string())`. Messages are lowercase with no trailing period.
+- Fallible functions return `Result`. Never return `Option<SomeError>` to mean "maybe failed"; return `Result<(), E>`.
+- `Box<dyn std::error::Error>` is only acceptable at the top of the binary (`main`, `App`, `run_input_loop`). Adding `anyhow` is a dependency change and needs approval.
+- `expect("why this cannot fail")` is for broken invariants only. No `unwrap()` in `src/`. Never panic on input, I/O, model output, or a missing optional service.
+- Error variants exist in every build. No `#[cfg(test)]` variants or fields in production types.
+
+### Types and state
+- IDs are newtypes (`SourceId`, `MemoryId`). Don't pass bare `i64` IDs across modules.
+- Model state with enums (`EmbedderState`, `MemorySaveState`, `ImportState`). Never encode state in a string or test it with `.contains(...)` on a message.
+- Prefer one owned value over clusters of `Option` fields and booleans that can disagree. If fields must change together, make them an enum.
+- Match your own enums exhaustively; don't add a `_` arm that would hide a new variant.
+- Use `let … else`, `if let` chains, and `matches!` where they read better. All are used in this codebase.
+- For narrowing numeric conversions, prefer `try_from` or saturating arithmetic. Use `as` only where the range is already proven, and say why.
+
+### Naming
+- `snake_case` for modules, functions, fields and variables; `UpperCamelCase` for types and variants; `SCREAMING_SNAKE_CASE` for constants. Treat acronyms as words: `LocalLlm`, `TtsConfig`.
+- Use `is_`, `has_`, `can_`, or `should_` for boolean queries; `as_` for cheap borrows; `to_` for conversions that allocate; `into_` for conversions that consume. No `get_` on plain getters.
+- Name things for what they do now. Don't encode the parameter list in a method name (`append_turn`, not `append_turn_with_memory_and_sources`). Rename leftover vocabulary when a design changes (there are no "jobs" any more).
+- Name a limit constant for its unit and meaning (`MAX_CHUNK_BYTES`, `RECALL_QUEUE_WAIT`). No magic numbers inline.
+
+### Visibility and API shape
+- Private by default. Use `pub(super)` for parent-only items and `pub(crate)` for cross-module items. Re-export a module's API from its `mod.rs` with `pub(crate) use`. Never widen visibility for tests.
+- Borrow (`&str`, `&[T]`, `&Path`) unless ownership is needed. Clone `Arc`s or small values deliberately, not to silence the borrow checker.
+- Take only the config you need: `LocalLlm::new(&LocalLlmConfig)`, not the whole `AppConfig`.
+
+### Async and concurrency
+- Native inference and blocking file or CPU work run in `spawn_blocking` (see `Embedder`). SQLite goes through `tokio-rusqlite`'s connection handle.
+- Every external wait has a named timeout. A timeout means Jarvis stopped waiting. It does not mean remote or native work stopped, so never infer that it had no effect.
+- Futures raced in `tokio::select!` must be safe to drop at any `.await`: commit durable state in single transactions, and keep in-flight native work owned (e.g., by a semaphore permit). Use `biased;` when user input must win.
+- Use bounded channels. Use `Arc<Mutex<_>>` only for genuinely shared state, keep lock scopes short, and never hold a lock across `.await`.
+- There is no `CancellationToken` or `JoinSet` supervision yet. Add one when a long-lived background task needs it (roadmap phase 6), not before.
+
+### Unsafe
+- `unsafe` is limited to FFI in `storage/sqlite_vec.rs` and `clients/local_embeddings.rs`. Each block is minimal and carries a `// SAFETY:` comment stating the invariant. Don't add `unsafe` elsewhere without discussion.
+
+### Comments and docs
+- Use `///` on items used across modules, stating the invariant, limit, or why. Don't restate the code. Use `//!` for a module's purpose when it isn't obvious from the name.
+- `// LEARNING:` comments are Darren's tutor notes. Keep the existing ones accurate when you change nearby code. Add new ones only in tutor mode.
+- The system prompt lives in `src/features/assistant/preamble.txt`, not in Rust strings.
+
+### Dependencies
+- Don't add a dependency, crate, feature flag, or workspace without Darren's approval. Pin an exact, supported version and check that it builds for aarch64 Linux (the Pi).
+- Keep `[dependencies]` sorted. Test-only features (such as `tokio/test-util`) go in `[dev-dependencies]`.
+- Prefer the pinned libraries' supported APIs over custom loops, wrappers, or traits made "for flexibility". Rig owns the model loop, tool dispatch, and correlation; don't reimplement them.
+
+## Domain rules
+
+- **Policy.** `JarvisPolicyHook` enforces two model turns at most, one tool call at most, tools only on the first turn, and stops on truncated or unknown finish reasons. Model request limits and tool attempt limits are separate; keep both.
+- **Adding a tool.**
+  1. Implement `rig_agent::tool::Tool` with a typed `Args` struct carrying `#[serde(deny_unknown_fields)]`.
+  2. Register it on the agent in `App`.
+  3. Add `ToolRule::for_tool::<T>()` to `ALLOWED_TOOLS`. A registered tool missing from that list is rejected.
+  4. A tool that writes or acts also needs per-tool permission and explicit user approval (roadmap 8B).
+- **Trust.** Model text, tool arguments, recalled memory, and recognition results are untrusted observations. They never grant permission or establish identity.
+- **Privacy.** Keep host and private data on the LAN. A cloud request needs explicit opt-in covering everything sent, including history and tool results. Never log or archive raw reasoning or tool-call JSON.
+- **History.** Keep whole native Rig message batches. Append a batch only after a successful run, and evict whole batches. Never split a call from its result.
+- **Run reports.** `RunObserver` is passive and fresh per run. Mark usage or timing that wasn't observed as `Unavailable`; never report an estimate or a zero as fact. Read structured lifecycle events, never stdout.
+
+## Storage and memory
+
+- SQLite (`data/jarvis.sqlite3`) is the only durable store. The FTS5 index (`memories_fts`) and sqlite-vec index (`memory_vectors`) live in the same file and are kept in sync by triggers. Don't add a second store that must be kept consistent with it.
+- All SQL lives in `src/storage/`. Write paths use `TransactionBehavior::Immediate`. An archived turn and its memory source commit in one transaction.
+- Memory text is immutable (a trigger enforces this). To change a memory, delete it and insert a new row. Forgetting deletes memory rows and marks sources `forgotten`, cascading through `source_links`. Archived `turns` are kept.
+- `memories.embedding_model` records which model made each vector. A new embedder fingerprint makes every row pending, and idle passes re-embed it. Vectors are 384-dimensional (`EMBEDDING_DIMENSIONS`).
+- **Changing the schema:**
+  1. Bump `SCHEMA_VERSION`.
+  2. Add the next `version < N` migration step; it runs inside the existing initialization transaction.
+  3. Never edit an old migration.
+  4. Add a test in `tests/unit/storage/schema_tests.rs` that builds the previous version with realistic rows and asserts the migrated result.
+  5. Tell Darren to back up the database before running it on the Pi.
+- A new connection gets sqlite-vec through `sqlite_vec::register()` (already called by `ConversationArchive::open`).
+
+## Testing
+
+- **Layout.** `tests/unit/` mirrors `src/`. Tests for `src/a/b.rs` live in `tests/unit/a/b_tests.rs`; tests for `src/a/mod.rs` live in `tests/unit/a/a_tests.rs`. The source file registers them with exactly:
+  ```rust
+  #[cfg(test)]
+  #[path = "<relative path>"]
+  mod tests;
+  ```
+  No test code, helpers, or mocks in `src/`, and no visibility widened for tests.
+- **Integration tests** run the compiled binary and live in `tests/integration/`. Each is registered with a `[[test]]` entry in `Cargo.toml`. Never include unit tests in them.
+- **Test limits at their boundaries.** For every limit, test the last accepted value and the first rejected one (2,048 vs 2,049 input bytes, 1,500 vs 1,501 chunk bytes, 32 vs 33 recalled sources, 383/384/385 dimensions). Group cases into a table instead of writing near-identical functions.
+- **Test each rule once, in the layer that owns it.** The pure policy function covers every rule; hook tests cover only what the hook adds; HTTP tests cover only transport and wire format.
+- **Use the production path.** Model tests always stream: script Rig mocks with `MockCompletionModel::from_stream_turns`, and have Wiremock return OpenAI-style SSE (`set_body_raw(body, "text/event-stream")`). Don't test through Rig's `.run()` or `.completion()`, and don't re-implement production logic inside a test helper.
+- **Determinism.** No real LLM or external network. Use Wiremock on localhost, temporary SQLite files cleaned up by a `Drop` fixture, and `#[tokio::test(start_paused = true)]` instead of wall-clock sleeps.
+- **Names** describe the behaviour, e.g. `a_turn_may_depend_on_at_most_32_recalled_sources`.
+- **When moving tests,** compare `cargo test --locked --offline -- --list` before and after; the inventory changes only where you intend it to.
+- **Spot-check a new boundary test** by temporarily breaking the limit by one and confirming it fails.
 
 ## Verification
 
-- Keep unit and integration tests distinct. Put unit test implementations, test helpers, fixtures, and mocks under `tests/unit/`; do not define those implementations in production source. When a unit test needs private access, include it from the owning source module with only a minimal `#[cfg(test)] #[path = "..."] mod tests;` hook. Do not widen production visibility just for tests or add production-only counters/policy to enable them.
-- Put black-box integration test implementations, fixtures, and mocks under `tests/integration/`, separate from unit fixtures. Register nested integration entry points with explicit `[[test]]` declarations in `Cargo.toml`, or use minimal root entry points under `tests/` that include them. Nested test files are not automatically separate Cargo targets. Never include unit tests in an integration target.
-- When relocating tests or changing module hooks, inspect Cargo's discovered targets and compare `cargo test --locked --offline -- --list` before and after. Preserve the target and test-name inventory except for intentional, documented moves or removals; verify that moved tests remain compiled and discoverable.
-- Focus checks on Jarvis behavior and existing mocks. Do not use a real LLM or external network in CI tests; avoid timing-sensitive wall-clock sleeps, using Tokio's paused clock and explicit time advances where applicable.
-- Prefer a small relevant check while iterating. Avoid rerunning the full suite after every patch; complete applicable final quality gates once the change is coherent.
-- For each independently reviewable source batch, run the smallest relevant existing tests and `git diff --check`; run formatting and locked offline all-target compilation for module/layout changes. Run the full suite and strict Clippy once when the coherent batch is ready for its final gate, not after every small edit. If test organization changed, include the discovery/inventory comparison above.
-- Test observable Jarvis behavior at existing seams with mocks and counting fixtures; avoid production-only counters or duplicate policy solely to make tests easier.
-- When relevant, final gates are `cargo fmt --check`, `cargo check --locked --offline --all-targets`, `cargo test --locked --offline`, `cargo clippy --locked --offline --all-targets -- -D warnings`, and `git diff --check`.
-- Keep Clippy warnings strict. Report any skipped or unavailable check accurately; do not claim verification that did not run.
+While iterating, run the smallest relevant tests. Before saying a coherent change is done, run:
+
+```sh
+cargo fmt --check
+cargo check --locked --offline --all-targets
+cargo test --locked --offline
+cargo clippy --locked --offline --all-targets -- -D warnings
+git diff --check
+python3 -B tests/unit/features/speech/supertonic_worker/test_supertonic_worker.py  # if speech changed
+```
+
+Clippy stays at `-D warnings`. Report any check you skipped or couldn't run; never claim verification that didn't happen. Local tests do not prove Pi behaviour; say so when it matters.
