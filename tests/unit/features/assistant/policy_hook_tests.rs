@@ -1,7 +1,12 @@
+//! What the Rig hook adds on top of the pure policy (covered rule by rule in
+//! `policy_tests.rs`): which tools each request offers, that a rejected turn
+//! never reaches a tool, and the one-tool / two-turn limits end to end.
+
 use rig_agent::AgentBuilder;
-use rig_core::completion::FinishReason;
+use rig_agent::tool::{Tool, ToolContext};
+use rig_core::completion::CompletionRequest;
 use rig_core::message::{AssistantContent, Message, ToolChoice, UserContent};
-use rig_core::serde_json::json;
+use rig_core::serde_json::{Value, json};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use std::sync::{
     Arc,
@@ -9,529 +14,223 @@ use std::sync::{
 };
 
 use crate::features::assistant::{
-    Assistant,
-    error::AssistantError,
-    run_report::{RunOutcome, ToolStageOutcome},
+    Assistant, AssistantRun, AssistantRunError, run_report::ToolStageOutcome,
 };
-use rig_agent::tool::{Tool, ToolContext};
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CountingSystemStatusArgs {}
+struct CountingArgs {}
 
-/// Test-only status tool that records how many times its body executes.
-#[derive(Debug, Clone)]
-struct CountingSystemStatusTool {
+/// Test-only `system_status` that counts how often its body runs.
+#[derive(Clone)]
+struct CountingStatusTool {
     executions: Arc<AtomicUsize>,
     should_fail: bool,
 }
 
-/// Test-only error used to simulate a real tool execution failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("test tool failure")]
 struct TestToolError;
 
-impl std::fmt::Display for TestToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "test tool failure")
-    }
-}
-
-impl std::error::Error for TestToolError {}
-
-impl Tool for CountingSystemStatusTool {
+impl Tool for CountingStatusTool {
     const NAME: &'static str = "system_status";
-
-    type Args = CountingSystemStatusArgs;
-    type Output = rig_core::serde_json::Value;
+    type Args = CountingArgs;
+    type Output = Value;
     type Error = TestToolError;
 
     fn description(&self) -> String {
-        "Test system status tool".to_string()
+        "Test system status tool".to_owned()
     }
 
-    fn parameters(&self) -> rig_core::serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        })
+    fn parameters(&self) -> Value {
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
     }
 
-    async fn call(
-        &self,
-        _context: &mut ToolContext,
-        _args: Self::Args,
-    ) -> Result<Self::Output, Self::Error> {
-        // Count the attempt even if the operation fails.
+    async fn call(&self, _: &mut ToolContext, _: Self::Args) -> Result<Value, TestToolError> {
         self.executions.fetch_add(1, Ordering::SeqCst);
-
-        // Lets tests simulate an execution failure after entering the tool body.
         if self.should_fail {
-            return Err(TestToolError);
+            Err(TestToolError)
+        } else {
+            Ok(json!({"status": "ok"}))
         }
-
-        Ok(json!({
-            "status": "ok"
-        }))
     }
 }
 
-#[tokio::test]
-async fn executes_system_status_once_then_returns_final_text() {
-    let executions = Arc::new(AtomicUsize::new(0));
-
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: false,
-    };
-
-    // Request 1 proposes the tool; request 2 gives the final answer.
-    let model = MockCompletionModel::from_turns([
-        MockTurn::from_contents([
-            AssistantContent::text("Let me check the system status."),
-            AssistantContent::tool_call("call-1", "system_status", json!({})),
-        ]),
-        MockTurn::text("System status retrieved."),
-    ]);
-
-    // Keep a handle so we can inspect what Rig sent to the model.
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let response = assistant
-        .respond("Check the system status.", &[])
-        .await
-        .expect("valid tool roundtrip should succeed");
-
-    let requests = model_handle.requests();
-
-    assert_eq!(response.response.output, "System status retrieved.");
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
-    assert_eq!(model_handle.request_count(), 2);
-    assert_eq!(response.report.tool_stages.len(), 1);
-    let tool_stage = &response.report.tool_stages[0];
-    assert_eq!(tool_stage.turn, 1);
-    assert_eq!(tool_stage.name, "system_status");
-    assert!(!tool_stage.internal_call_id.is_empty());
-    assert!(matches!(tool_stage.outcome, ToolStageOutcome::Success));
-
-    // First request may use system_status.
-    assert_eq!(requests[0].tools.len(), 1);
-    assert_eq!(requests[0].tools[0].name, "system_status");
-    assert_eq!(requests[0].max_tokens, Some(1024));
-    assert_eq!(requests[0].tool_choice, Some(ToolChoice::Auto));
-
-    // Finalization request must not be allowed to execute tools.
-    assert!(requests[1].tools.is_empty());
-    assert_eq!(requests[1].tool_choice, Some(ToolChoice::None));
-
-    // Find the original tool call stored in request 2's history.
-    let Message::Assistant {
-        content: assistant_content,
-        ..
-    } = &requests[1].chat_history[1]
-    else {
-        panic!("expected assistant tool-call message");
-    };
-
-    let tool_call = assistant_content
-        .iter()
-        .find_map(|content| {
-            if let AssistantContent::ToolCall(tool_call) = content {
-                Some(tool_call)
-            } else {
-                None
-            }
-        })
-        .expect("expected tool call");
-    // Find the matching tool result Rig added to history.
-    let Message::User {
-        content: user_content,
-    } = &requests[1].chat_history[2]
-    else {
-        panic!("expected user tool-result message");
-    };
-
-    let UserContent::ToolResult(tool_result) = &user_content[0] else {
-        panic!("expected tool result");
-    };
-
-    // Tool result must refer to the same call ID.
-    assert_eq!(tool_call.id, tool_result.call);
+struct Outcome {
+    result: Result<AssistantRun, Box<AssistantRunError>>,
+    executions: usize,
+    requests: Vec<CompletionRequest>,
 }
 
-#[tokio::test]
-async fn rejects_multiple_tool_calls_before_execution() {
+async fn run(turns: Vec<MockTurn>, should_fail: bool) -> Outcome {
     let executions = Arc::new(AtomicUsize::new(0));
-
-    let tool = CountingSystemStatusTool {
+    let tool = CountingStatusTool {
         executions: Arc::clone(&executions),
-        should_fail: false,
+        should_fail,
     };
-
-    let model = MockCompletionModel::from_turns([MockTurn::from_contents([
-        AssistantContent::tool_call("call-1", "system_status", json!({})),
-        AssistantContent::tool_call("call-2", "system_status", json!({})),
-    ])]);
-
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let result = assistant
-        .respond("Check the system status twice.", &[])
-        .await;
-
-    assert!(result.is_err());
-
-    assert_eq!(
-        model_handle.request_count(),
-        1,
-        "invalid initial turn must stop without another model request"
-    );
-
-    // Invalid batch must be rejected before either tool executes.
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        0,
-        "rejected model turn must not execute any tools"
-    );
-}
-
-#[tokio::test]
-async fn rejects_second_tool_call_after_execution() {
-    let executions = Arc::new(AtomicUsize::new(0));
-
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: false,
-    };
-
-    let model = MockCompletionModel::from_turns([
-        MockTurn::tool_call("call-1", "system_status", json!({})),
-        MockTurn::tool_call("call-2", "system_status", json!({})),
-    ]);
-
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
+    let model = MockCompletionModel::from_turns(turns);
+    let handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(tool).build());
     let result = assistant.respond("Check the system status.", &[]).await;
-
-    assert!(result.is_err());
-
-    // Two model requests are allowed, but only one tool attempt.
-    assert_eq!(model_handle.request_count(), 2);
-
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        1,
-        "second tool call must be rejected before execution"
-    );
-}
-
-#[tokio::test]
-async fn rejects_invalid_arguments_before_execution() {
-    for arguments in [
-        json!(null),                 // null
-        json!({"unexpected": true}), // object with forbidden field
-        json!([]),                   // array
-        json!("invalid"),            // string scalar
-        json!(42),                   // number scalar
-    ] {
-        let executions = Arc::new(AtomicUsize::new(0));
-
-        let tool = CountingSystemStatusTool {
-            executions: Arc::clone(&executions),
-            should_fail: false,
-        };
-
-        let model = MockCompletionModel::from_turns([MockTurn::tool_call(
-            "call-1",
-            "system_status",
-            arguments,
-        )]);
-
-        let model_handle = model.clone();
-
-        let agent = AgentBuilder::new(model).tool(tool).build();
-        let assistant = Assistant::new(agent);
-
-        let result = assistant.respond("Check the system status.", &[]).await;
-
-        assert!(result.is_err());
-        assert_eq!(
-            model_handle.request_count(),
-            1,
-            "invalid arguments must stop after the initial model request"
-        );
-        // Bad arguments must never reach the tool body.
-        assert_eq!(
-            executions.load(Ordering::SeqCst),
-            0,
-            "invalid arguments must be rejected before tool execution"
-        );
+    Outcome {
+        result,
+        executions: executions.load(Ordering::SeqCst),
+        requests: handle.requests(),
     }
 }
 
-#[tokio::test]
-async fn rejects_unavailable_tool_call() {
-    let model = MockCompletionModel::from_turns([MockTurn::tool_call(
-        "call-1",
-        "forbidden_tool",
-        json!({}),
-    )]);
+fn status_call(id: &str) -> AssistantContent {
+    AssistantContent::tool_call(id, "system_status", json!({}))
+}
 
-    let model_handle = model.clone();
-
-    let executions = Arc::new(AtomicUsize::new(0));
-
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: false,
+/// Asserts the call in request 2's history is answered by a matching result.
+fn assert_result_correlates_with_call(request: &CompletionRequest) {
+    let Message::Assistant { content, .. } = &request.chat_history[1] else {
+        panic!("expected the assistant tool-call message");
     };
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Call the forbidden tool.", &[]).await;
-
-    assert!(result.is_err(), "unavailable tool call should be rejected");
-
-    assert_eq!(
-        model_handle.request_count(),
-        1,
-        "unknown tool must stop after the initial model request"
-    );
-    // An unregistered/disallowed tool must never execute our real tool body.
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        0,
-        "unknown tool must be rejected before any tool execution"
-    );
+    let call = content
+        .iter()
+        .find_map(|content| match content {
+            AssistantContent::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .expect("history keeps the tool call");
+    let Message::User { content } = &request.chat_history[2] else {
+        panic!("expected the tool-result message");
+    };
+    let UserContent::ToolResult(result) = &content[0] else {
+        panic!("expected a tool result");
+    };
+    assert_eq!(call.id, result.call);
 }
 
 #[tokio::test]
-async fn failed_tool_execution_continues_to_final_text() {
-    let executions = Arc::new(AtomicUsize::new(0));
+async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() {
+    let outcome = run(
+        vec![
+            MockTurn::from_contents([AssistantContent::text("Checking."), status_call("call-1")]),
+            MockTurn::text("All good."),
+        ],
+        false,
+    )
+    .await;
 
-    // This time the tool deliberately fails after execution begins.
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: true,
-    };
-
-    // Rig should carry the failure into request 2 so the model can explain it.
-    let model = MockCompletionModel::from_turns([
-        MockTurn::tool_call("call-1", "system_status", json!({})),
-        MockTurn::text("System status could not be retrieved."),
-    ]);
-
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let response = assistant
-        .respond("Check the system status.", &[])
-        .await
-        .expect("tool failure should still allow final explanation");
-
-    // The user still receives a useful final response.
-    assert_eq!(
-        response.response.output,
-        "System status could not be retrieved."
-    );
-    assert_eq!(response.report.tool_stages.len(), 1);
+    let run = outcome.result.expect("an allowed tool roundtrip succeeds");
+    assert_eq!(run.response.output, "All good.");
+    assert_eq!(outcome.executions, 1);
+    assert_eq!(run.report.tool_stages.len(), 1);
     assert!(matches!(
-        response.report.tool_stages[0].outcome,
-        ToolStageOutcome::Error
+        run.report.tool_stages[0].outcome,
+        ToolStageOutcome::Success
     ));
 
-    // Failure still consumes the one permitted operation attempt.
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        1,
-        "failed tool execution should still consume one attempt"
-    );
-
-    // Request 1 proposes the tool; request 2 explains the failure. No retry.
-    assert_eq!(
-        model_handle.request_count(),
-        2,
-        "tool failure should continue to exactly one final model request"
-    );
-    let requests = model_handle.requests();
-
-    // Request 2 is finalization: no tool can execute again.
-    assert!(requests[1].tools.is_empty());
-    assert_eq!(requests[1].tool_choice, Some(ToolChoice::None));
-
-    let Message::Assistant {
-        content: assistant_content,
-        ..
-    } = &requests[1].chat_history[1]
-    else {
-        panic!("expected assistant tool-call message");
+    let [first, second] = outcome.requests.as_slice() else {
+        panic!("expected exactly two model requests");
     };
-
-    let AssistantContent::ToolCall(tool_call) = &assistant_content[0] else {
-        panic!("expected tool call");
-    };
-
-    let Message::User {
-        content: user_content,
-    } = &requests[1].chat_history[2]
-    else {
-        panic!("expected failed tool-result message");
-    };
-
-    let UserContent::ToolResult(tool_result) = &user_content[0] else {
-        panic!("expected tool result");
-    };
-
-    // Even though execution failed, the result must match the original call.
-    assert_eq!(tool_call.id, tool_result.call);
+    let offered: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
+    let allowed: Vec<_> = crate::tools::ALLOWED_TOOLS
+        .iter()
+        .map(|rule| rule.name)
+        .collect();
+    assert_eq!(offered, allowed);
+    assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
+    assert_eq!(first.max_tokens, Some(1024));
+    assert!(second.tools.is_empty());
+    assert_eq!(second.tool_choice, Some(ToolChoice::None));
+    assert_result_correlates_with_call(second);
 }
 
 #[tokio::test]
-async fn direct_text_returns_without_tool_execution() {
-    let executions = Arc::new(AtomicUsize::new(0));
+async fn tool_count_boundary_zero_and_one_run_but_two_run_nothing() {
+    let zero = run(vec![MockTurn::text("Hello.")], false).await;
+    assert!(zero.result.is_ok());
+    assert_eq!((zero.executions, zero.requests.len()), (0, 1));
 
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: false,
-    };
+    let one = run(
+        vec![
+            MockTurn::tool_call("call-1", "system_status", json!({})),
+            MockTurn::text("Done."),
+        ],
+        false,
+    )
+    .await;
+    assert!(one.result.is_ok());
+    assert_eq!((one.executions, one.requests.len()), (1, 2));
 
-    // Model answers directly instead of requesting a tool.
-    let model = MockCompletionModel::from_turns([MockTurn::text("Hello from Jarvis.")]);
-
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let response = assistant
-        .respond("Say hello.", &[])
-        .await
-        .expect("direct text should succeed");
-
-    assert_eq!(response.response.output, "Hello from Jarvis.");
-    assert!(response.report.tool_stages.is_empty());
-
-    // Direct text should finish after one model request.
-    assert_eq!(model_handle.request_count(), 1);
-
-    // No tool was requested, so nothing should execute.
-    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    // A batch over the limit is rejected whole: not even the first call runs.
+    let two = run(
+        vec![MockTurn::from_contents([
+            status_call("call-1"),
+            status_call("call-2"),
+        ])],
+        false,
+    )
+    .await;
+    assert!(two.result.is_err());
+    assert_eq!((two.executions, two.requests.len()), (0, 1));
 }
 
 #[tokio::test]
-async fn rejects_empty_assistant_content() {
-    let executions = Arc::new(AtomicUsize::new(0));
+async fn turn_boundary_a_tool_on_the_second_turn_is_rejected_after_one_execution() {
+    let outcome = run(
+        vec![
+            MockTurn::tool_call("call-1", "system_status", json!({})),
+            MockTurn::tool_call("call-2", "system_status", json!({})),
+        ],
+        false,
+    )
+    .await;
 
-    let tool = CountingSystemStatusTool {
-        executions: Arc::clone(&executions),
-        should_fail: false,
-    };
-
-    // Model returns no usable assistant content.
-    let model = MockCompletionModel::from_turns([MockTurn::from_contents([])]);
-
-    let model_handle = model.clone();
-
-    let agent = AgentBuilder::new(model).tool(tool).build();
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Say something.", &[]).await;
-
-    let error = result.expect_err("empty assistant content must be rejected");
-    assert!(matches!(&error.error, AssistantError::Stream(_)));
-    assert!(matches!(&error.report.outcome, RunOutcome::PromptFailed));
-
-    // Policy should reject immediately after the first model response.
-    assert_eq!(
-        model_handle.request_count(),
-        1,
-        "empty content must stop after the initial model request"
-    );
-
-    // No valid tool call existed, so nothing should execute.
-    assert_eq!(
-        executions.load(Ordering::SeqCst),
-        0,
-        "empty content must not execute any tool"
-    );
+    assert!(outcome.result.is_err());
+    assert_eq!((outcome.executions, outcome.requests.len()), (1, 2));
 }
 
 #[tokio::test]
-async fn phase4_rejects_invalid_model_turns_before_execution() {
+async fn rejected_turns_stop_after_one_request_without_running_the_tool() {
+    // One case per rejection path: Rig's invalid-tool-call hook (unknown
+    // name) and Jarvis's model-turn hook (arguments, content).
     let cases = [
-        ("whitespace only", MockTurn::text("   ")),
         (
-            "reasoning only",
-            MockTurn::from_contents([AssistantContent::reasoning("checking")]),
+            "unknown tool",
+            MockTurn::tool_call("call-1", "forbidden_tool", json!({})),
         ),
         (
-            "image with valid tool call",
-            MockTurn::from_contents([
-                AssistantContent::image_base64("AAAA", None, None),
-                AssistantContent::tool_call("call-1", "system_status", json!({})),
-            ]),
+            "invalid arguments",
+            MockTurn::tool_call("call-1", "system_status", json!({"x": 1})),
         ),
-        (
-            "length with valid tool call",
-            MockTurn::tool_call("call-1", "system_status", json!({}))
-                .with_finish_reason(FinishReason::Length),
-        ),
-        (
-            "content filter with valid tool call",
-            MockTurn::tool_call("call-1", "system_status", json!({}))
-                .with_finish_reason(FinishReason::ContentFilter),
-        ),
-        (
-            "other finish reason with valid tool call",
-            MockTurn::tool_call("call-1", "system_status", json!({}))
-                .with_finish_reason(FinishReason::Other("provider_error".to_string())),
-        ),
-        (
-            "literal tool-call markup",
-            MockTurn::text("<|tool_call>call:system_status{}"),
-        ),
+        ("empty content", MockTurn::from_contents([])),
     ];
-
-    for (case_name, turn) in cases {
-        let executions = Arc::new(AtomicUsize::new(0));
-
-        let tool = CountingSystemStatusTool {
-            executions: Arc::clone(&executions),
-            should_fail: false,
-        };
-
-        let model = MockCompletionModel::from_turns([turn]);
-        let model_handle = model.clone();
-
-        let agent = AgentBuilder::new(model).tool(tool).build();
-        let assistant = Assistant::new(agent);
-
-        let result = assistant.respond("Check the system status.", &[]).await;
-
-        assert!(result.is_err(), "{case_name} should be rejected");
-
+    for (name, turn) in cases {
+        let outcome = run(vec![turn], false).await;
+        assert!(outcome.result.is_err(), "{name}");
         assert_eq!(
-            model_handle.request_count(),
-            1,
-            "{case_name} should stop after one model request"
-        );
-
-        assert_eq!(
-            executions.load(Ordering::SeqCst),
-            0,
-            "{case_name} must not execute the tool body"
+            (outcome.executions, outcome.requests.len()),
+            (0, 1),
+            "{name}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_failed_tool_consumes_its_attempt_and_still_gets_one_final_answer() {
+    let outcome = run(
+        vec![
+            MockTurn::tool_call("call-1", "system_status", json!({})),
+            MockTurn::text("Status could not be retrieved."),
+        ],
+        true,
+    )
+    .await;
+
+    let run = outcome
+        .result
+        .expect("a tool failure is explained, not fatal");
+    assert_eq!(run.response.output, "Status could not be retrieved.");
+    assert!(matches!(
+        run.report.tool_stages[0].outcome,
+        ToolStageOutcome::Error
+    ));
+    assert_eq!((outcome.executions, outcome.requests.len()), (1, 2));
+    assert!(outcome.requests[1].tools.is_empty());
+    assert_result_correlates_with_call(&outcome.requests[1]);
 }

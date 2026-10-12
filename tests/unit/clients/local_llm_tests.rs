@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 
 use rig_agent::AgentBuilder;
-use rig_agent::{agent::StreamingError, completion::PromptError};
 use rig_core::{
     completion::{CompletionModel, CompletionRequest},
     message::{AssistantContent, Message, UserContent},
@@ -20,42 +19,50 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
+/// Each pair sits on either side of an allowed range or a hostname rule.
+#[rustfmt::skip]
 #[test]
-fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations() {
-    for endpoint in [
-        "http://localhost:1234/v1",
-        "http://127.0.0.1:1234/v1",
-        "http://192.168.1.40:1234/v1",
-        "https://[::1]:1234/v1",
-        "https://[fd12:3456::2]:1234/v1",
-        "http://[fe80::1]:1234/v1",
-        "http://jarvis-ai.local:8080/v1",
-        "http://upper.JARVIS.local.:8080/v1",
-        "http://assistant.lab.local:8080/v1",
-    ] {
-        assert!(
-            validate_local_endpoint(endpoint).is_ok(),
-            "explicit local endpoint should be accepted"
-        );
-    }
+fn local_endpoint_guard_accepts_exactly_the_local_ranges() {
+    let label_63 = "a".repeat(63);
+    let label_64 = "a".repeat(64);
+    let host_253 = format!("{}.local", vec!["a".repeat(61); 4].join("."));
+    let host_254 = format!("a{host_253}");
+    assert_eq!((host_253.len(), host_254.len()), (253, 254));
 
-    assert_eq!(
-        validate_local_endpoint("https://api.example.com/v1"),
-        Err(LocalEndpointError::NonLocalHost)
-    );
-    for host in [
-        "jarvis.local.example",
-        ".local",
-        "jarvis..local",
-        "-jarvis.local",
-        "jarvis-.local",
-        "jarvis_ai.local",
-    ] {
-        assert!(
-            validate_local_endpoint(&format!("http://{host}:8080/v1")).is_err(),
-            "invalid .local hostname should be rejected: {host}"
-        );
+    let cases: Vec<(String, bool)> = vec![
+        // IPv4: loopback, the three private ranges, and link-local, each
+        // checked at its edge.
+        ("127.0.0.1".into(), true),       ("128.0.0.1".into(), false),
+        ("10.255.255.255".into(), true),  ("11.0.0.0".into(), false),
+        ("172.16.0.0".into(), true),      ("172.15.255.255".into(), false),
+        ("172.31.255.255".into(), true),  ("172.32.0.0".into(), false),
+        ("192.168.0.1".into(), true),     ("192.169.0.1".into(), false),
+        ("169.254.0.1".into(), true),     ("169.255.0.1".into(), false),
+        // IPv6: loopback, unique-local fc00::/7, link-local fe80::/10.
+        ("[::1]".into(), true),           ("[::2]".into(), false),
+        ("[fc00::1]".into(), true),       ("[fbff::1]".into(), false),
+        ("[fdff::1]".into(), true),       ("[fe00::1]".into(), false),
+        ("[fe80::1]".into(), true),       ("[fec0::1]".into(), false),
+        // Names: localhost and well-formed .local names only.
+        ("localhost".into(), true),       ("api.example.com".into(), false),
+        ("jarvis-ai.local".into(), true), ("jarvis-ai.local.example".into(), false),
+        ("UPPER.Local.".into(), true),    (".local".into(), false),
+        (format!("{label_63}.local"), true), (format!("{label_64}.local"), false),
+        (host_253, true),                 (host_254, false),
+        ("a-b.local".into(), true),       ("-ab.local".into(), false),
+        ("ab.local".into(), true),        ("ab-.local".into(), false),
+        ("ab.local".into(), true),        ("a_b.local".into(), false),
+    ];
+
+    for (host, accepted) in cases {
+        let result = validate_local_endpoint(&format!("http://{host}:8080/v1"));
+        assert_eq!(result.is_ok(), accepted, "{host}: {result:?}");
     }
+}
+
+#[test]
+fn endpoint_urls_reject_credentials_and_non_http_schemes() {
+    assert!(validate_local_endpoint("https://127.0.0.1:1234/v1").is_ok());
     assert_eq!(
         validate_local_endpoint("http://user:secret@127.0.0.1:1234/v1"),
         Err(LocalEndpointError::CredentialsNotAllowed)
@@ -67,18 +74,14 @@ fn local_endpoint_guard_allows_local_ip_targets_and_rejects_public_destinations(
 }
 
 #[test]
-fn local_dns_results_must_be_nonempty_and_exclusively_local() {
-    let loopback: SocketAddr = "127.0.0.1:0".parse().expect("valid loopback socket");
-    let private: SocketAddr = "192.168.1.20:0".parse().expect("valid private socket");
-    let public: SocketAddr = "8.8.8.8:0".parse().expect("valid public socket");
+fn dns_results_must_be_nonempty_and_every_address_local() {
+    let local: SocketAddr = "192.168.1.20:0".parse().expect("valid socket");
+    let public: SocketAddr = "8.8.8.8:0".parse().expect("valid socket");
 
-    assert_eq!(
-        validate_resolved_addresses(vec![loopback, private]),
-        Some(vec![loopback, private])
-    );
+    assert_eq!(validate_resolved_addresses(vec![local]), Some(vec![local]));
     assert_eq!(validate_resolved_addresses(Vec::new()), None);
-    assert_eq!(validate_resolved_addresses(vec![public]), None);
-    assert_eq!(validate_resolved_addresses(vec![loopback, public]), None);
+    // One public address among local ones poisons the whole set.
+    assert_eq!(validate_resolved_addresses(vec![local, public]), None);
 }
 
 async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value> {
@@ -104,19 +107,6 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
                 .expect("completion request should contain JSON")
         })
         .collect()
-}
-
-fn prompt_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> &'a PromptError {
-    let mut source = error;
-    loop {
-        if let Some(StreamingError::Prompt(prompt_error)) = source.downcast_ref::<StreamingError>()
-        {
-            return prompt_error;
-        }
-        source = source
-            .source()
-            .expect("assistant error chain should retain the Rig prompt error");
-    }
 }
 
 #[tokio::test]
@@ -540,321 +530,4 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         .find_map(|content| content.as_json())
         .expect("transcript should retain structured status JSON");
     assert_eq!(transcript_status, &status_json);
-}
-
-#[tokio::test]
-async fn openai_adapter_rejects_length_terminated_tool_call() {
-    let server = MockServer::start().await;
-
-    let tool_call_response =
-        ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-            "id": "chatcmpl-tool",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "test-model",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "system_status",
-                            "arguments": "{}"
-                        }
-                    }]
-                },
-                "finish_reason": "length"
-            }],
-            "usage": {
-                "prompt_tokens": 1,
-                "completion_tokens": 1,
-                "total_tokens": 2
-            }
-        }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(tool_call_response)
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Check the system status.", &[]).await;
-    let error = result.expect_err("length-terminated response must be rejected");
-    assert!(matches!(
-        prompt_error(error.as_ref()),
-        PromptError::PromptCancelled { reason, .. }
-            if reason == "Jarvis policy: FinishReason"
-    ));
-    assert_eq!(request_bodies(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn openai_adapter_rejects_content_filtered_tool_call() {
-    let server = MockServer::start().await;
-
-    let response = ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-        "id": "chatcmpl-filtered",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "system_status",
-                        "arguments": "{}"
-                    }
-                }]
-            },
-            "finish_reason": "content_filter"
-        }],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2
-        }
-    }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(response)
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Check the system status.", &[]).await;
-    let error = result.expect_err("content-filtered response must be rejected");
-    assert!(matches!(
-        prompt_error(error.as_ref()),
-        PromptError::PromptCancelled { reason, .. }
-            if reason == "Jarvis policy: FinishReason"
-    ));
-    assert_eq!(request_bodies(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn openai_adapter_rejects_unknown_finish_reason() {
-    let server = MockServer::start().await;
-
-    let response = ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-        "id": "chatcmpl-other",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "system_status",
-                        "arguments": "{}"
-                    }
-                }]
-            },
-            "finish_reason": "provider_specific_reason"
-        }],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2
-        }
-    }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(response)
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Check the system status.", &[]).await;
-    let error = result.expect_err("unknown finish reason must be rejected");
-    assert!(matches!(
-        prompt_error(error.as_ref()),
-        PromptError::PromptCancelled { reason, .. }
-            if reason == "Jarvis policy: FinishReason"
-    ));
-    assert_eq!(request_bodies(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn openai_adapter_rejects_unknown_tool_call() {
-    let server = MockServer::start().await;
-
-    let response = ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-        "id": "chatcmpl-unknown-tool",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "reboot_system",
-                        "arguments": "{}"
-                    }
-                }]
-            },
-            "finish_reason": "tool_calls"
-        }],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2
-        }
-    }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(response)
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    // Only system_status is registered.
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Reboot the system.", &[]).await;
-    let error = result.expect_err("unregistered tool must be rejected");
-    assert!(matches!(
-        prompt_error(error.as_ref()),
-        PromptError::PromptCancelled { reason, .. }
-            if reason == "Invalid tool call rejected by Jarvis policy"
-    ));
-    assert_eq!(request_bodies(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn openai_adapter_rejects_invalid_system_status_arguments() {
-    let server = MockServer::start().await;
-
-    let response = ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-        "id": "chatcmpl-invalid-args",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "system_status",
-                        "arguments": "{\"unexpected\":true}"
-                    }
-                }]
-            },
-            "finish_reason": "tool_calls"
-        }],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2
-        }
-    }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(response)
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
-
-    let result = assistant.respond("Check the system status.", &[]).await;
-    let error = result.expect_err("invalid system_status arguments must be rejected");
-    assert!(matches!(
-        prompt_error(error.as_ref()),
-        PromptError::PromptCancelled { reason, .. }
-            if reason == "Jarvis policy: ToolArguments"
-    ));
-    assert_eq!(request_bodies(&server).await.len(), 1);
 }

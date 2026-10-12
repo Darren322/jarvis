@@ -7,6 +7,22 @@ fn short_text_is_one_trimmed_chunk() {
 }
 
 #[test]
+fn text_at_the_cap_is_one_chunk_and_one_byte_more_is_two() {
+    let at_cap = format!(
+        "{} {}",
+        "a".repeat(MAX_CHUNK_BYTES / 2),
+        "b".repeat(MAX_CHUNK_BYTES / 2 - 1)
+    );
+    assert_eq!(at_cap.len(), MAX_CHUNK_BYTES);
+    assert_eq!(split(&at_cap, MAX_CHUNK_BYTES).len(), 1);
+
+    let over_cap = format!("{at_cap}c");
+    let chunks = split(&over_cap, MAX_CHUNK_BYTES);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0], "a".repeat(MAX_CHUNK_BYTES / 2));
+}
+
+#[test]
 fn prefers_paragraph_then_sentence_then_word_boundaries() {
     let text = "First paragraph here.\n\nSecond paragraph is a bit longer.";
     assert_eq!(

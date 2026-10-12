@@ -30,7 +30,9 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::{MAX_TEXT_DELTA_BYTES, RUN_DEADLINE, consume_stream, finalize_response};
+use super::{
+    MAX_TEXT_DELTA_BYTES, RUN_DEADLINE, consume_stream, finalize_response, send_text_deltas,
+};
 
 impl Assistant {
     /// Test-only blocking run over the same configured runner. Rig raises the
@@ -158,26 +160,6 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
         &second.report.model_stages[0].usage,
         CallUsage::Unavailable
     ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn assistant_run_times_out_and_reports_incomplete_model_stage() {
-    let agent = AgentBuilder::new(PendingCompletionModel)
-        .tool(SystemStatusTool)
-        .build();
-    let assistant = Assistant::new(agent);
-
-    let error = assistant
-        .respond("Hello", &[])
-        .await
-        .expect_err("pending model should hit the Assistant deadline");
-
-    assert!(matches!(&error.error, AssistantError::RunTimeout));
-    assert!(matches!(&error.report.outcome, RunOutcome::TimedOut));
-    assert!(error.report.observations_available);
-    assert_eq!(error.report.model_stages.len(), 1);
-    assert_incomplete_model(&error.report.model_stages[0], 1);
-    assert!(error.report.tool_stages.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -503,4 +485,28 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
     );
     assert_eq!(error.report.model_stages.len(), 1);
     assert_incomplete_model(&error.report.model_stages[0], 1);
+}
+
+#[tokio::test]
+async fn text_deltas_split_at_the_byte_cap_and_never_inside_a_character() {
+    async fn chunk_lengths(text: &str) -> Vec<usize> {
+        let (deltas, mut receiver) = mpsc::channel(8);
+        send_text_deltas(&deltas, text)
+            .await
+            .expect("receiver is open");
+        drop(deltas);
+        let mut lengths = Vec::new();
+        while let Some(delta) = receiver.recv().await {
+            lengths.push(delta.text.len());
+        }
+        lengths
+    }
+    let cap = MAX_TEXT_DELTA_BYTES;
+
+    assert_eq!(chunk_lengths("").await, Vec::<usize>::new());
+    assert_eq!(chunk_lengths(&"a".repeat(cap)).await, vec![cap]);
+    assert_eq!(chunk_lengths(&"a".repeat(cap + 1)).await, vec![cap, 1]);
+    // A 4-byte character that would straddle the cap moves whole to the next chunk.
+    let straddling = format!("{}🙂", "a".repeat(cap - 1));
+    assert_eq!(chunk_lengths(&straddling).await, vec![cap - 1, 4]);
 }

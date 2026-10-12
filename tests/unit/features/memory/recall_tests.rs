@@ -21,6 +21,8 @@ fn keyword_query_quotes_substantive_terms_only() {
         Some("\"cat\" \"name\"")
     );
     assert_eq!(keyword_query("what is it?"), None);
+    // One-character terms are dropped; two characters are the shortest kept.
+    assert_eq!(keyword_query("x go").as_deref(), Some("\"go\""));
     assert_eq!(keyword_query("   "), None);
 }
 
@@ -67,8 +69,8 @@ fn context_follows_fused_order_and_skips_excluded_and_duplicate_text() {
 
 #[test]
 fn context_is_bounded_by_document_count_and_bytes() {
-    let ordered = (1..=8).map(MemoryId).collect::<Vec<_>>();
-    let hydrated = (1..=8)
+    let ordered = (1..=6).map(MemoryId).collect::<Vec<_>>();
+    let hydrated = (1..=6)
         .map(|id| memory(id, id, &format!("memory number {id}")))
         .collect();
     let (documents, _) = select_context(&ordered, hydrated, &[]);

@@ -207,7 +207,7 @@ async fn rejects_wrong_dimensions_and_skips_deleted_memories() {
     assert!(matches!(
         fixture
             .repository
-            .store_embedding(id, MODEL, vec![1.0; 3])
+            .store_embedding(id, MODEL, vec![1.0; 383])
             .await,
         Err(StorageError::InvalidInput(_))
     ));
@@ -371,4 +371,88 @@ async fn memory_text_is_immutable() -> Result<(), Box<dyn Error>> {
     let update = connection.execute("UPDATE memories SET text = 'changed'", []);
     assert!(update.is_err());
     Ok(())
+}
+
+#[tokio::test]
+async fn embeddings_must_have_exactly_384_dimensions() {
+    let fixture = Fixture::open("dimension-boundary").await;
+    fixture.remember("Remember this.", "Done.", &[]).await;
+    let (id, _) = fixture
+        .repository
+        .pending_embeddings(MODEL, 1)
+        .await
+        .expect("pending")[0]
+        .clone();
+    for (dimensions, accepted) in [(383, false), (384, true), (385, false)] {
+        let mut vector = vec![0.0; dimensions];
+        vector[0] = 1.0;
+        let result = fixture
+            .repository
+            .store_embedding(id, MODEL, vector.clone())
+            .await;
+        assert_eq!(result.is_ok(), accepted, "{dimensions} dimensions");
+        let search = fixture.repository.search_vector(vector, MODEL, 1).await;
+        assert_eq!(search.is_ok(), accepted, "{dimensions} dimensions");
+    }
+}
+
+#[tokio::test]
+async fn a_turn_may_depend_on_at_most_32_recalled_sources() {
+    let fixture = Fixture::open("dependency-boundary").await;
+    let mut sources = Vec::new();
+    for index in 0..=super::MAX_RECALLED_SOURCES {
+        sources.push(
+            fixture
+                .remember(&format!("fact {index}"), "Noted.", &[])
+                .await,
+        );
+    }
+    assert_eq!(sources.len(), 33);
+
+    let at_limit = fixture
+        .archive
+        .append_turn(
+            "q",
+            ArchiveOutcome::Completed("a".to_owned()),
+            MemoryEligibility::Eligible,
+            &sources[..32],
+        )
+        .await
+        .expect("turn is archived");
+    assert_eq!(at_limit.memory, MemorySaveState::Saved);
+
+    let over_limit = fixture
+        .archive
+        .append_turn(
+            "q",
+            ArchiveOutcome::Completed("a".to_owned()),
+            MemoryEligibility::Eligible,
+            &sources,
+        )
+        .await
+        .expect("turn is archived");
+    assert_eq!(over_limit.memory, MemorySaveState::Suppressed);
+}
+
+#[tokio::test]
+async fn imports_may_be_at_most_one_mebibyte() {
+    let fixture = Fixture::open("import-boundary").await;
+    let words = "word ".repeat(200_000);
+    let one_mib = format!("{words}{}", "x".repeat(1024 * 1024 - words.len()));
+    assert_eq!(one_mib.len(), 1024 * 1024);
+
+    let receipt = fixture
+        .repository
+        .import_source("/a.md".to_owned(), "a.md".to_owned(), one_mib.clone())
+        .await
+        .expect("a 1 MiB import is accepted");
+    assert!(receipt.chunks > 1);
+
+    assert!(matches!(
+        fixture
+            .repository
+            .import_source("/b.md".to_owned(), "b.md".to_owned(), one_mib + "x")
+            .await,
+        Err(StorageError::SourceTooLarge(_))
+    ));
 }

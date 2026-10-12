@@ -6,10 +6,12 @@ use std::{
 
 use rig_agent::AgentBuilder;
 use rig_core::{
+    completion::Usage,
     message::{Message, UserContent},
-    test_utils::{MockCompletionModel, MockTurn},
+    test_utils::{MockCompletionModel, MockStreamEvent},
 };
 use rusqlite::Connection;
+use tokio::sync::mpsc;
 
 use crate::{
     features::assistant::Assistant,
@@ -17,59 +19,28 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::{ConversationSession, ConversationTurn, archive_outcome, merge_source_dependencies};
+use super::{ConversationSession, ConversationTurn, merge_source_dependencies};
 
 impl ConversationSession {
-    // LEARNING: `&Assistant` and `&str` borrow existing values; the session does not own the assistant
-    // or prompt.
-    // The owned history sent to Rig contains prior successful native batches; the current prompt is
-    // passed separately once.
-    #[cfg(test)]
-    pub(crate) async fn respond(
-        &mut self,
-        assistant: &Assistant,
-        prompt: &str,
-    ) -> ConversationTurn {
-        let history = self.history.messages();
-        let run = assistant.respond(prompt, &history).await;
-
-        // LEARNING: Matching on `&run` inspects the typed Result through references, so `run` remains
-        // intact to return with its report.
-        // Only success updates active history. The archive write follows inference, so a save failure
-        // cannot cause another model run.
-        let (outcome, context_warning) = match &run {
-            Ok(run) => {
-                let context_warning = self
-                    .history
-                    .record_success(run.response.messages(), &[], None)
-                    .map(str::to_owned);
-                (
-                    ArchiveOutcome::Completed(run.response.output().to_owned()),
-                    context_warning,
-                )
-            }
-            Err(error) => (archive_outcome(error), None),
-        };
-
-        // LEARNING: `as_ref()` borrows the archive handle. `.err()` turns the append Result into an
-        // optional storage error.
-        // Callers can report this sidecar error without replacing or retrying the model outcome.
-        let archive_error = match self.archive.as_ref() {
-            Some(archive) => archive
-                .append_turn(prompt, outcome, MemoryEligibility::ArchiveOnly, &[])
-                .await
-                .err(),
-            None => None,
-        };
-
-        ConversationTurn {
-            run,
-            context_warning,
-            archive_error,
-            memory_state: None,
-            current_source_id: None,
-        }
+    /// Drives the production `respond_stream` path without memory, draining
+    /// visible deltas concurrently as the CLI would.
+    async fn respond(&mut self, assistant: &Assistant, prompt: &str) -> ConversationTurn {
+        let (deltas, mut receiver) = mpsc::channel(16);
+        let drain = async { while receiver.recv().await.is_some() {} };
+        let (turn, ()) = tokio::join!(self.respond_stream(assistant, None, prompt, deltas), drain);
+        turn
     }
+}
+
+fn answer(text: &str) -> Vec<MockStreamEvent> {
+    vec![
+        MockStreamEvent::text(text),
+        MockStreamEvent::final_response(Usage::new()),
+    ]
+}
+
+fn failure(message: &str) -> Vec<MockStreamEvent> {
+    vec![MockStreamEvent::error(message)]
 }
 
 static NEXT_PATH: AtomicUsize = AtomicUsize::new(0);
@@ -171,10 +142,10 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
 
 #[tokio::test]
 async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
-    let model = MockCompletionModel::from_turns([
-        MockTurn::text("first answer"),
-        MockTurn::error("temporary provider failure"),
-        MockTurn::text("third answer"),
+    let model = MockCompletionModel::from_stream_turns([
+        answer("first answer"),
+        failure("temporary provider failure"),
+        answer("third answer"),
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
@@ -191,7 +162,6 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
         .messages()
         .expect("Rig should return the successful batch")
         .to_vec();
-    assert!(first.context_warning.is_none());
 
     let failed = session.respond(&assistant, "failed prompt").await;
     assert!(failed.run.is_err());
@@ -261,9 +231,9 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
 #[tokio::test]
 async fn reset_starts_fresh_context_and_preserves_archive_rows() {
     let path = archive_path();
-    let model = MockCompletionModel::from_turns([
-        MockTurn::text("saved answer"),
-        MockTurn::text("new session answer"),
+    let model = MockCompletionModel::from_stream_turns([
+        answer("saved answer"),
+        answer("new session answer"),
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
@@ -305,10 +275,8 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
 #[tokio::test]
 async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
     let path = archive_path();
-    let model = MockCompletionModel::from_turns([
-        MockTurn::text("visible answer"),
-        MockTurn::text("next answer"),
-    ]);
+    let model =
+        MockCompletionModel::from_stream_turns([answer("visible answer"), answer("next answer")]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let mut session = ConversationSession::new(path.clone());

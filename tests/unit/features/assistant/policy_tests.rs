@@ -1,239 +1,62 @@
-use rig_core::serde_json::json;
+use rig_core::serde_json::{Value, json};
 
 use super::*;
 
-#[test]
-fn rejects_truncated_finish_reason() {
-    let result = validate_finish_reason(Some(&FinishReason::Length));
-
-    assert_eq!(result, Err(PolicyRejection::FinishReason));
-}
-#[test]
-fn accepts_missing_finish_reason() {
-    let result = validate_finish_reason(None);
-
-    assert_eq!(result, Ok(()));
-}
-#[test]
-fn accepts_normal_finish_reason() {
-    let result = validate_finish_reason(Some(&FinishReason::Stop));
-
-    assert_eq!(result, Ok(()));
+fn text(value: &str) -> AssistantContent {
+    AssistantContent::text(value)
 }
 
+fn call(name: &str, arguments: Value) -> AssistantContent {
+    AssistantContent::tool_call("call-1", name, arguments)
+}
+
+fn status() -> AssistantContent {
+    call("system_status", json!({}))
+}
+
+/// Each case sits on one side of a policy boundary: the last accepted value
+/// and the first rejected one.
+#[rustfmt::skip]
 #[test]
-fn rejects_multiple_tool_calls() {
-    let contents = vec![
-        AssistantContent::tool_call("call_1", "system_status", json!({})),
-        AssistantContent::tool_call("call_2", "system_status", json!({})),
+fn every_policy_rule_is_checked_at_its_boundary() {
+    use PolicyRejection as R;
+    use PolicyTurn::{AfterTool, Initial};
+    type Case = (&'static str, PolicyTurn, Vec<AssistantContent>, Option<FinishReason>, Result<(), R>);
+
+    let cases: Vec<Case> = vec![
+        // Content: one visible character is enough; nothing visible is not.
+        ("one visible character",     Initial,   vec![text("a")],                    None, Ok(())),
+        ("no content",                Initial,   vec![],                             None, Err(R::Content)),
+        ("whitespace only",           Initial,   vec![text(" \n\t")],               None, Err(R::Content)),
+        ("reasoning only",            Initial,   vec![AssistantContent::reasoning("thinking")], None, Err(R::Content)),
+        ("image beside valid text",   Initial,   vec![text("ok"), AssistantContent::image_base64("AAAA", None, None)], None, Err(R::Content)),
+        // Leaked tool-call markup is rejected only as a prefix.
+        ("markup as prefix",          Initial,   vec![text("  <|tool_call>call:x{}")], None, Err(R::Content)),
+        ("markup mid-sentence",       Initial,   vec![text("It said <|tool_call>call: once")], None, Ok(())),
+        // Tool count: one call is the maximum.
+        ("one tool call",             Initial,   vec![status()], Some(FinishReason::ToolCalls), Ok(())),
+        ("two tool calls",            Initial,   vec![status(), status()],           None, Err(R::ToolCount)),
+        // Tool name: exact match against the allowed list.
+        ("unknown tool",              Initial,   vec![call("delete_everything", json!({}))], None, Err(R::ToolName)),
+        ("allowed name, wrong case",  Initial,   vec![call("System_Status", json!({}))],     None, Err(R::ToolName)),
+        // Arguments: exactly the tool's typed Args, as a JSON object.
+        ("empty object",              Initial,   vec![call("system_status", json!({}))],        None, Ok(())),
+        ("one extra field",           Initial,   vec![call("system_status", json!({"x": 1}))], None, Err(R::ToolArguments)),
+        ("null",                      Initial,   vec![call("system_status", Value::Null)],      None, Err(R::ToolArguments)),
+        ("empty array",               Initial,   vec![call("system_status", json!([]))],        None, Err(R::ToolArguments)),
+        ("JSON text of an object",    Initial,   vec![call("system_status", json!("{}"))],      None, Err(R::ToolArguments)),
+        // Turn: a tool may be proposed first, never after a tool ran.
+        ("text after tool",           AfterTool, vec![text("Done.")], Some(FinishReason::Stop), Ok(())),
+        ("tool after tool",           AfterTool, vec![status()],      None,                     Err(R::Content)),
+        // Finish reason: absent or normal is fine; truncated or unknown is not.
+        ("no finish reason",          Initial,   vec![text("ok")], None,                                  Ok(())),
+        ("tool_calls without a call", Initial,   vec![text("ok")], Some(FinishReason::ToolCalls),         Err(R::FinishReason)),
+        ("length",                    Initial,   vec![status()],   Some(FinishReason::Length),            Err(R::FinishReason)),
+        ("content filter",            Initial,   vec![status()],   Some(FinishReason::ContentFilter),     Err(R::FinishReason)),
+        ("provider-specific",         Initial,   vec![text("ok")], Some(FinishReason::Other("eos".into())), Err(R::FinishReason)),
     ];
 
-    let result = validate_tool_count(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::ToolCount))
-}
-
-#[test]
-fn accepts_system_status_tool_name() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        rig_core::serde_json::json!({}),
-    )];
-
-    let result = validate_tool_calls(&contents);
-
-    assert_eq!(result, Ok(()))
-}
-
-#[test]
-fn rejects_invalid_tool_name() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "delete_everything",
-        json!({}),
-    )];
-
-    let result = validate_tool_calls(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::ToolName))
-}
-
-#[test]
-fn rejects_non_empty_tools_arguments() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!({"foo":1}),
-    )];
-
-    let result = validate_tool_calls(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::ToolArguments));
-}
-
-#[test]
-fn rejects_null_tool_arguments() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!(()),
-    )];
-
-    let result = validate_tool_calls(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::ToolArguments));
-}
-
-#[test]
-fn rejects_array_tool_arguments() {
-    // An empty struct also deserializes from `[]`; tool arguments must be an object.
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!([]),
-    )];
-
-    let result = validate_tool_calls(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::ToolArguments));
-}
-
-#[test]
-fn rejects_empty_content() {
-    let contents = vec![];
-
-    let result = validate_content(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::Content));
-}
-
-#[test]
-fn accepts_text_content() {
-    let contents = vec![AssistantContent::text("JARVIS ONLINE")];
-
-    let result = validate_content(&contents);
-
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn rejects_whitespace_only_text() {
-    let contents = vec![AssistantContent::text("   ")];
-
-    let result = validate_content(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::Content));
-}
-
-#[test]
-fn accepts_tool_call_content() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!({}),
-    )];
-
-    let result = validate_content(&contents);
-
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn accepts_valid_system_status_turn() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!({}),
-    )];
-
-    let result = validate_turn(
-        PolicyTurn::Initial,
-        &contents,
-        Some(&FinishReason::ToolCalls),
-    );
-
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn rejects_tool_call_after_tool_execution() {
-    let contents = vec![AssistantContent::tool_call(
-        "call_1",
-        "system_status",
-        json!({}),
-    )];
-
-    let result = validate_turn(
-        PolicyTurn::AfterTool,
-        &contents,
-        Some(&FinishReason::ToolCalls),
-    );
-
-    assert_eq!(result, Err(PolicyRejection::Content));
-}
-
-#[test]
-fn accepts_final_text_after_tool_execution() {
-    let contents = vec![AssistantContent::text(
-        "System status collected successfully.",
-    )];
-
-    let result = validate_turn(PolicyTurn::AfterTool, &contents, Some(&FinishReason::Stop));
-
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn rejects_tool_calls_finish_reason_without_tool_call() {
-    let contents = vec![AssistantContent::text("JARVIS ONLINE")];
-
-    let result = validate_turn(
-        PolicyTurn::Initial,
-        &contents,
-        Some(&FinishReason::ToolCalls),
-    );
-
-    assert_eq!(result, Err(PolicyRejection::FinishReason));
-}
-
-#[test]
-fn accepts_text_and_tool_call_with_tool_calls_finish_reason() {
-    let contents = vec![
-        AssistantContent::text("I'll check the system status."),
-        AssistantContent::tool_call("call_1", "system_status", json!({})),
-    ];
-
-    let result = validate_turn(
-        PolicyTurn::Initial,
-        &contents,
-        Some(&FinishReason::ToolCalls),
-    );
-
-    assert_eq!(result, Ok(()));
-}
-
-#[test]
-fn rejects_image_mixed_with_valid_text() {
-    let contents = vec![
-        AssistantContent::text("JARVIS ONLINE"),
-        AssistantContent::image_base64("fake-image-data", None, None),
-    ];
-
-    let result = validate_content(&contents);
-
-    assert_eq!(result, Err(PolicyRejection::Content));
-}
-
-#[test]
-fn rejects_other_finish_reason() {
-    let contents = vec![AssistantContent::text("JARVIS ONLINE")];
-
-    let result = validate_turn(
-        PolicyTurn::Initial,
-        &contents,
-        Some(&FinishReason::Other("provider_specific".to_string())),
-    );
-
-    assert_eq!(result, Err(PolicyRejection::FinishReason));
+    for (name, turn, contents, finish_reason, expected) in cases {
+        assert_eq!(validate_turn(turn, &contents, finish_reason.as_ref()), expected, "{name}");
+    }
 }
