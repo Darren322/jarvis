@@ -1,14 +1,10 @@
+//! Typed values for memory sources, memories, and their receipts.
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SourceId(pub(crate) i64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct MemoryId(pub(crate) i64);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MemoryEligibility {
-    Eligible,
-    ArchiveOnly,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SourceKind {
@@ -53,13 +49,6 @@ pub(crate) enum MemorySaveState {
     Saved,
     /// A memory this answer depended on was forgotten while it was generated.
     Suppressed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ArchiveReceipt {
-    pub(crate) turn_id: i64,
-    pub(crate) source_id: Option<SourceId>,
-    pub(crate) memory: MemorySaveState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

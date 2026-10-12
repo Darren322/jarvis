@@ -5,10 +5,7 @@ use tokio_rusqlite::Connection;
 
 use super::error::StorageError;
 use super::time::unix_time_ms;
-use super::{
-    ArchiveReceipt, MemoryEligibility, MemoryRepository, MemorySaveState, SourceId,
-    memory_repository, schema, sqlite_vec,
-};
+use super::{MemoryRepository, MemorySaveState, SourceId, memory_repository, schema, sqlite_vec};
 
 // LEARNING: Raw SQL stays in this storage seam. Services receive typed values
 // and a cloned connection handle, while this module owns archive transactions.
@@ -145,6 +142,21 @@ impl ConversationArchive {
             .await?;
         Ok(receipt)
     }
+}
+
+/// Whether a completed turn may become a memory source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemoryEligibility {
+    Eligible,
+    ArchiveOnly,
+}
+
+/// What `append_turn` saved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ArchiveReceipt {
+    pub(crate) turn_id: i64,
+    pub(crate) source_id: Option<SourceId>,
+    pub(crate) memory: MemorySaveState,
 }
 
 // LEARNING: An enum carries only the data meaningful for its outcome. Failed
