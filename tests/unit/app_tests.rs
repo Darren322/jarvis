@@ -15,8 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    assistant::Assistant,
-    conversation::ConversationSession,
+    features::{assistant::Assistant, conversation::ConversationSession},
     storage::{MemoryId, SourceId},
     tools::system_status_tool::SystemStatusTool,
 };

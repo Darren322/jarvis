@@ -12,15 +12,12 @@ use rig_core::{
 use rusqlite::Connection;
 
 use crate::{
-    assistant::Assistant,
+    features::assistant::Assistant,
     storage::{ArchiveOutcome, MemoryEligibility},
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::{
-    ConversationSession, ConversationTurn, MAX_HISTORY_BYTES, archive_outcome,
-    merge_source_dependencies, serialized_batch_bytes,
-};
+use super::{ConversationSession, ConversationTurn, archive_outcome, merge_source_dependencies};
 
 impl ConversationSession {
     // LEARNING: `&Assistant` and `&str` borrow existing values; the session does not own the assistant
@@ -33,7 +30,7 @@ impl ConversationSession {
         assistant: &Assistant,
         prompt: &str,
     ) -> ConversationTurn {
-        let history = self.history();
+        let history = self.history.messages();
         let run = assistant.respond(prompt, &history).await;
 
         // LEARNING: Matching on `&run` inspects the typed Result through references, so `run` remains
@@ -43,7 +40,8 @@ impl ConversationSession {
         let (outcome, context_warning) = match &run {
             Ok(run) => {
                 let context_warning = self
-                    .record_success(run.response.messages())
+                    .history
+                    .record_success_with_sources(run.response.messages(), &[], None)
                     .map(str::to_owned);
                 (
                     ArchiveOutcome::Completed(run.response.output().to_owned()),
@@ -68,10 +66,6 @@ impl ConversationSession {
             memory_state: None,
             current_source_id: None,
         }
-    }
-    #[cfg(test)]
-    fn record_success(&mut self, messages: Option<&[Message]>) -> Option<&'static str> {
-        self.record_success_with_sources(messages, &[], None)
     }
 }
 
@@ -172,73 +166,6 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
     remove_archive(&path);
 }
 
-#[test]
-fn keeps_three_whole_successful_batches() {
-    let mut session = ConversationSession::new(archive_path());
-    let batch = |prompt: &str, answer: &str| {
-        vec![
-            user_message(prompt),
-            Message::Assistant {
-                id: None,
-                content: vec![rig_core::message::AssistantContent::text(answer)],
-            },
-        ]
-    };
-
-    let first = batch("one", "answer one");
-    let second = batch("two", "answer two");
-    let third = batch("three", "answer three");
-    let fourth = batch("four", "answer four");
-
-    session.record_success(Some(&first));
-    session.record_success(Some(&second));
-    session.record_success(Some(&third));
-    session.record_success(Some(&fourth));
-
-    assert_eq!(session.history(), [second, third, fourth].concat());
-}
-
-#[test]
-fn history_byte_limit_keeps_exact_boundary_and_evicts_oldest_batch() {
-    let mut session = ConversationSession::new(archive_path());
-    let empty_message = [user_message("")];
-    let overhead = serialized_batch_bytes(&empty_message).expect("message serializes");
-    let exact_batch = [user_message(&"x".repeat(MAX_HISTORY_BYTES - overhead))];
-
-    assert_eq!(
-        serialized_batch_bytes(&exact_batch).expect("message serializes"),
-        MAX_HISTORY_BYTES
-    );
-    assert_eq!(session.record_success(Some(&exact_batch)), None);
-    assert_eq!(session.history(), exact_batch.to_vec());
-
-    let newest = [user_message("newest")];
-    assert_eq!(session.record_success(Some(&newest)), None);
-    assert_eq!(session.history(), newest.to_vec());
-}
-
-#[test]
-fn oversized_new_batch_clears_older_context_and_is_not_retained() {
-    let mut session = ConversationSession::new(archive_path());
-    let prior = [user_message("prior")];
-    session.record_success(Some(&prior));
-
-    let overhead = serialized_batch_bytes(&[user_message("")]).expect("message serializes");
-    let oversized = [user_message(&"x".repeat(MAX_HISTORY_BYTES + 1 - overhead))];
-
-    assert!(session.record_success(Some(&oversized)).is_some());
-    assert!(session.history().is_empty());
-}
-
-#[test]
-fn missing_messages_clears_active_history_and_warns() {
-    let mut session = ConversationSession::new(archive_path());
-    session.record_success(Some(&[user_message("prior")]));
-
-    assert!(session.record_success(None).is_some());
-    assert!(session.history().is_empty());
-}
-
 #[tokio::test]
 async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
     let model = MockCompletionModel::from_turns([
@@ -265,7 +192,7 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
 
     let failed = session.respond(&assistant, "failed prompt").await;
     assert!(failed.run.is_err());
-    assert_eq!(session.history(), first_messages);
+    assert_eq!(session.history.messages(), first_messages);
 
     let third = session.respond(&assistant, "third prompt").await;
     assert!(third.run.is_ok());
@@ -343,10 +270,10 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
     let turn = session.respond(&assistant, "saved prompt").await;
     assert!(turn.run.is_ok());
     assert!(turn.archive_error.is_none());
-    assert!(!session.history().is_empty());
+    assert!(!session.history.messages().is_empty());
 
     assert!(session.reset().await.is_none());
-    assert!(session.history().is_empty());
+    assert!(session.history.messages().is_empty());
     let next = session.respond(&assistant, "new session prompt").await;
     assert!(next.run.is_ok());
     drop(session);

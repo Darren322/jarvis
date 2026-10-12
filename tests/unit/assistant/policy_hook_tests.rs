@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::assistant::{
+use crate::features::assistant::{
     agent::Assistant,
     error::AssistantError,
     run_report::{RunOutcome, ToolStageOutcome},

@@ -2,9 +2,9 @@ use std::io;
 
 use tokio::{io::AsyncBufRead, sync::oneshot};
 
+use crate::features::speech::{SpeechError, SpeechOutput};
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
-use crate::speech::{SpeechError, SpeechOutput};
 
 use super::InputFuture;
 

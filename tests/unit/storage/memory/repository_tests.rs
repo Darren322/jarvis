@@ -1,6 +1,6 @@
 use std::{error::Error, path::PathBuf};
 
-use super::{
+use crate::storage::{
     ArchiveOutcome, CommitDisposition, ConversationArchive, CorrectionEvidence, CorrectionMarker,
     CorrectionState, EvidenceInput, MemoryAttribution, MemoryEligibility, MemoryListFilter,
     MemoryRecordKind, MemoryRecordStatus, NewMemory, ProjectionOutcome, SourceChunk,
@@ -56,7 +56,7 @@ async fn commit_user_memory(
     kind: MemoryRecordKind,
     correction: Option<CorrectionEvidence>,
     correction_needs_review: bool,
-) -> Result<(super::SourceId, super::MemorySummary), Box<dyn Error>> {
+) -> Result<(crate::storage::SourceId, crate::storage::MemorySummary), Box<dyn Error>> {
     let receipt = archive
         .append_turn_with_memory(
             quote,
@@ -110,7 +110,7 @@ async fn completed_turn_is_grounded_and_source_forget_invalidates_queued_work()
         )
         .await?;
     let source_id = receipt.source_id.expect("eligible success has a source");
-    assert_eq!(receipt.memory, super::MemoryEnqueueState::Queued);
+    assert_eq!(receipt.memory, crate::storage::MemoryEnqueueState::Queued);
 
     let repository = archive.memory_repository();
     let source = repository
@@ -181,7 +181,7 @@ async fn completed_turn_is_grounded_and_source_forget_invalidates_queued_work()
 
     let projection = repository.claim_projection_page(10).await?;
     assert!(projection.items.iter().any(|item| {
-        item.id == memories[0].id && item.operation == super::ProjectionOperation::Delete
+        item.id == memories[0].id && item.operation == crate::storage::ProjectionOperation::Delete
     }));
     let deletion = projection
         .items
@@ -508,7 +508,8 @@ async fn forgetting_recalled_source_suppresses_answer_descendants_and_stale_proj
         .items
         .into_iter()
         .find(|item| {
-            item.id == descendant_memory.id && item.operation == super::ProjectionOperation::Delete
+            item.id == descendant_memory.id
+                && item.operation == crate::storage::ProjectionOperation::Delete
         })
         .expect("forget schedules a descendant delete");
     assert!(

@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
-use crate::conversation::ConversationSession;
-use crate::memory::MemoryService;
+use crate::features::{conversation::ConversationSession, memory::MemoryService};
 use crate::storage::{
     CorrectionState, JobId, MemoryId, MemoryListFilter, MemoryRecordStatus, MemorySummary, SourceId,
 };

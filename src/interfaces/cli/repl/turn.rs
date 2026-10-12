@@ -2,10 +2,12 @@ use std::io;
 
 use tokio::sync::mpsc;
 
-use crate::assistant::{Assistant, AssistantTextDelta};
-use crate::conversation::ConversationSession;
+use crate::features::{
+    assistant::{Assistant, AssistantTextDelta},
+    conversation::ConversationSession,
+    memory::MemoryService,
+};
 use crate::interfaces::cli::presentation::AssistantPresenter;
-use crate::memory::MemoryService;
 
 pub(super) async fn stream_turn<P>(
     assistant: &Assistant,
@@ -13,7 +15,7 @@ pub(super) async fn stream_turn<P>(
     memory: &mut Option<MemoryService>,
     presenter: &mut P,
     prompt: &str,
-) -> io::Result<crate::conversation::ConversationTurn>
+) -> io::Result<crate::features::conversation::ConversationTurn>
 where
     P: AssistantPresenter,
 {
@@ -26,7 +28,7 @@ where
 
     enum Event {
         Delta(Option<AssistantTextDelta>),
-        Response(Box<crate::conversation::ConversationTurn>),
+        Response(Box<crate::features::conversation::ConversationTurn>),
     }
 
     loop {

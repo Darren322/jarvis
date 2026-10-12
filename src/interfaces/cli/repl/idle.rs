@@ -2,8 +2,8 @@ use std::io;
 
 use tokio::io::AsyncBufRead;
 
+use crate::features::memory::MemoryService;
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
-use crate::memory::MemoryService;
 
 use super::InputFuture;
 
@@ -17,7 +17,7 @@ where
     let mut input_future: InputFuture<'_> = Box::pin(read_input_line(input));
     enum Event {
         Input(io::Result<InputLine>),
-        Idle(Result<crate::memory::JobRun, crate::memory::MemoryError>),
+        Idle(Result<crate::features::memory::JobRun, crate::features::memory::MemoryError>),
     }
     enum WorkerWaitEvent {
         Input(io::Result<InputLine>),
@@ -54,9 +54,9 @@ where
                 };
                 return line.map(|line| (line, warning));
             }
-            Event::Idle(Ok(job)) if job.made_progress() => {}
+            Event::Idle(Ok(job)) if job.has_made_progress() => {}
             Event::Idle(Ok(_)) => return input_future.await.map(|line| (line, None)),
-            Event::Idle(Err(crate::memory::MemoryError::WorkerBusy)) => {
+            Event::Idle(Err(crate::features::memory::MemoryError::WorkerBusy)) => {
                 // LEARNING: WorkerBusy means the service still owns native
                 // inference. This borrowed wait observes its completion; if
                 // input wins, dropping the wait future keeps the worker owned

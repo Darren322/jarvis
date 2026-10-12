@@ -13,6 +13,22 @@ unit-test target and separate integration targets run through Cargo.
 The [Rust module reference](https://doc.rust-lang.org/reference/items/modules.html#the-path-attribute)
 describes how `#[path]` selects a file without changing its logical module.
 
+Assistant, conversation, memory, and speech roots live under
+`src/features/{assistant,conversation,memory,speech}`. Their test source files
+stay in `tests/unit/` during module moves; update only the private-module path
+hooks and crate imports required by the new logical paths. Keep integration
+tests under `tests/integration/` and preserve Cargo target names.
+
+Conversation history tests are registered from
+`src/features/conversation/history.rs`; session and archive-flow tests are
+registered from `src/features/conversation/session.rs`. Their implementations
+remain in `tests/unit/conversation/history_tests.rs` and
+`tests/unit/conversation/conversation_tests.rs`, respectively.
+
+The memory repository implementation lives in `src/storage/memory_repository/`.
+Its unit-test files remain under `tests/unit/storage/memory/`; the existing
+private hooks preserve their access without widening production visibility.
+
 From the repository root:
 
 ```sh

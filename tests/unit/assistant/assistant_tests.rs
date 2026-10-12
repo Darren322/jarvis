@@ -20,7 +20,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    assistant::{
+    features::assistant::{
         Assistant,
         error::AssistantError,
         run_observer::RunObserver,

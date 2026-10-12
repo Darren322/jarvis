@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use rig_agent::AgentBuilder;
 use tokio::io::BufReader;
 
-use crate::assistant::Assistant;
 use crate::clients::local_llm::LocalLlm;
 use crate::config::{AppConfig, OptionalTtsConfig};
-use crate::conversation::ConversationSession;
+use crate::features::{
+    assistant::Assistant, conversation::ConversationSession, memory::MemoryService,
+    speech::SpeechOutput,
+};
 use crate::interfaces::cli::{presentation::TerminalPresenter, repl::run_input_loop};
-use crate::memory::MemoryService;
-use crate::speech::SpeechOutput;
 use crate::tools::system_status_tool::SystemStatusTool;
 
 // LEARNING: `App` is like a Java class's related fields; its `impl` block below

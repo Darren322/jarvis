@@ -1,4 +1,4 @@
-use crate::assistant::{AssistantError, CallUsage, RunReport};
+use crate::features::assistant::{AssistantError, CallUsage, RunReport};
 use crate::storage::MemoryEnqueueState;
 
 pub(super) fn report_turn_warnings(
