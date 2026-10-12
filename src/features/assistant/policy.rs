@@ -1,4 +1,6 @@
-use rig_core::{completion::FinishReason, message::AssistantContent, serde_json::json};
+use rig_core::{completion::FinishReason, message::AssistantContent};
+
+use crate::tools::allowed_tool;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PolicyRejection {
@@ -24,7 +26,7 @@ pub(super) enum PolicyRejection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PolicyTurn {
     // First model turn. The model may return final text or propose
-    // the permitted system_status tool.
+    // one allowed tool.
     Initial,
 
     // A tool has already executed. The model should now produce
@@ -88,27 +90,11 @@ fn validate_tool_count(contents: &[AssistantContent]) -> Result<(), PolicyReject
     Ok(())
 }
 
-fn validate_tool_name(contents: &[AssistantContent]) -> Result<(), PolicyRejection> {
-    // `if let` is useful when we care about one enum variant.
-    // If content is ToolCall(...), its inner value is bound to `tool_call`.
-    // Other AssistantContent variants are ignored by this specific validator.
-    for content in contents {
-        if let AssistantContent::ToolCall(tool_call) = content
-            && tool_call.function.name != "system_status"
-        {
-            return Err(PolicyRejection::ToolName);
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_tool_arguments(contents: &[AssistantContent]) -> Result<(), PolicyRejection> {
+fn validate_tool_calls(contents: &[AssistantContent]) -> Result<(), PolicyRejection> {
     for content in contents {
         if let AssistantContent::ToolCall(tool_call) = content {
-            // json! is a macro that constructs a serde_json::Value.
-            // For Phase 4, system_status's canonical argument payload must be exactly {}.
-            if tool_call.function.arguments != json!({}) {
+            let rule = allowed_tool(&tool_call.function.name).ok_or(PolicyRejection::ToolName)?;
+            if !rule.accepts_arguments(&tool_call.function.arguments) {
                 return Err(PolicyRejection::ToolArguments);
             }
         }
@@ -193,8 +179,7 @@ pub(super) fn validate_turn(
     validate_finish_reason_consistency(contents, finish_reason)?;
     validate_content(contents)?;
     validate_tool_count(contents)?;
-    validate_tool_name(contents)?;
-    validate_tool_arguments(contents)?;
+    validate_tool_calls(contents)?;
     validate_policy_turn(turn, contents)?;
 
     Ok(())

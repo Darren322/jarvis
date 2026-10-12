@@ -1,4 +1,5 @@
 use crate::features::assistant::policy::{PolicyTurn, validate_turn};
+use crate::tools::ALLOWED_TOOLS;
 use rig_agent::agent::{
     CompletionCallAction, InvalidToolCallAction, ModelTurnAction, RequestPatch, hook::AgentHook,
 };
@@ -21,7 +22,7 @@ impl AgentHook for JarvisPolicyHook {
         let action = match turn {
             1 => {
                 let patch = RequestPatch::new()
-                    .active_tools(["system_status"])
+                    .active_tools(ALLOWED_TOOLS.iter().map(|rule| rule.name))
                     .tool_choice(ToolChoice::Auto);
                 CompletionCallAction::patch(patch)
             }
@@ -33,7 +34,9 @@ impl AgentHook for JarvisPolicyHook {
                 CompletionCallAction::patch(patch)
             }
 
-            _ => CompletionCallAction::Stop("Phase 4 only supports two model turns".to_string()),
+            _ => CompletionCallAction::Stop(
+                "Jarvis policy only supports two model turns".to_string(),
+            ),
         };
 
         async move { action }
@@ -51,7 +54,7 @@ impl AgentHook for JarvisPolicyHook {
 
         match validate_turn(policy_turn, event.content, event.finish_reason) {
             Ok(()) => ModelTurnAction::Continue,
-            Err(reason) => ModelTurnAction::stop(format!("Phase 4 policy: {reason:?}")),
+            Err(reason) => ModelTurnAction::stop(format!("Jarvis policy: {reason:?}")),
         }
     }
 
@@ -61,7 +64,7 @@ impl AgentHook for JarvisPolicyHook {
         _event: &rig_agent::agent::InvalidToolCallContext,
     ) -> Option<rig_agent::agent::InvalidToolCallAction> {
         Some(InvalidToolCallAction::Stop {
-            reason: "Invalid tool call rejected by Phase 4 policy".to_string(),
+            reason: "Invalid tool call rejected by Jarvis policy".to_string(),
         })
     }
 }

@@ -41,7 +41,7 @@ fn accepts_system_status_tool_name() {
         rig_core::serde_json::json!({}),
     )];
 
-    let result = validate_tool_name(&contents);
+    let result = validate_tool_calls(&contents);
 
     assert_eq!(result, Ok(()))
 }
@@ -54,7 +54,7 @@ fn rejects_invalid_tool_name() {
         json!({}),
     )];
 
-    let result = validate_tool_name(&contents);
+    let result = validate_tool_calls(&contents);
 
     assert_eq!(result, Err(PolicyRejection::ToolName))
 }
@@ -67,7 +67,7 @@ fn rejects_non_empty_tools_arguments() {
         json!({"foo":1}),
     )];
 
-    let result = validate_tool_arguments(&contents);
+    let result = validate_tool_calls(&contents);
 
     assert_eq!(result, Err(PolicyRejection::ToolArguments));
 }
@@ -80,7 +80,21 @@ fn rejects_null_tool_arguments() {
         json!(()),
     )];
 
-    let result = validate_tool_arguments(&contents);
+    let result = validate_tool_calls(&contents);
+
+    assert_eq!(result, Err(PolicyRejection::ToolArguments));
+}
+
+#[test]
+fn rejects_array_tool_arguments() {
+    // An empty struct also deserializes from `[]`; tool arguments must be an object.
+    let contents = vec![AssistantContent::tool_call(
+        "call_1",
+        "system_status",
+        json!([]),
+    )];
+
+    let result = validate_tool_calls(&contents);
 
     assert_eq!(result, Err(PolicyRejection::ToolArguments));
 }

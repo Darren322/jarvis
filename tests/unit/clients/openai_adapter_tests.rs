@@ -601,7 +601,7 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
     assert!(matches!(
         prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
-            if reason == "Phase 4 policy: FinishReason"
+            if reason == "Jarvis policy: FinishReason"
     ));
     assert_eq!(request_bodies(&server).await.len(), 1);
 }
@@ -664,7 +664,7 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
     assert!(matches!(
         prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
-            if reason == "Phase 4 policy: FinishReason"
+            if reason == "Jarvis policy: FinishReason"
     ));
     assert_eq!(request_bodies(&server).await.len(), 1);
 }
@@ -727,7 +727,7 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
     assert!(matches!(
         prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
-            if reason == "Phase 4 policy: FinishReason"
+            if reason == "Jarvis policy: FinishReason"
     ));
     assert_eq!(request_bodies(&server).await.len(), 1);
 }
@@ -791,7 +791,7 @@ async fn openai_adapter_rejects_unknown_tool_call() {
     assert!(matches!(
         prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
-            if reason == "Invalid tool call rejected by Phase 4 policy"
+            if reason == "Invalid tool call rejected by Jarvis policy"
     ));
     assert_eq!(request_bodies(&server).await.len(), 1);
 }
@@ -854,7 +854,7 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
     assert!(matches!(
         prompt_error(error.as_ref()),
         PromptError::PromptCancelled { reason, .. }
-            if reason == "Phase 4 policy: ToolArguments"
+            if reason == "Jarvis policy: ToolArguments"
     ));
     assert_eq!(request_bodies(&server).await.len(), 1);
 }
