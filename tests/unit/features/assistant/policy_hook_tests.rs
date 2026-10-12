@@ -144,11 +144,7 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
         panic!("expected exactly two model requests");
     };
     let offered: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
-    let allowed: Vec<_> = crate::tools::ALLOWED_TOOLS
-        .iter()
-        .map(|rule| rule.name)
-        .collect();
-    assert_eq!(offered, allowed);
+    assert_eq!(offered, ["system_status"]);
     assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
     assert_eq!(first.max_tokens, Some(1024));
     assert!(second.tools.is_empty());
@@ -246,4 +242,57 @@ async fn a_failed_tool_consumes_its_attempt_and_still_gets_one_final_answer() {
     assert_eq!((outcome.executions, outcome.requests.len()), (1, 2));
     assert!(outcome.requests[1].tools.is_empty());
     assert_result_correlates_with_call(&outcome.requests[1]);
+}
+
+/// Registered with Rig but deliberately absent from `ALLOWED_TOOLS`.
+struct UnlistedTool;
+
+impl Tool for UnlistedTool {
+    const NAME: &'static str = "unlisted_tool";
+    type Args = CountingArgs;
+    type Output = Value;
+    type Error = TestToolError;
+
+    fn description(&self) -> String {
+        "A tool the policy has not allowed".to_owned()
+    }
+
+    fn parameters(&self) -> Value {
+        json!({"type": "object", "properties": {}, "additionalProperties": false})
+    }
+
+    async fn call(&self, _: &mut ToolContext, _: Self::Args) -> Result<Value, TestToolError> {
+        panic!("an unlisted tool must never run");
+    }
+}
+
+#[tokio::test]
+async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run() {
+    let model = MockCompletionModel::from_stream_turns([turn([MockStreamEvent::tool_call(
+        "call-1",
+        "unlisted_tool",
+        json!({}),
+    )])]);
+    let handle = model.clone();
+    let agent = AgentBuilder::new(model)
+        .tool(CountingStatusTool {
+            executions: Arc::new(AtomicUsize::new(0)),
+            should_fail: false,
+        })
+        .tool(UnlistedTool)
+        .build();
+
+    let result = Assistant::new(agent)
+        .respond("Use the unlisted tool.", &[])
+        .await;
+
+    assert!(result.is_err());
+    let requests = handle.requests();
+    let offered: Vec<_> = requests[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert_eq!(offered, ["system_status"]);
+    assert_eq!(requests.len(), 1);
 }
