@@ -1,7 +1,10 @@
 pub mod system_status;
 pub mod system_status_tool;
 
-use rig_agent::tool::Tool;
+use rig_agent::{
+    agent::{AgentBuilder, NoToolConfig, WithBuilderTools},
+    tool::Tool,
+};
 use rig_core::serde_json::{self, Value};
 use serde::de::DeserializeOwned;
 
@@ -44,10 +47,22 @@ where
     arguments.is_object() && serde_json::from_value::<T::Args>(arguments.clone()).is_ok()
 }
 
-/// Every tool the model may call. Keep in sync with the tools registered on
-/// the Rig agent in `App`.
+// Adding a tool: write it in its own file, then add it to BOTH `register` and
+// `ALLOWED_TOOLS` below. `registered_tools_match_the_allowed_list` fails if
+// the two lists drift apart.
+
+/// Registers every Jarvis tool with Rig, making it executable.
+pub(crate) fn register(builder: AgentBuilder<NoToolConfig>) -> AgentBuilder<WithBuilderTools> {
+    builder.tool(SystemStatusTool)
+}
+
+/// Every tool the policy offers to the model and accepts calls for.
 pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[ToolRule::for_tool::<SystemStatusTool>()];
 
 pub(crate) fn allowed_tool(name: &str) -> Option<&'static ToolRule> {
     ALLOWED_TOOLS.iter().find(|rule| rule.name == name)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tools/tools_tests.rs"]
+mod tests;

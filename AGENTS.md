@@ -88,10 +88,10 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 ## Domain rules
 
 - **Policy.** `JarvisPolicyHook` enforces two model turns at most, one tool call at most, tools only on the first turn, and stops on truncated or unknown finish reasons. Model request limits and tool attempt limits are separate; keep both.
-- **Adding a tool.**
+- **Adding a tool.** Everything lives in `src/tools/`; `App` calls `tools::register` once.
   1. Implement `rig_agent::tool::Tool` with a typed `Args` struct carrying `#[serde(deny_unknown_fields)]`.
-  2. Register it on the agent in `App`.
-  3. Add `ToolRule::for_tool::<T>()` to `ALLOWED_TOOLS`. A registered tool missing from that list is rejected.
+  2. Add `.tool(T)` to `tools::register`.
+  3. Add `ToolRule::for_tool::<T>()` to `ALLOWED_TOOLS`. `registered_tools_match_the_allowed_list` fails if steps 2 and 3 disagree.
   4. A tool that writes or acts also needs per-tool permission and explicit user approval (roadmap 8B).
 - **Trust.** Model text, tool arguments, recalled memory, and recognition results are untrusted observations. They never grant permission or establish identity.
 - **Privacy.** Keep host and private data on the LAN. A cloud request needs explicit opt-in covering everything sent, including history and tool results. Never log or archive raw reasoning or tool-call JSON.

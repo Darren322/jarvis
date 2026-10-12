@@ -12,7 +12,7 @@ use crate::features::{
     speech::SpeechOutput,
 };
 use crate::interfaces::cli::{presentation::TerminalPresenter, repl::run_input_loop};
-use crate::tools::system_status_tool::SystemStatusTool;
+use crate::tools;
 
 // LEARNING: `App` is like a Java class's related fields; its `impl` block below
 // supplies methods, while Rust declares data and behavior in separate blocks.
@@ -33,13 +33,11 @@ impl App {
         // LEARNING: Java fluent builders often mutate and return `this`; these
         // Rust methods take and return the owned builder. `.build()` makes a
         // reusable `Agent` but sends no request. The preamble guides the model;
-        // policy hooks enforce rules. `.tool(SystemStatusTool)` passes a
-        // zero-field struct value (like `new SystemStatusTool()`), registering
-        // its schema and implementation for Rig dispatch.
-        let agent = AgentBuilder::new(local_llm.model())
-            .preamble(SYSTEM_PREAMBLE)
-            .tool(SystemStatusTool)
-            .build();
+        // policy hooks enforce rules. `tools::register` passes the builder
+        // through every `.tool(...)` call, registering each tool's schema and
+        // implementation for Rig dispatch.
+        let agent =
+            tools::register(AgentBuilder::new(local_llm.model()).preamble(SYSTEM_PREAMBLE)).build();
         let assistant = Assistant::new(agent);
 
         // LEARNING: `Self` means `App` here. Field shorthand moves each local
