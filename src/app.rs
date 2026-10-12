@@ -67,7 +67,7 @@ impl App {
 
         println!("Conversation archive: {}", self.archive_path.display());
         let mut session = ConversationSession::new(self.archive_path.clone());
-        if let Some(error) = session.reset().await {
+        if let Err(error) = session.reset().await {
             eprintln!(
                 "Warning: local archiving is unavailable; this session will use process-only context: {error}"
             );

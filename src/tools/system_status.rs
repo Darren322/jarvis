@@ -29,3 +29,7 @@ pub fn collect_system_status() -> SystemStatus {
         used_memory_bytes: system.used_memory(),
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tools/system_status_tests.rs"]
+mod tests;

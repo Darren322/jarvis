@@ -177,5 +177,5 @@ fn resolve_from(current_dir: &Path, path: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/config/config_tests.rs"]
+#[path = "../tests/unit/config_tests.rs"]
 mod tests;

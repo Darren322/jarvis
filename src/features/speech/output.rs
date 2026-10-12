@@ -764,5 +764,5 @@ impl Drop for SpeechOutput {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/speech/speech_tests.rs"]
+#[path = "../../../tests/unit/features/speech/output_tests.rs"]
 mod tests;

@@ -1,54 +1,54 @@
 # Jarvis tests
 
-All test implementation files live here, separate from production code.
+All test code lives here, separate from production code.
 
-- `unit/`: Rust and Python unit tests, helpers, fixtures and mocks organized by feature.
-- `integration/`: black-box binary workflows and their own fixtures/mocks.
-  Nested entry points are registered explicitly in `Cargo.toml`.
+- `unit/`: Rust and Python unit tests, helpers, fixtures and mocks.
+- `integration/`: black-box workflows that run the compiled binary. Nested
+  entry points are registered explicitly in `Cargo.toml`.
 
-Rust unit tests remain child modules of the code they exercise. Production
-modules contain only a small `#[cfg(test)]` / `#[path]` declaration pointing here.
-This preserves private access without exposing production internals. The binary
-unit-test target and separate integration targets run through Cargo.
-The [Rust module reference](https://doc.rust-lang.org/reference/items/modules.html#the-path-attribute)
-describes how `#[path]` selects a file without changing its logical module.
+## Where a unit test lives
 
-Assistant, conversation, memory, and speech roots live under
-`src/features/{assistant,conversation,memory,speech}`. Their test source files
-stay in `tests/unit/` during module moves; update only the private-module path
-hooks and crate imports required by the new logical paths. Keep integration
-tests under `tests/integration/` and preserve Cargo target names.
+`tests/unit/` mirrors `src/`. Tests for a source file sit in the matching
+directory and are named after the module:
 
-Conversation history tests are registered from
-`src/features/conversation/history.rs`; session and archive-flow tests are
-registered from `src/features/conversation/session.rs`. Their implementations
-remain in `tests/unit/conversation/history_tests.rs` and
-`tests/unit/conversation/conversation_tests.rs`, respectively.
+| Source | Tests |
+| --- | --- |
+| `src/storage/schema.rs` | `tests/unit/storage/schema_tests.rs` |
+| `src/features/memory/mod.rs` | `tests/unit/features/memory/memory_tests.rs` |
+| `src/interfaces/cli/repl/mod.rs` | `tests/unit/interfaces/cli/repl/repl_tests.rs` |
 
-The memory repository implementation lives in `src/storage/memory_repository/`.
-Its unit-test files remain under `tests/unit/storage/memory/`; the existing
-private hooks preserve their access without widening production visibility.
+The source file registers its tests with one declaration, always named `tests`:
 
-From the repository root:
+```rust
+#[cfg(test)]
+#[path = "../../tests/unit/storage/schema_tests.rs"]
+mod tests;
+```
+
+The test module is still a child of the code it tests, so it can use private
+items without widening production visibility. The
+[Rust reference](https://doc.rust-lang.org/reference/items/modules.html#the-path-attribute)
+explains how `#[path]` picks a file without changing the logical module.
+
+## What to test
+
+Test behavior at its boundaries rather than repeating near-identical cases:
+for every limit, check the last accepted value and the first rejected one.
+Test a rule once, in the layer that owns it. For example, the pure policy
+function covers every policy rule; the Rig hook tests cover only what the hook
+adds, such as a rejected tool never executing.
+
+## Running
 
 ```sh
 cargo test --locked --offline
-python3 -B tests/unit/speech/test_supertonic_worker.py
+python3 -B tests/unit/features/speech/supertonic_worker/test_supertonic_worker.py
 ```
 
-The Rust suite uses mocks, including localhost Wiremock fixtures. The Python
-suite uses standard-library fixtures; it does not load Supertonic or require
-model weights or audio hardware. These checks do not establish Pi playback
-acceptance.
+The Rust suite uses mocks, temporary SQLite files (with the statically linked
+sqlite-vec extension), and localhost Wiremock servers; it never calls a real
+model. The Python suite uses standard-library fixtures and needs no Supertonic
+weights or audio hardware. Neither establishes Pi playback acceptance.
 
-Private-module tests remain unit tests even when they use temporary SQLite
-files or a localhost HTTP mock. Memory tests run against real SQLite with the
-statically linked sqlite-vec extension; the v3-to-v4 migration is covered by
-`unit/storage/schema_tests.rs`. Integration tests exercise the compiled
-binary through its public input/output and configuration; they do not include
-`src/` modules. No library conversion or visibility widening is required.
-
-Use `cargo test --locked --offline -- --list` after changing registrations to
-check discovery. Test implementations and test-only helper bodies must never
-remain in `src/`; only conditional declarations and module registrations belong
-there. Fixtures and mocks follow the scope of the tests that use them.
+After changing registrations, compare `cargo test --locked --offline -- --list`
+before and after to confirm every test is still discovered.

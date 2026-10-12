@@ -149,7 +149,7 @@ Add `tests/unit/clients/remote_embeddings_tests.rs`, using `wiremock` the way `o
 - [ ] A 503 response maps to an error. In an `Embedder` test, `recall` then returns a keyword-only warning, matching the existing `recall_falls_back_to_keywords_when_the_embedder_is_unavailable` test.
 - [ ] A non-local URL fails validation before any request is sent.
 
-The existing `tests/unit/memory/service_tests.rs` should only need a config value in place of a model directory.
+The existing `tests/unit/features/memory/memory_tests.rs` should only need a config value in place of a model directory.
 
 ## Step 7: verify on the Pis
 

@@ -74,7 +74,7 @@ impl ConversationArchive {
 
     /// Archives a successful turn and links it to the bounded, SQLite-hydrated
     /// sources selected for that run in the same transaction.
-    pub(crate) async fn append_turn_with_memory_and_sources(
+    pub(crate) async fn append_turn(
         &self,
         user_text: &str,
         outcome: ArchiveOutcome,
@@ -159,7 +159,3 @@ pub(crate) enum ArchiveOutcome {
 #[cfg(test)]
 #[path = "../../tests/unit/storage/archive_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/storage/memory/repository_tests.rs"]
-mod memory_tests;

@@ -9,7 +9,7 @@ use super::InputFuture;
 
 /// Waits for the next input line, using the wait to embed pending memories.
 /// Returns the line and an optional memory warning to print.
-pub(super) async fn wait_for_input_or_idle_job<R>(
+pub(super) async fn read_line_during_idle_work<R>(
     input: &mut InputReader<R>,
     memory: Option<&MemoryService>,
 ) -> io::Result<(InputLine, Option<String>)>

@@ -140,5 +140,5 @@ fn normalize(text: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/memory/recall_tests.rs"]
+#[path = "../../../tests/unit/features/memory/recall_tests.rs"]
 mod tests;

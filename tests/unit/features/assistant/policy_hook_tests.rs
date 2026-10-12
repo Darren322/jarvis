@@ -9,7 +9,7 @@ use std::sync::{
 };
 
 use crate::features::assistant::{
-    agent::Assistant,
+    Assistant,
     error::AssistantError,
     run_report::{RunOutcome, ToolStageOutcome},
 };

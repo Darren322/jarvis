@@ -21,7 +21,7 @@ mod idle;
 mod speech;
 mod turn;
 
-use idle::wait_for_input_or_idle_job;
+use idle::read_line_during_idle_work;
 use speech::{SpeechControl, SpeechWait, report_speech_cleanup, watch_speech};
 use turn::stream_turn;
 
@@ -66,7 +66,7 @@ where
     let mut speech_available = speech.as_ref().is_some_and(|speech| !speech.is_disabled());
     let mut prompt_is_visible = false;
     let mut next_input = None;
-    let mut idle_due = true;
+    let mut idle_work_due = true;
     let mut recent_memories = Vec::<MemorySummary>::new();
     let mut current_memory_focus = None;
 
@@ -76,9 +76,9 @@ where
         }
         let (line, memory_warning) = if let Some(line) = next_input.take() {
             (line, None)
-        } else if idle_due {
-            idle_due = false;
-            wait_for_input_or_idle_job(&mut input, memory).await?
+        } else if idle_work_due {
+            idle_work_due = false;
+            read_line_during_idle_work(&mut input, memory).await?
         } else {
             (read_input_line(&mut input).await?, None)
         };
@@ -101,7 +101,7 @@ where
                             speech_available = false;
                         }
                     }
-                    if let Some(error) = session.reset().await {
+                    if let Err(error) = session.reset().await {
                         eprintln!("Warning: local archiving is unavailable: {error}");
                     }
                     current_memory_focus = None;
@@ -123,7 +123,7 @@ where
                         &mut recent_memories,
                     )
                     .await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::ForgetFocus => {
                     forget_focus(
@@ -133,7 +133,7 @@ where
                         &mut recent_memories,
                     )
                     .await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::ForgetDetail(detail) => {
                     forget_detail(
@@ -144,7 +144,7 @@ where
                         &mut recent_memories,
                     )
                     .await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::Import(path) => {
                     import_memory(
@@ -155,15 +155,15 @@ where
                         &mut recent_memories,
                     )
                     .await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::MemoryStatus => {
                     print_memory_status(memory).await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::Rebuild => {
                     rebuild_memory_index(memory).await;
-                    idle_due = true;
+                    idle_work_due = true;
                 }
                 Command::Prompt(prompt) => {
                     let turn = stream_turn(assistant, session, memory, presenter, &prompt).await?;
@@ -219,7 +219,7 @@ where
                                     SpeechWait::InputError { error } => return Err(error.into()),
                                 }
                             }
-                            idle_due = true;
+                            idle_work_due = true;
                         }
                         Err(error) => {
                             presenter.failed(safe_error_message(&error.error))?;
@@ -230,7 +230,7 @@ where
                                 memory_state,
                             );
                             print_run_diagnostics(&error.report);
-                            idle_due = true;
+                            idle_work_due = true;
                         }
                     }
                 }
@@ -240,5 +240,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/app_tests.rs"]
+#[path = "../../../../tests/unit/interfaces/cli/repl/repl_tests.rs"]
 mod tests;

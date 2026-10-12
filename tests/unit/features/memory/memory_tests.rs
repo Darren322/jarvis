@@ -22,7 +22,7 @@ async fn recall_falls_back_to_keywords_when_the_embedder_is_unavailable() {
         .await
         .expect("archive opens");
     let receipt = archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "My cat is called Miso.",
             ArchiveOutcome::Completed("Noted, master.".to_owned()),
             MemoryEligibility::Eligible,

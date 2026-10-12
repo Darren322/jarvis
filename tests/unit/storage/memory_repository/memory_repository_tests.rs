@@ -43,7 +43,7 @@ impl Fixture {
     async fn remember(&self, user: &str, answer: &str, recalled: &[SourceId]) -> SourceId {
         let receipt = self
             .archive
-            .append_turn_with_memory_and_sources(
+            .append_turn(
                 user,
                 ArchiveOutcome::Completed(answer.to_owned()),
                 MemoryEligibility::Eligible,
@@ -90,7 +90,7 @@ async fn completed_turns_become_keyword_searchable_and_failed_turns_do_not() {
         .await;
     let failed = fixture
         .archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "Remember the gate code 1234",
             ArchiveOutcome::TimedOut,
             MemoryEligibility::Eligible,
@@ -287,7 +287,7 @@ async fn an_answer_built_on_a_forgotten_source_is_not_remembered() {
 
     let receipt = fixture
         .archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "What is my cat called?",
             ArchiveOutcome::Completed("Miso.".to_owned()),
             MemoryEligibility::Eligible,
@@ -300,7 +300,7 @@ async fn an_answer_built_on_a_forgotten_source_is_not_remembered() {
 
     let unknown = fixture
         .archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "Hello",
             ArchiveOutcome::Completed("Hi.".to_owned()),
             MemoryEligibility::Eligible,

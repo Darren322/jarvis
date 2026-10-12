@@ -52,7 +52,7 @@ impl History {
         sources
     }
 
-    pub(super) fn record_success_with_sources(
+    pub(super) fn record_success(
         &mut self,
         messages: Option<&[Message]>,
         recalled_source_ids: &[SourceId],
@@ -142,5 +142,5 @@ fn serialized_history_bytes(batches: &VecDeque<HistoryBatch>) -> Result<usize, s
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/conversation/history_tests.rs"]
+#[path = "../../../tests/unit/features/conversation/history_tests.rs"]
 mod tests;

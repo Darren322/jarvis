@@ -26,10 +26,10 @@ fn keeps_three_whole_successful_batches() {
     let third = batch("three", "answer three");
     let fourth = batch("four", "answer four");
 
-    history.record_success_with_sources(Some(&first), &[], None);
-    history.record_success_with_sources(Some(&second), &[], None);
-    history.record_success_with_sources(Some(&third), &[], None);
-    history.record_success_with_sources(Some(&fourth), &[], None);
+    history.record_success(Some(&first), &[], None);
+    history.record_success(Some(&second), &[], None);
+    history.record_success(Some(&third), &[], None);
+    history.record_success(Some(&fourth), &[], None);
 
     assert_eq!(history.messages(), [second, third, fourth].concat());
 }
@@ -45,17 +45,11 @@ fn history_byte_limit_keeps_exact_boundary_and_evicts_oldest_batch() {
         serialized_batch_bytes(&exact_batch).expect("message serializes"),
         MAX_HISTORY_BYTES
     );
-    assert_eq!(
-        history.record_success_with_sources(Some(&exact_batch), &[], None),
-        None
-    );
+    assert_eq!(history.record_success(Some(&exact_batch), &[], None), None);
     assert_eq!(history.messages(), exact_batch.to_vec());
 
     let newest = [user_message("newest")];
-    assert_eq!(
-        history.record_success_with_sources(Some(&newest), &[], None),
-        None
-    );
+    assert_eq!(history.record_success(Some(&newest), &[], None), None);
     assert_eq!(history.messages(), newest.to_vec());
 }
 
@@ -63,14 +57,14 @@ fn history_byte_limit_keeps_exact_boundary_and_evicts_oldest_batch() {
 fn oversized_new_batch_clears_older_context_and_is_not_retained() {
     let mut history = History::default();
     let prior = [user_message("prior")];
-    history.record_success_with_sources(Some(&prior), &[], None);
+    history.record_success(Some(&prior), &[], None);
 
     let overhead = serialized_batch_bytes(&[user_message("")]).expect("message serializes");
     let oversized = [user_message(&"x".repeat(MAX_HISTORY_BYTES + 1 - overhead))];
 
     assert!(
         history
-            .record_success_with_sources(Some(&oversized), &[], None)
+            .record_success(Some(&oversized), &[], None)
             .is_some()
     );
     assert!(history.messages().is_empty());
@@ -79,12 +73,8 @@ fn oversized_new_batch_clears_older_context_and_is_not_retained() {
 #[test]
 fn missing_messages_clears_active_history_and_warns() {
     let mut history = History::default();
-    history.record_success_with_sources(Some(&[user_message("prior")]), &[], None);
+    history.record_success(Some(&[user_message("prior")]), &[], None);
 
-    assert!(
-        history
-            .record_success_with_sources(None, &[], None)
-            .is_some()
-    );
+    assert!(history.record_success(None, &[], None).is_some());
     assert!(history.messages().is_empty());
 }

@@ -52,21 +52,15 @@ impl ConversationSession {
     // enforce this.
     // `Option::take()` moves the old archive out and leaves `None`; its unused return value is dropped
     // before the fresh open.
-    // `Option<StorageError>` means reset returns either a typed error or no error, not a nullable error.
-    pub(crate) async fn reset(&mut self) -> Option<StorageError> {
+    // On error the session keeps working with process-only context (no archive).
+    pub(crate) async fn reset(&mut self) -> Result<(), StorageError> {
         self.history.clear();
         let next = match self.archive.take() {
             Some(archive) => archive.next_session().await,
             None => ConversationArchive::open(self.archive_path.clone()).await,
         };
-
-        match next {
-            Ok(archive) => {
-                self.archive = Some(archive);
-                None
-            }
-            Err(error) => Some(error),
-        }
+        self.archive = Some(next?);
+        Ok(())
     }
 
     pub(crate) fn memory_repository(&self) -> Option<MemoryRepository> {
@@ -117,24 +111,22 @@ impl ConversationSession {
         } else {
             Vec::new()
         };
-        let (current_source, archive_error, lineage_suppressed, memory_state) = match self
-            .archive
-            .as_ref()
-        {
-            Some(archive) => match archive
-                .append_turn_with_memory_and_sources(prompt, outcome, eligibility, &dependencies)
-                .await
-            {
-                Ok(receipt) => (
-                    receipt.source_id,
-                    None,
-                    receipt.memory == MemorySaveState::Suppressed,
-                    Some(receipt.memory),
-                ),
-                Err(error) => (None, Some(error), false, None),
-            },
-            None => (None, None, false, None),
-        };
+        let (current_source, archive_error, lineage_suppressed, memory_state) =
+            match self.archive.as_ref() {
+                Some(archive) => match archive
+                    .append_turn(prompt, outcome, eligibility, &dependencies)
+                    .await
+                {
+                    Ok(receipt) => (
+                        receipt.source_id,
+                        None,
+                        receipt.memory == MemorySaveState::Suppressed,
+                        Some(receipt.memory),
+                    ),
+                    Err(error) => (None, Some(error), false, None),
+                },
+                None => (None, None, false, None),
+            };
         let history_warning = if lineage_suppressed {
             // The answer was generated against lineage SQLite rejected as stale;
             // keep it archived for the user, but don't replay unsafe native history.
@@ -142,7 +134,7 @@ impl ConversationSession {
             Some(SUPPRESSED_LINEAGE_WARNING)
         } else {
             match &run {
-                Ok(run) => self.history.record_success_with_sources(
+                Ok(run) => self.history.record_success(
                     run.response.messages(),
                     &recall.source_ids,
                     current_source,
@@ -167,19 +159,18 @@ impl ConversationSession {
     }
 
     /// Saves a safe, non-eligible outcome when terminal output fails mid-stream.
-    pub(crate) async fn record_interrupted(&self, prompt: &str) -> Option<StorageError> {
-        match self.archive.as_ref() {
-            Some(archive) => archive
-                .append_turn_with_memory_and_sources(
+    pub(crate) async fn record_interrupted(&self, prompt: &str) -> Result<(), StorageError> {
+        if let Some(archive) = self.archive.as_ref() {
+            archive
+                .append_turn(
                     prompt,
                     ArchiveOutcome::PromptFailed,
                     MemoryEligibility::ArchiveOnly,
                     &[],
                 )
-                .await
-                .err(),
-            None => None,
+                .await?;
         }
+        Ok(())
     }
 }
 
@@ -208,5 +199,5 @@ fn combine_warnings(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/conversation/conversation_tests.rs"]
+#[path = "../../../tests/unit/features/conversation/session_tests.rs"]
 mod tests;

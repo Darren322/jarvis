@@ -153,5 +153,5 @@ impl MemoryService {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/memory/service_tests.rs"]
+#[path = "../../../tests/unit/features/memory/memory_tests.rs"]
 mod tests;

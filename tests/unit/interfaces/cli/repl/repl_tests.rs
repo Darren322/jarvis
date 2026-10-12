@@ -90,7 +90,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let mut speech = None::<FailingSpeech>;
     let mut input = BufReader::new(std::io::Cursor::new(
@@ -195,7 +195,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let (started_tx, started_rx) = oneshot::channel();
     let (release_tx, release_rx) = oneshot::channel();
@@ -303,7 +303,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let (started_tx, started_rx) = oneshot::channel();
     let (_release_tx, release_rx) = oneshot::channel();
@@ -395,7 +395,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let (started_tx, started_rx) = oneshot::channel();
     let (_release_tx, release_rx) = oneshot::channel();

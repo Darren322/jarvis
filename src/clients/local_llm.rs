@@ -204,3 +204,7 @@ impl LocalLlm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/clients/local_llm_tests.rs"]
+mod tests;

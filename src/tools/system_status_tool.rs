@@ -38,3 +38,7 @@ impl Tool for SystemStatusTool {
         Ok(collect_system_status())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tools/system_status_tool_tests.rs"]
+mod tests;

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 
 WORKER_PATH = (
-    Path(__file__).resolve().parents[3]
+    Path(__file__).resolve().parents[5]
     / "scripts"
     / "tts"
     / "supertonic_worker.py"

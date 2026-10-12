@@ -51,7 +51,3 @@ pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[ToolRule::for_tool::<SystemStatu
 pub(crate) fn allowed_tool(name: &str) -> Option<&'static ToolRule> {
     ALLOWED_TOOLS.iter().find(|rule| rule.name == name)
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/tools/mod.rs"]
-mod tests;

@@ -174,5 +174,5 @@ fn prepend_wake_noise(speech_samples: Vec<f32>) -> Vec<f32> {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/speech/playback_tests.rs"]
+#[path = "../../../tests/unit/features/speech/playback_tests.rs"]
 mod tests;

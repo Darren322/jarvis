@@ -41,7 +41,7 @@ impl ConversationSession {
             Ok(run) => {
                 let context_warning = self
                     .history
-                    .record_success_with_sources(run.response.messages(), &[], None)
+                    .record_success(run.response.messages(), &[], None)
                     .map(str::to_owned);
                 (
                     ArchiveOutcome::Completed(run.response.output().to_owned()),
@@ -55,7 +55,10 @@ impl ConversationSession {
         // optional storage error.
         // Callers can report this sidecar error without replacing or retrying the model outcome.
         let archive_error = match self.archive.as_ref() {
-            Some(archive) => archive.append_turn(prompt, outcome).await.err(),
+            Some(archive) => archive
+                .append_turn(prompt, outcome, MemoryEligibility::ArchiveOnly, &[])
+                .await
+                .err(),
             None => None,
         };
 
@@ -97,7 +100,7 @@ fn remove_archive(path: &std::path::Path) {
 async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() {
     let path = archive_path();
     let mut session = ConversationSession::new(path.clone());
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
     let archive = session.archive.as_ref().expect("archive is open");
     let repository = archive.memory_repository();
     let recalled = repository
@@ -110,7 +113,7 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
         .expect("source should import");
 
     let answer_b = archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "When is the workshop?",
             ArchiveOutcome::Completed("It is on Tuesday.".to_owned()),
             MemoryEligibility::Eligible,
@@ -125,7 +128,7 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
     // source could leave C searchable.
     let dependencies = merge_source_dependencies(&[recalled.source_id, answer_b_source], &[]);
     let answer_c = archive
-        .append_turn_with_memory_and_sources(
+        .append_turn(
             "And when is that?",
             ArchiveOutcome::Completed("Tuesday.".to_owned()),
             MemoryEligibility::Eligible,
@@ -177,7 +180,7 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let path = archive_path();
     let mut session = ConversationSession::new(path.clone());
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let first = session.respond(&assistant, "first prompt").await;
     let first_messages = first
@@ -266,13 +269,13 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let mut session = ConversationSession::new(path.clone());
 
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
     let turn = session.respond(&assistant, "saved prompt").await;
     assert!(turn.run.is_ok());
     assert!(turn.archive_error.is_none());
     assert!(!session.history.messages().is_empty());
 
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
     assert!(session.history.messages().is_empty());
     let next = session.respond(&assistant, "new session prompt").await;
     assert!(next.run.is_ok());
@@ -309,7 +312,7 @@ async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let mut session = ConversationSession::new(path.clone());
-    assert!(session.reset().await.is_none());
+    assert!(session.reset().await.is_ok());
 
     let connection = Connection::open(&path).expect("archive database opens");
     connection

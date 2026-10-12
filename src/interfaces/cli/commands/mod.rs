@@ -80,7 +80,7 @@ fn strip_leading_phrase<'a>(input: &'a str, phrase: &str) -> Option<&'a str> {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/interfaces/cli/commands_tests.rs"]
+#[path = "../../../../tests/unit/interfaces/cli/commands/commands_tests.rs"]
 mod tests;
 
 pub(super) mod memory;

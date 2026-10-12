@@ -4,32 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::{ArchiveOutcome, ArchiveReceipt, ConversationArchive, MemoryEligibility, StorageError};
-
-impl ConversationArchive {
-    /// Compatibility path for callers that only need the original archive behavior.
-    #[cfg(test)]
-    pub(crate) async fn append_turn(
-        &self,
-        user_text: &str,
-        outcome: ArchiveOutcome,
-    ) -> Result<(), StorageError> {
-        self.append_turn_with_memory(user_text, outcome, MemoryEligibility::ArchiveOnly)
-            .await?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn append_turn_with_memory(
-        &self,
-        user_text: &str,
-        outcome: ArchiveOutcome,
-        eligibility: MemoryEligibility,
-    ) -> Result<ArchiveReceipt, StorageError> {
-        self.append_turn_with_memory_and_sources(user_text, outcome, eligibility, &[])
-            .await
-    }
-}
+use super::{ArchiveOutcome, ConversationArchive, MemoryEligibility, StorageError};
 
 fn database_path(label: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -57,10 +32,17 @@ async fn saves_safe_outcomes_and_preserves_sessions_after_reopen() -> Result<(),
         .append_turn(
             "What is the status?",
             ArchiveOutcome::Completed("All systems are available.".to_owned()),
+            MemoryEligibility::ArchiveOnly,
+            &[],
         )
         .await?;
     first
-        .append_turn("A request that fails", ArchiveOutcome::PromptFailed)
+        .append_turn(
+            "A request that fails",
+            ArchiveOutcome::PromptFailed,
+            MemoryEligibility::ArchiveOnly,
+            &[],
+        )
         .await?;
     first.connection.clone().close().await?;
     drop(first);

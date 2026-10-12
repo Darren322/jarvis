@@ -186,5 +186,5 @@ pub(super) fn validate_turn(
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/assistant/policy_tests.rs"]
-mod policy_tests;
+#[path = "../../../tests/unit/features/assistant/policy_tests.rs"]
+mod tests;

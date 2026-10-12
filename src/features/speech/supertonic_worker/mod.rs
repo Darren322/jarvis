@@ -452,5 +452,5 @@ impl SupertonicWorker {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/speech/supertonic_worker_tests.rs"]
+#[path = "../../../../tests/unit/features/speech/supertonic_worker/supertonic_worker_tests.rs"]
 mod tests;
