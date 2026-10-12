@@ -16,14 +16,9 @@ use tokio::{
 
 use crate::{
     features::{assistant::Assistant, conversation::ConversationSession},
-    storage::{MemoryId, SourceId},
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::super::commands::memory::{
-    CurrentMemoryFocus, focus_from_displayed_ids, focus_from_successful_turn,
-};
-use super::super::commands::{Command, parse};
 use super::super::presentation::TerminalPresenter;
 use super::{run_input_loop, speech::SpeechControl};
 
@@ -42,36 +37,6 @@ fn answer_capture() -> (CapturedAnswers, Arc<Semaphore>, impl FnMut(&str)) {
         presented_signal.add_permits(1);
     };
     (answers, presented, presenter)
-}
-
-#[test]
-fn forget_focus_uses_only_an_exact_deictic_phrase_and_trusted_foreground_ids() {
-    assert_eq!(parse("forget that, please.".into()), Command::ForgetFocus);
-    assert_eq!(
-        parse("forget that file from yesterday".into()),
-        Command::ForgetDetail("that file from yesterday".into())
-    );
-    assert_eq!(
-        focus_from_displayed_ids([MemoryId(12)].into_iter()),
-        Some(CurrentMemoryFocus::Memory(MemoryId(12)))
-    );
-    assert_eq!(
-        focus_from_displayed_ids([MemoryId(12), MemoryId(13)].into_iter()),
-        Some(CurrentMemoryFocus::AmbiguousDisplay)
-    );
-    assert_eq!(focus_from_displayed_ids(std::iter::empty()), None);
-
-    let foreground_source = SourceId(3);
-    let later_backfill_source = SourceId(90);
-    assert_eq!(
-        focus_from_successful_turn(Some(foreground_source)),
-        Some(CurrentMemoryFocus::Source(foreground_source))
-    );
-    assert_ne!(
-        focus_from_successful_turn(Some(foreground_source)),
-        Some(CurrentMemoryFocus::Source(later_backfill_source)),
-        "backfill IDs do not replace the foreground receipt focus"
-    );
 }
 
 #[tokio::test]

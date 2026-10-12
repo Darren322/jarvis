@@ -83,9 +83,7 @@ impl App {
                 None
             }
         };
-        println!(
-            "Enter a message, /reset, /stop, /exit, /memories [query], /forget <id>, /import <path>, /memory status, or /memory rebuild."
-        );
+        println!("Enter a message, or /help for commands.");
 
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);

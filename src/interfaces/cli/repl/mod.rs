@@ -3,19 +3,16 @@ use std::{future::Future, io, pin::Pin};
 use tokio::io::AsyncBufRead;
 
 use crate::features::{
-    assistant::Assistant, conversation::ConversationSession, memory::MemoryService,
+    assistant::Assistant,
+    control::{self, Command, MemoryControl},
+    conversation::ConversationSession,
+    memory::MemoryService,
 };
-use crate::interfaces::cli::commands::memory::{
-    focus_from_displayed_ids, focus_from_successful_turn, forget_detail, forget_focus,
-    forget_memory_id, import_memory, list_memories, print_memory_status, rebuild_memory_index,
-};
-use crate::interfaces::cli::commands::{self, Command, print_help};
 use crate::interfaces::cli::diagnostics::{
-    print_run_diagnostics, report_turn_warnings, safe_error_message,
+    print_notices, print_run_diagnostics, report_turn_warnings, safe_error_message,
 };
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
-use crate::storage::MemorySummary;
 
 mod idle;
 mod speech;
@@ -67,8 +64,7 @@ where
     let mut prompt_is_visible = false;
     let mut next_input = None;
     let mut idle_work_due = true;
-    let mut recent_memories = Vec::<MemorySummary>::new();
-    let mut current_memory_focus = None;
+    let mut memory_control = MemoryControl::default();
 
     loop {
         if !prompt_is_visible && next_input.is_none() {
@@ -91,9 +87,11 @@ where
         match line {
             InputLine::Eof => return Ok(()),
             InputLine::Rejected(reason) => eprintln!("Input rejected: {}", reason.message()),
-            InputLine::Prompt(raw) => match commands::parse(raw) {
+            InputLine::Prompt(raw) => match control::parse(raw) {
                 Command::Exit => return Ok(()),
                 Command::Stop => println!("Stopped."),
+                Command::Help => println!("{}", control::help_text()),
+                Command::Usage(hint) => println!("{hint}"),
                 Command::Reset => {
                     if let Some(speech) = speech.as_mut() {
                         let cleanup_ok = report_speech_cleanup(speech.cancel().await);
@@ -104,65 +102,11 @@ where
                     if let Err(error) = session.reset().await {
                         eprintln!("Warning: local archiving is unavailable: {error}");
                     }
-                    current_memory_focus = None;
-                    recent_memories.clear();
+                    memory_control.clear();
                     println!("Conversation context reset.");
                 }
-                Command::Help => print_help(),
-                Command::ListMemories(query) => {
-                    recent_memories = list_memories(memory, query).await;
-                    current_memory_focus =
-                        focus_from_displayed_ids(recent_memories.iter().map(|record| record.id));
-                }
-                Command::ForgetId(id) => {
-                    forget_memory_id(
-                        memory,
-                        session,
-                        &id,
-                        &mut current_memory_focus,
-                        &mut recent_memories,
-                    )
-                    .await;
-                    idle_work_due = true;
-                }
-                Command::ForgetFocus => {
-                    forget_focus(
-                        memory,
-                        session,
-                        &mut current_memory_focus,
-                        &mut recent_memories,
-                    )
-                    .await;
-                    idle_work_due = true;
-                }
-                Command::ForgetDetail(detail) => {
-                    forget_detail(
-                        memory,
-                        session,
-                        &detail,
-                        &mut current_memory_focus,
-                        &mut recent_memories,
-                    )
-                    .await;
-                    idle_work_due = true;
-                }
-                Command::Import(path) => {
-                    import_memory(
-                        memory,
-                        session,
-                        &path,
-                        &mut current_memory_focus,
-                        &mut recent_memories,
-                    )
-                    .await;
-                    idle_work_due = true;
-                }
-                Command::MemoryStatus => {
-                    print_memory_status(memory).await;
-                    idle_work_due = true;
-                }
-                Command::Rebuild => {
-                    rebuild_memory_index(memory).await;
+                Command::Memory(command) => {
+                    print_notices(&memory_control.run(command, memory, session).await);
                     idle_work_due = true;
                 }
                 Command::Prompt(prompt) => {
@@ -176,7 +120,7 @@ where
                         current_source_id,
                     } = turn;
                     if run.is_ok() {
-                        current_memory_focus = focus_from_successful_turn(current_source_id);
+                        memory_control.focus_on_turn(current_source_id);
                     }
                     match run {
                         Ok(run) => {

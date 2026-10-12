@@ -1,5 +1,15 @@
 use crate::features::assistant::{AssistantError, CallUsage, RunReport};
+use crate::features::control::Notice;
 use crate::storage::MemorySaveState;
+
+pub(super) fn print_notices(notices: &[Notice]) {
+    for notice in notices {
+        match notice {
+            Notice::Info(text) => println!("{text}"),
+            Notice::Warning(text) => eprintln!("Warning: {text}"),
+        }
+    }
+}
 
 pub(super) fn report_turn_warnings(
     context_warning: Option<&str>,
