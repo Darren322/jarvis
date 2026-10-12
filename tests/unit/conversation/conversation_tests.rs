@@ -122,7 +122,7 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
 
     // Turn C only needs native history at inference time. Its archive lineage must
     // still include the recalled source that informed turn B, or forgetting that
-    // source could leave C available for later extraction.
+    // source could leave C searchable.
     let dependencies = merge_source_dependencies(&[recalled.source_id, answer_b_source], &[]);
     let answer_c = archive
         .append_turn_with_memory_and_sources(
@@ -145,7 +145,7 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
     let child_depends_on_recalled: bool = connection
         .query_row(
             "SELECT EXISTS(
-                SELECT 1 FROM source_dependencies
+                SELECT 1 FROM source_links
                 WHERE source_id = ?1 AND depends_on_source_id = ?2
             )",
             rusqlite::params![answer_c_source.0, recalled.source_id.0],
@@ -154,7 +154,7 @@ async fn history_only_answer_keeps_recalled_source_lineage_for_forget_cascade() 
         .expect("C lineage is queryable");
     let child_is_suppressed: bool = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM source_suppressions WHERE source_id = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM sources WHERE id = ?1 AND state = 'forgotten')",
             [answer_c_source.0],
             |row| row.get(0),
         )

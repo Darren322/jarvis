@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
-use crate::features::{conversation::ConversationSession, memory::MemoryService};
-use crate::storage::{
-    CorrectionState, JobId, MemoryId, MemoryListFilter, MemoryRecordStatus, MemorySummary, SourceId,
+use crate::features::{
+    conversation::ConversationSession,
+    memory::{EmbedderState, MemoryService},
 };
+use crate::storage::{ForgetReceipt, ImportState, MemoryId, MemoryKind, MemorySummary, SourceId};
+
+const UNAVAILABLE: &str = "Local memory storage is unavailable.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::interfaces::cli) enum CurrentMemoryFocus {
@@ -30,38 +33,28 @@ pub(in crate::interfaces::cli) fn focus_from_successful_turn(
 }
 
 pub(in crate::interfaces::cli) async fn list_memories(
-    memory: &Option<MemoryService>,
+    memory: Option<&MemoryService>,
     query: Option<String>,
 ) -> Vec<MemorySummary> {
-    let Some(memory) = memory.as_ref() else {
-        println!("Local memory storage is unavailable.");
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE}");
         return Vec::new();
     };
-    match memory
-        .list(MemoryListFilter {
-            query,
-            status: Some(MemoryRecordStatus::Active),
-            limit: 20,
-        })
-        .await
-    {
+    match memory.list(query, 20).await {
         Ok(records) if records.is_empty() => {
-            println!("No active memories matched.");
+            println!("No memories matched.");
             Vec::new()
         }
         Ok(records) => {
             for record in &records {
-                if record.correction_state == CorrectionState::NeedsReview {
-                    println!(
-                        "{} [source {}] [NeedsReview] {}",
-                        record.id.0, record.source_id.0, record.text
-                    );
-                } else {
-                    println!(
-                        "{} [source {}] {}",
-                        record.id.0, record.source_id.0, record.text
-                    );
-                }
+                let fact = match record.kind {
+                    MemoryKind::Fact => " [fact]",
+                    MemoryKind::Excerpt => "",
+                };
+                println!(
+                    "{} [source {}]{fact} {}",
+                    record.id.0, record.source_id.0, record.text
+                );
             }
             records
         }
@@ -73,7 +66,7 @@ pub(in crate::interfaces::cli) async fn list_memories(
 }
 
 pub(in crate::interfaces::cli) async fn forget_memory_id(
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     session: &mut ConversationSession,
     raw_id: &str,
     focus: &mut Option<CurrentMemoryFocus>,
@@ -83,8 +76,8 @@ pub(in crate::interfaces::cli) async fn forget_memory_id(
         println!("Use /forget followed by a numeric memory ID.");
         return;
     };
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable; nothing was forgotten.");
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE} Nothing was forgotten.");
         return;
     };
     match memory.forget(MemoryId(id)).await {
@@ -94,217 +87,165 @@ pub(in crate::interfaces::cli) async fn forget_memory_id(
 }
 
 pub(in crate::interfaces::cli) async fn forget_focus(
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     session: &mut ConversationSession,
-    target: Option<CurrentMemoryFocus>,
     focus: &mut Option<CurrentMemoryFocus>,
     recent: &mut Vec<MemorySummary>,
 ) {
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable; nothing was forgotten.");
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE} Nothing was forgotten.");
         return;
     };
-    match target {
-        Some(CurrentMemoryFocus::Source(source_id)) => {
-            match memory.forget_source(source_id).await {
-                Ok(receipt) => apply_forget_receipt(&receipt, session, focus, recent),
-                Err(error) => eprintln!("Warning: the current source was not forgotten: {error}"),
-            }
+    let result = match *focus {
+        Some(CurrentMemoryFocus::Source(source_id)) => memory.forget_source(source_id).await,
+        Some(CurrentMemoryFocus::Memory(memory_id)) => memory.forget(memory_id).await,
+        Some(CurrentMemoryFocus::AmbiguousDisplay) => {
+            println!(
+                "The current /memories display has multiple records. Use /forget <id> to choose one; nothing was forgotten."
+            );
+            return;
         }
-        Some(CurrentMemoryFocus::Memory(memory_id)) => match memory.forget(memory_id).await {
-            Ok(receipt) => apply_forget_receipt(&receipt, session, focus, recent),
-            Err(error) => eprintln!("Warning: the displayed memory was not forgotten: {error}"),
-        },
-        Some(CurrentMemoryFocus::AmbiguousDisplay) => println!(
-            "The current /memories display has multiple active records. Use /forget <id> to choose one; nothing was forgotten."
-        ),
-        None => println!(
-            "There is no current foreground memory target. Use /memories to choose a record; nothing was forgotten."
-        ),
-    }
-}
-
-pub(in crate::interfaces::cli) async fn forget_detail(
-    memory: &mut Option<MemoryService>,
-    session: &mut ConversationSession,
-    recent: &[MemorySummary],
-    detail: &str,
-    focus: &mut Option<CurrentMemoryFocus>,
-    recent_display: &mut Vec<MemorySummary>,
-) {
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable; nothing was forgotten.");
-        return;
-    };
-    let needle = detail.to_lowercase();
-    let active = match memory
-        .list(MemoryListFilter {
-            query: None,
-            status: Some(MemoryRecordStatus::Active),
-            limit: 50,
-        })
-        .await
-    {
-        Ok(records) => records,
-        Err(error) => {
-            eprintln!("Warning: forget detail could not be resolved: {error}");
+        None => {
+            println!(
+                "There is no current memory to forget. Use /memories to choose a record; nothing was forgotten."
+            );
             return;
         }
     };
+    match result {
+        Ok(receipt) => apply_forget_receipt(&receipt, session, focus, recent),
+        Err(error) => eprintln!("Warning: the memory was not forgotten: {error}"),
+    }
+}
+
+/// Forgets the single memory whose text contains `detail`, searching the last
+/// /memories display first and then the store. Ambiguity forgets nothing.
+pub(in crate::interfaces::cli) async fn forget_detail(
+    memory: Option<&MemoryService>,
+    session: &mut ConversationSession,
+    detail: &str,
+    focus: &mut Option<CurrentMemoryFocus>,
+    recent: &mut Vec<MemorySummary>,
+) {
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE} Nothing was forgotten.");
+        return;
+    };
+    let needle = detail.to_lowercase();
     let mut candidates = recent
         .iter()
-        .filter(|record| {
-            record.status == MemoryRecordStatus::Active
-                && record.text.to_lowercase().contains(&needle)
-                && active.iter().any(|current| current.id == record.id)
-        })
+        .filter(|record| record.text.to_lowercase().contains(&needle))
         .map(|record| record.id)
         .collect::<Vec<_>>();
-    candidates.sort_by_key(|id| id.0);
-    candidates.dedup();
-    match memory
-        .list(MemoryListFilter {
-            query: Some(detail.to_owned()),
-            status: Some(MemoryRecordStatus::Active),
-            limit: 2,
-        })
-        .await
-    {
+    match memory.list(Some(detail.to_owned()), 2).await {
         Ok(records) => candidates.extend(records.into_iter().map(|record| record.id)),
         Err(error) => {
             eprintln!("Warning: forget detail could not be resolved: {error}");
             return;
         }
     }
-    candidates.sort_by_key(|id| id.0);
+    candidates.sort();
     candidates.dedup();
     match candidates.as_slice() {
         [id] => match memory.forget(*id).await {
-            Ok(receipt) => apply_forget_receipt(&receipt, session, focus, recent_display),
+            Ok(receipt) => apply_forget_receipt(&receipt, session, focus, recent),
             Err(error) => eprintln!("Warning: the selected memory was not forgotten: {error}"),
         },
-        [] => println!(
-            "I could not find one active memory matching that detail; nothing was forgotten."
-        ),
+        [] => println!("I could not find one memory matching that detail; nothing was forgotten."),
         _ => println!(
-            "That detail matches multiple active memories. Use /memories to choose an ID; nothing was forgotten."
+            "That detail matches multiple memories. Use /memories to choose an ID; nothing was forgotten."
         ),
     }
 }
 
 fn apply_forget_receipt(
-    receipt: &crate::storage::ForgetReceipt,
+    receipt: &ForgetReceipt,
     session: &mut ConversationSession,
     focus: &mut Option<CurrentMemoryFocus>,
     recent: &mut Vec<MemorySummary>,
 ) {
-    if print_forget_receipt(receipt) {
-        session.clear_history();
-        *focus = None;
-        recent.clear();
-    }
-}
-
-fn print_forget_receipt(receipt: &crate::storage::ForgetReceipt) -> bool {
-    if receipt.forgotten_memory_count == 0 && receipt.suppressed_source_count == 0 {
-        println!("No active memory matched; nothing was forgotten.");
-        return false;
+    if receipt.is_empty() {
+        println!("No memory matched; nothing was forgotten.");
+        return;
     }
     println!(
-        "Forgot {} memories and suppressed {} sources; {} archived turns were affected{}.",
-        receipt.forgotten_memory_count,
-        receipt.suppressed_source_count,
-        receipt.affected_turn_count,
-        if receipt.ids_truncated {
-            " (ID lists truncated)"
-        } else {
-            ""
-        },
+        "Forgot {} memories from {} sources; {} archived turns were affected.",
+        receipt.forgotten_memories, receipt.forgotten_sources, receipt.affected_turns,
     );
-    true
+    // Active history may quote what was just forgotten; drop it whole.
+    session.clear_history();
+    *focus = None;
+    recent.clear();
 }
 
 pub(in crate::interfaces::cli) async fn import_memory(
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     session: &mut ConversationSession,
     raw_path: &str,
     focus: &mut Option<CurrentMemoryFocus>,
     recent: &mut Vec<MemorySummary>,
 ) {
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable; the import was not saved.");
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE} The import was not saved.");
         return;
     };
-    let path = PathBuf::from(raw_path);
-    match memory.import_file(&path).await {
+    match memory.import_file(&PathBuf::from(raw_path)).await {
         Ok(receipt) => {
-            if receipt.state != "already_current" {
-                // An updated or reactivated file can invalidate facts retained by
-                // the current native history, so discard complete batches.
+            let state = match receipt.state {
+                ImportState::Created => "created",
+                ImportState::AlreadyCurrent => "already current",
+                ImportState::Reactivated => "reactivated",
+                ImportState::Forgotten => {
+                    println!("This file version was forgotten earlier and was not imported again.");
+                    return;
+                }
+            };
+            if receipt.state != ImportState::AlreadyCurrent {
+                // A changed file can contradict facts in the active history.
                 session.clear_history();
             }
             *focus = Some(CurrentMemoryFocus::Source(receipt.source_id));
             recent.clear();
             println!(
-                "Imported source {} ({} parts, state {}).",
-                receipt.source_id.0, receipt.parts, receipt.state
+                "Imported source {} ({} chunks, {state}).",
+                receipt.source_id.0, receipt.chunks
             );
         }
         Err(error) => eprintln!("Warning: import was not saved: {error}"),
     }
 }
 
-pub(in crate::interfaces::cli) async fn print_memory_status(memory: &mut Option<MemoryService>) {
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable.");
+pub(in crate::interfaces::cli) async fn print_memory_status(memory: Option<&MemoryService>) {
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE}");
         return;
     };
     match memory.status().await {
         Ok(status) => {
+            let embedder = match status.embedder {
+                EmbedderState::Loading => "loading",
+                EmbedderState::Ready => "ready",
+                EmbedderState::Unavailable => "unavailable (keyword-only recall)",
+            };
             println!(
-                "Memory: backend_available={} queued={} running={} failed={} pending_sources={} pending_parts={} pending_projection={} backfill_complete={}",
-                status.backend_available,
-                status.stats.queued_extractions,
-                status.stats.running_extractions,
-                status.stats.failed_extractions,
-                status.stats.pending_sources,
-                status.stats.pending_source_parts,
-                status.stats.pending_projections,
-                status.stats.backfill_complete,
+                "Memory: {} memories from {} conversations and {} imports; {} awaiting embedding; embedder {embedder}.",
+                status.stats.memories,
+                status.stats.conversation_sources,
+                status.stats.import_sources,
+                status.stats.pending_embeddings,
             );
-            if let Some(warning) = status.warning {
-                println!("Memory warning: {warning}");
-            }
         }
         Err(error) => eprintln!("Warning: memory status is unavailable: {error}"),
     }
 }
 
-pub(in crate::interfaces::cli) async fn retry_memory_job(
-    memory: &Option<MemoryService>,
-    raw_id: &str,
-) {
-    let Ok(id) = raw_id.parse::<i64>() else {
-        println!("Use /memory retry followed by a numeric job ID.");
-        return;
-    };
-    let Some(memory) = memory.as_ref() else {
-        println!("Local memory storage is unavailable.");
-        return;
-    };
-    match memory.retry(JobId(id)).await {
-        Ok(disposition) => println!("Memory job retry: {disposition:?}."),
-        Err(error) => eprintln!("Warning: memory job could not be retried: {error}"),
-    }
-}
-
-pub(in crate::interfaces::cli) async fn rebuild_memory_index(memory: &mut Option<MemoryService>) {
-    let Some(memory) = memory.as_mut() else {
-        println!("Local memory storage is unavailable.");
+pub(in crate::interfaces::cli) async fn rebuild_memory_index(memory: Option<&MemoryService>) {
+    let Some(memory) = memory else {
+        println!("{UNAVAILABLE}");
         return;
     };
     match memory.rebuild().await {
-        Ok(updated) => println!("Memory index rebuild processed {updated} records."),
-        Err(error) => eprintln!("Warning: memory index rebuild did not complete: {error}"),
+        Ok(reset) => println!("Queued {reset} memories for re-embedding while idle."),
+        Err(error) => eprintln!("Warning: memory rebuild did not start: {error}"),
     }
 }

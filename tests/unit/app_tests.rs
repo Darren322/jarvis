@@ -93,7 +93,6 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
     assert!(session.reset().await.is_none());
 
     let mut speech = None::<FailingSpeech>;
-    let mut memory = None;
     let mut input = BufReader::new(std::io::Cursor::new(
         b"first prompt\nsecond prompt\n/exit\n",
     ));
@@ -101,7 +100,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
     run_input_loop(
         &assistant,
         &mut session,
-        &mut memory,
+        None,
         &mut speech,
         &mut input,
         &mut presenter,
@@ -221,11 +220,10 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         .expect("initial prompts should fit in duplex buffer");
 
     let (answers, _presented_signal, mut present_answer) = answer_capture();
-    let mut memory = None;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
-        &mut memory,
+        None,
         &mut speech,
         &mut input,
         &mut present_answer,
@@ -330,11 +328,10 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         .expect("initial prompt and partial line should fit in duplex buffer");
 
     let (answers, presented_signal, mut present_answer) = answer_capture();
-    let mut memory = None;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
-        &mut memory,
+        None,
         &mut speech,
         &mut input,
         &mut present_answer,
@@ -423,11 +420,10 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         .expect("prompt should fit in duplex buffer");
 
     let (answers, _presented_signal, mut present_answer) = answer_capture();
-    let mut memory = None;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
-        &mut memory,
+        None,
         &mut speech,
         &mut input,
         &mut present_answer,

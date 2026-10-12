@@ -13,7 +13,6 @@ fn parses_memory_controls_without_rewriting_import_paths() {
         Command::Import("notes from 2024.md".into())
     );
     assert_eq!(parse("/memory status".into()), Command::MemoryStatus);
-    assert_eq!(parse("/memory retry 9".into()), Command::Retry("9".into()));
     assert_eq!(parse("/memory rebuild".into()), Command::Rebuild);
 }
 

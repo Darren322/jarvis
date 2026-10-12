@@ -1,76 +1,42 @@
-use rig_core::completion::{Document, Usage};
+use rig_core::completion::Document;
 
-use crate::storage::{JobId, MemoryStats, SourceId};
+use crate::storage::{MemoryStats, SourceId};
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum RecallState {
-    Available,
-    Empty,
-    Unavailable(String),
-}
+use super::embedder::{EmbedError, EmbedderState};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RecallSnapshot {
     pub(crate) documents: Vec<Document>,
-    /// Source IDs are aligned with `documents` and prevent re-indexing recalled facts.
+    /// Source IDs are aligned with `documents` and become the turn's lineage.
     pub(crate) source_ids: Vec<SourceId>,
-    pub(crate) state: RecallState,
+    /// Set when recall was degraded (for example keyword-only) or failed.
+    pub(crate) warning: Option<String>,
 }
 
 impl RecallSnapshot {
-    pub(crate) fn empty() -> Self {
-        Self {
-            documents: Vec::new(),
-            source_ids: Vec::new(),
-            state: RecallState::Empty,
-        }
-    }
-
     pub(crate) fn unavailable(message: impl Into<String>) -> Self {
         Self {
-            documents: Vec::new(),
-            source_ids: Vec::new(),
-            state: RecallState::Unavailable(message.into()),
+            warning: Some(message.into()),
+            ..Self::default()
         }
     }
 }
 
+/// Outcome of one bounded idle pass over pending embeddings.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct JobRun {
-    pub(crate) job_id: Option<JobId>,
-    pub(crate) attempt: Option<u8>,
-    pub(crate) committed_records: usize,
-    pub(crate) source_parts_processed: usize,
-    pub(crate) backfill_turns_examined: usize,
-    pub(crate) projection_updates: usize,
-    pub(crate) model_calls: u8,
-    /// Unavailable for rejected, failed, timed-out, or unmetered extraction runs.
-    pub(crate) usage: Option<Usage>,
+pub(crate) struct IdlePass {
+    pub(crate) embedded: usize,
 }
 
-impl JobRun {
-    /// Tells App whether another bounded idle unit can make progress immediately.
+impl IdlePass {
     pub(crate) fn has_made_progress(self) -> bool {
-        self.job_id.is_some()
-            || self.committed_records > 0
-            || self.source_parts_processed > 0
-            || self.backfill_turns_examined > 0
-            || self.projection_updates > 0
+        self.embedded > 0
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ImportReceipt {
-    pub(crate) source_id: SourceId,
-    pub(crate) revision_sha256: String,
-    pub(crate) state: String,
-    pub(crate) parts: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MemoryStatus {
-    pub(crate) backend_available: bool,
-    pub(crate) warning: Option<String>,
+    pub(crate) embedder: EmbedderState,
     pub(crate) stats: MemoryStats,
 }
 
@@ -78,12 +44,8 @@ pub(crate) struct MemoryStatus {
 pub(crate) enum MemoryError {
     #[error(transparent)]
     Storage(#[from] crate::storage::StorageError),
-    #[error("local memory index is unavailable: {0}")]
-    Backend(String),
-    #[error("a previous local native worker is still running")]
-    WorkerBusy,
-    #[error("memory worker failed: {0}")]
-    Worker(String),
+    #[error(transparent)]
+    Embedding(#[from] EmbedError),
     #[error("memory operation I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("import must be a regular UTF-8 .txt or .md file no larger than 1 MiB")]

@@ -1,214 +1,142 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rig_core::completion::Document;
 
-use crate::storage::{CorrectionState, HydratedMemory, MemoryId, MemoryRepository, SourceId};
+use crate::storage::{MemoryId, MemoryKind, RecalledMemory, SourceId, SourceKind};
 
-use super::{
-    index::{MemoryIndex, SearchCandidates},
-    types::{RecallSnapshot, RecallState},
-};
-
-const MAX_RECALL_RECORDS: usize = 20;
+/// Candidates fetched from each index before fusion.
+pub(super) const SEARCH_LIMIT: usize = 20;
 const MAX_CONTEXT_DOCUMENTS: usize = 5;
 const MAX_CONTEXT_BYTES: usize = 4096;
-// Provisional guardrail for the pinned normalized BGE-small-en-v1.5 model only:
-// the small offline public fixture measured 0.74 for a semantic paraphrase and
-// at most 0.56 for unrelated passages. This is not a confidence score or a
-// universal similarity threshold. FTS is a separate all-substantive-terms path.
+/// Standard reciprocal-rank-fusion constant.
+const RRF_K: f32 = 60.0;
+// Provisional guardrail for normalized BGE-small-en-v1.5 vectors only: a small
+// offline fixture measured 0.74 for a paraphrase and at most 0.56 for unrelated
+// passages. It is not a confidence score. Keyword hits bypass it.
 pub(super) const BGE_MIN_COSINE: f32 = 0.68;
 
-pub(crate) async fn recall(
-    repository: &MemoryRepository,
-    index: &MemoryIndex,
-    query: &str,
-    vector: &[f32],
-    excluded_sources: &[SourceId],
-) -> Result<RecallSnapshot, String> {
-    if query.trim().is_empty() {
-        return Ok(RecallSnapshot::empty());
-    }
-    let candidates = index
-        .search(query, vector)
-        .await
-        .map_err(|error| error.to_string())?;
-    let ordered = candidates
-        .fused
-        .iter()
-        .copied()
-        .take(MAX_RECALL_RECORDS)
+const STOP_WORDS: &[&str] = &[
+    "a", "about", "am", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can",
+    "could", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or", "our", "she",
+    "so", "that", "the", "their", "them", "then", "there", "these", "they", "this", "to", "was",
+    "we", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you",
+    "your",
+];
+
+/// Builds an FTS5 query that requires every substantive term. Each term is
+/// quoted, so user text can never inject FTS5 operators.
+pub(super) fn keyword_query(query: &str) -> Option<String> {
+    let mut seen = HashSet::new();
+    let terms = query
+        .split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|term| term.len() > 1 && !STOP_WORDS.contains(&term.as_str()))
+        .filter(|term| seen.insert(term.clone()))
+        .map(|term| format!("\"{term}\""))
         .collect::<Vec<_>>();
-    let active = repository
-        .hydrate_active(&ordered)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(select_context(active, &candidates, excluded_sources))
+    (!terms.is_empty()).then(|| terms.join(" "))
 }
 
-fn select_context(
-    active: Vec<HydratedMemory>,
-    candidates: &SearchCandidates,
+/// Ranked candidates from both indexes.
+#[derive(Debug, Default)]
+pub(super) struct Candidates {
+    pub(super) keyword: Vec<MemoryId>,
+    pub(super) semantic: Vec<(MemoryId, f32)>,
+}
+
+impl Candidates {
+    /// Reciprocal rank fusion of both lists, keeping only memories that matched
+    /// every keyword or cleared the semantic similarity floor.
+    pub(super) fn fused(&self) -> Vec<MemoryId> {
+        let mut scores = HashMap::<MemoryId, f32>::new();
+        for (rank, id) in self.keyword.iter().enumerate() {
+            *scores.entry(*id).or_default() += 1.0 / (RRF_K + rank as f32 + 1.0);
+        }
+        for (rank, (id, cosine)) in self.semantic.iter().enumerate() {
+            if *cosine >= BGE_MIN_COSINE {
+                *scores.entry(*id).or_default() += 1.0 / (RRF_K + rank as f32 + 1.0);
+            }
+        }
+        let mut fused = scores.into_iter().collect::<Vec<_>>();
+        fused.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+        fused.into_iter().map(|(id, _)| id).collect()
+    }
+}
+
+/// Turns fused, hydrated memories into bounded run-local Rig documents.
+pub(super) fn select_context(
+    ordered: &[MemoryId],
+    hydrated: Vec<RecalledMemory>,
     excluded_sources: &[SourceId],
-) -> RecallSnapshot {
+) -> (Vec<Document>, Vec<SourceId>) {
     let excluded = excluded_sources.iter().copied().collect::<HashSet<_>>();
-    let active_by_id = active
+    let mut by_id = hydrated
         .into_iter()
         .map(|memory| (memory.id, memory))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut seen = HashSet::<MemoryId>::new();
+        .collect::<HashMap<_, _>>();
+    let mut seen_text = HashSet::new();
     let mut documents = Vec::new();
     let mut source_ids = Vec::new();
-    let mut selected_spans = Vec::<(
-        SourceId,
-        u32,
-        crate::storage::SourcePartRole,
-        u32,
-        u32,
-        String,
-    )>::new();
-    let mut bytes: usize = 0;
+    let mut bytes = 0usize;
 
-    for id in candidates.fused.iter().take(MAX_RECALL_RECORDS) {
-        if !seen.insert(*id) {
-            continue;
+    for id in ordered {
+        if documents.len() >= MAX_CONTEXT_DOCUMENTS {
+            break;
         }
-        let lexical = candidates.lexical.contains(id);
-        let semantic = candidates
-            .cosine
-            .get(id)
-            .is_some_and(|cosine| *cosine >= BGE_MIN_COSINE);
-        if !lexical && !semantic {
-            continue;
-        }
-        let Some(memory) = active_by_id.get(id) else {
+        let Some(memory) = by_id.remove(id) else {
             continue;
         };
-        let Some(evidence) = memory
-            .evidence
-            .iter()
-            .find(|evidence| !excluded.contains(&evidence.source_id))
-        else {
-            continue;
-        };
-        let label = evidence
-            .source_name
-            .as_deref()
-            .unwrap_or(match evidence.source_kind {
-                crate::storage::SourceKind::Conversation => "conversation",
-                crate::storage::SourceKind::Import => "imported document",
-                crate::storage::SourceKind::Action => "action record",
-            });
-        let normalized_text = normalize_for_dedup(&memory.text);
-        if selected_spans
-            .iter()
-            .any(|(source_id, part_index, role, start, end, text)| {
-                *source_id == evidence.source_id
-                    && *part_index == evidence.part_index
-                    && *role == evidence.role
-                    && (text == &normalized_text
-                        || overlap_is_duplicate(
-                            (*start, *end),
-                            (evidence.start_byte, evidence.end_byte),
-                        ))
-            })
-        {
+        // Sources already in the active history are in the model's context.
+        if excluded.contains(&memory.source_id) || !seen_text.insert(normalize(&memory.text)) {
             continue;
         }
-        let mut additional_props = std::collections::HashMap::new();
-        additional_props.insert("source".to_owned(), label.to_owned());
-        additional_props.insert(
-            "source_timestamp_unix_ms".to_owned(),
-            evidence.source_created_at_unix_ms.to_string(),
-        );
-        additional_props.insert("kind".to_owned(), kind_label(memory.kind).to_owned());
-        additional_props.insert(
-            "attribution".to_owned(),
-            attribution_label(memory.attribution).to_owned(),
-        );
-        additional_props.insert(
-            "correction".to_owned(),
-            correction_label(memory.correction_state).to_owned(),
-        );
-        let document = Document {
-            id: id.0.to_string(),
-            text: memory.text.clone(),
-            additional_props,
-        };
+        let source_id = memory.source_id;
+        let document = to_document(memory);
         let document_bytes = document.to_string().len();
-        if documents.len() >= MAX_CONTEXT_DOCUMENTS
-            || bytes.saturating_add(document_bytes) > MAX_CONTEXT_BYTES
-        {
+        if bytes.saturating_add(document_bytes) > MAX_CONTEXT_BYTES {
             continue;
         }
         bytes += document_bytes;
-        selected_spans.push((
-            evidence.source_id,
-            evidence.part_index,
-            evidence.role,
-            evidence.start_byte,
-            evidence.end_byte,
-            normalized_text,
-        ));
         documents.push(document);
-        source_ids.push(evidence.source_id);
+        if !source_ids.contains(&source_id) {
+            source_ids.push(source_id);
+        }
     }
+    (documents, source_ids)
+}
 
-    RecallSnapshot {
-        state: if documents.is_empty() {
-            RecallState::Empty
-        } else {
-            RecallState::Available
-        },
-        documents,
-        source_ids,
+fn to_document(memory: RecalledMemory) -> Document {
+    let source = memory.source_name.unwrap_or_else(|| {
+        match memory.source_kind {
+            SourceKind::Conversation => "conversation",
+            SourceKind::Import => "imported document",
+        }
+        .to_owned()
+    });
+    let kind = match memory.kind {
+        MemoryKind::Excerpt => "excerpt",
+        MemoryKind::Fact => "extracted fact",
+    };
+    Document {
+        id: memory.id.0.to_string(),
+        text: memory.text,
+        additional_props: HashMap::from([
+            ("source".to_owned(), source),
+            (
+                "source_timestamp_unix_ms".to_owned(),
+                memory.source_created_at_unix_ms.to_string(),
+            ),
+            ("kind".to_owned(), kind.to_owned()),
+        ]),
     }
 }
 
-fn normalize_for_dedup(text: &str) -> String {
+fn normalize(text: &str) -> String {
     text.split_whitespace()
         .map(str::to_lowercase)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn overlap_is_duplicate(first: (u32, u32), second: (u32, u32)) -> bool {
-    let intersection = first.1.min(second.1).saturating_sub(first.0.max(second.0));
-    let smaller = first
-        .1
-        .saturating_sub(first.0)
-        .min(second.1.saturating_sub(second.0));
-    smaller > 0 && intersection.saturating_mul(5) >= smaller.saturating_mul(4)
-}
-
-fn kind_label(kind: crate::storage::MemoryRecordKind) -> &'static str {
-    match kind {
-        crate::storage::MemoryRecordKind::SourceExcerpt => "source excerpt",
-        crate::storage::MemoryRecordKind::ImportedChunk => "imported excerpt",
-        crate::storage::MemoryRecordKind::Preference => "preference",
-        crate::storage::MemoryRecordKind::Relationship => "relationship",
-        crate::storage::MemoryRecordKind::Event => "event",
-        crate::storage::MemoryRecordKind::Project => "project",
-        crate::storage::MemoryRecordKind::Experience => "experience",
-        crate::storage::MemoryRecordKind::Other => "memory",
-    }
-}
-
-fn attribution_label(attribution: crate::storage::MemoryAttribution) -> &'static str {
-    match attribution {
-        crate::storage::MemoryAttribution::UserStatement => "user statement",
-        crate::storage::MemoryAttribution::AssistantAnswer => "assistant answer",
-        crate::storage::MemoryAttribution::ImportedClaim => "imported claim",
-        crate::storage::MemoryAttribution::ActionResult => "action result",
-        crate::storage::MemoryAttribution::Inference => "inference",
-    }
-}
-
-fn correction_label(state: CorrectionState) -> &'static str {
-    match state {
-        CorrectionState::None => "none",
-        CorrectionState::Applied => "applied",
-        CorrectionState::NeedsReview => "needs review",
-    }
 }
 
 #[cfg(test)]

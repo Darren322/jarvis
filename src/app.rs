@@ -21,7 +21,6 @@ pub struct App {
     local_llm: LocalLlm,
     archive_path: PathBuf,
     embedding_model_dir: PathBuf,
-    memory_index_dir: PathBuf,
     tts_config: OptionalTtsConfig,
 }
 
@@ -50,7 +49,6 @@ impl App {
             local_llm,
             archive_path: config.archive_path.clone(),
             embedding_model_dir: config.embedding_model_dir.clone(),
-            memory_index_dir: config.memory_index_dir.clone(),
             tts_config: config.tts.clone(),
         })
     }
@@ -75,16 +73,11 @@ impl App {
             );
         }
         let repository = session.memory_repository();
-        let mut memory = match repository {
-            Some(repository) => Some(
-                MemoryService::open(
-                    repository,
-                    self.local_llm.model(),
-                    self.embedding_model_dir.clone(),
-                    self.memory_index_dir.clone(),
-                )
-                .await,
-            ),
+        let memory = match repository {
+            Some(repository) => Some(MemoryService::open(
+                repository,
+                self.embedding_model_dir.clone(),
+            )),
             None => {
                 eprintln!(
                     "Warning: local memory storage is unavailable; continuing with normal chat."
@@ -92,14 +85,8 @@ impl App {
                 None
             }
         };
-        if let Some(memory) = memory.as_mut()
-            && let Ok(status) = memory.status().await
-            && let Some(warning) = status.warning
-        {
-            eprintln!("Warning: {warning}");
-        }
         println!(
-            "Enter a message, /reset, /stop, /exit, /memories [query], /forget <id>, /import <path>, /memory status, /memory retry <job_id>, or /memory rebuild."
+            "Enter a message, /reset, /stop, /exit, /memories [query], /forget <id>, /import <path>, /memory status, or /memory rebuild."
         );
 
         let stdin = tokio::io::stdin();
@@ -108,7 +95,7 @@ impl App {
         run_input_loop(
             &self.assistant,
             &mut session,
-            &mut memory,
+            memory.as_ref(),
             &mut speech,
             &mut input,
             &mut presenter,

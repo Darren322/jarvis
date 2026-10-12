@@ -6,8 +6,8 @@ use tokio_rusqlite::Connection;
 use super::error::StorageError;
 use super::time::unix_time_ms;
 use super::{
-    ArchiveReceipt, MemoryEligibility, MemoryEnqueueState, MemoryRepository, SourceId,
-    memory_repository, schema,
+    ArchiveReceipt, MemoryEligibility, MemoryRepository, MemorySaveState, SourceId,
+    memory_repository, schema, sqlite_vec,
 };
 
 // LEARNING: Raw SQL stays in this storage seam. Services receive typed values
@@ -29,6 +29,7 @@ impl ConversationArchive {
         }
 
         let started_at_unix_ms = unix_time_ms()?;
+        sqlite_vec::register();
         let connection = Connection::open(path).await?;
         let initialized = connection
             .call(move |connection| schema::initialize(connection, started_at_unix_ms))
@@ -120,32 +121,24 @@ impl ConversationArchive {
                     ],
                 )?;
                 let turn_id = transaction.last_insert_rowid();
-                let memory = if memory_eligible {
-                    let assistant_text = assistant_text
-                        .as_deref()
-                        .expect("completed archive outcome has answer text");
-                    let (source_id, state) = memory_repository::insert_conversation_source(
-                        &transaction,
-                        turn_id,
-                        &user_text,
-                        assistant_text,
-                        created_at_unix_ms,
-                        MemoryEligibility::Eligible,
-                        &recalled_source_ids,
-                    )?;
-                    transaction.commit()?;
-                    return Ok(ArchiveReceipt {
-                        turn_id,
-                        source_id: Some(source_id),
-                        memory: state,
-                    });
-                } else {
-                    MemoryEnqueueState::NotEligible
+                let (source_id, memory) = match assistant_text.as_deref() {
+                    Some(assistant_text) if memory_eligible => {
+                        let (source_id, state) = memory_repository::insert_conversation_source(
+                            &transaction,
+                            turn_id,
+                            &user_text,
+                            assistant_text,
+                            created_at_unix_ms,
+                            &recalled_source_ids,
+                        )?;
+                        (Some(source_id), state)
+                    }
+                    _ => (None, MemorySaveState::NotEligible),
                 };
                 transaction.commit()?;
                 Ok(ArchiveReceipt {
                     turn_id,
-                    source_id: None,
+                    source_id,
                     memory,
                 })
             })

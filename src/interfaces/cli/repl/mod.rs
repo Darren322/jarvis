@@ -8,7 +8,6 @@ use crate::features::{
 use crate::interfaces::cli::commands::memory::{
     focus_from_displayed_ids, focus_from_successful_turn, forget_detail, forget_focus,
     forget_memory_id, import_memory, list_memories, print_memory_status, rebuild_memory_index,
-    retry_memory_job,
 };
 use crate::interfaces::cli::commands::{self, Command, print_help};
 use crate::interfaces::cli::diagnostics::{
@@ -31,7 +30,7 @@ type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>
 pub(crate) async fn run_input_loop<R, S, P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     speech: &mut Option<S>,
     input: &mut R,
     presenter: &mut P,
@@ -47,18 +46,13 @@ where
     {
         eprintln!("Warning: local speech shutdown did not complete: {error}");
     }
-    if let Some(memory) = memory.as_mut()
-        && let Err(error) = memory.interrupt_idle_work().await
-    {
-        eprintln!("Warning: local memory work did not settle during shutdown: {error}");
-    }
     result
 }
 
 async fn run_input_loop_inner<R, S, P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     speech: &mut Option<S>,
     input: &mut R,
     presenter: &mut P,
@@ -135,7 +129,6 @@ where
                     forget_focus(
                         memory,
                         session,
-                        current_memory_focus,
                         &mut current_memory_focus,
                         &mut recent_memories,
                     )
@@ -143,11 +136,9 @@ where
                     idle_due = true;
                 }
                 Command::ForgetDetail(detail) => {
-                    let displayed = recent_memories.clone();
                     forget_detail(
                         memory,
                         session,
-                        &displayed,
                         &detail,
                         &mut current_memory_focus,
                         &mut recent_memories,
@@ -168,10 +159,6 @@ where
                 }
                 Command::MemoryStatus => {
                     print_memory_status(memory).await;
-                    idle_due = true;
-                }
-                Command::Retry(id) => {
-                    retry_memory_job(memory, &id).await;
                     idle_due = true;
                 }
                 Command::Rebuild => {

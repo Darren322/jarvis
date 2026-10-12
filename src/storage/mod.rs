@@ -1,7 +1,9 @@
 mod archive;
+mod chunking;
 mod error;
 mod memory_repository;
 mod schema;
+mod sqlite_vec;
 mod time;
 mod types;
 

@@ -1,6 +1,8 @@
-use rusqlite::{Transaction, TransactionBehavior};
+use rusqlite::{Transaction, TransactionBehavior, params};
 
-pub(super) const SCHEMA_VERSION: i64 = 3;
+use super::chunking::{MAX_CHUNK_BYTES, conversation_text, split};
+
+pub(super) const SCHEMA_VERSION: i64 = 4;
 
 const CREATE_SCHEMA_V1: &str = r#"
 CREATE TABLE sessions (
@@ -165,6 +167,77 @@ ALTER TABLE memory_records ADD COLUMN supersedes_id INTEGER REFERENCES memory_re
 PRAGMA user_version = 3;
 "#;
 
+/// v4 replaces the extraction/projection pipeline (jobs, leases, outbox,
+/// LanceDB) with one transactional store: `memories` plus an FTS5 keyword index
+/// and a sqlite-vec vector table, both kept in sync by triggers.
+const CREATE_V4_TABLES: &str = r#"
+CREATE TABLE sources (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('conversation', 'import')),
+    turn_id INTEGER UNIQUE REFERENCES turns(id),
+    path_key TEXT,
+    display_name TEXT,
+    revision_sha256 TEXT,
+    state TEXT NOT NULL DEFAULT 'active'
+        CHECK (state IN ('active', 'superseded', 'forgotten')),
+    created_at_unix_ms INTEGER NOT NULL,
+    CHECK ((kind = 'conversation' AND turn_id IS NOT NULL AND path_key IS NULL)
+        OR (kind = 'import' AND turn_id IS NULL AND path_key IS NOT NULL
+            AND display_name IS NOT NULL AND revision_sha256 IS NOT NULL))
+);
+CREATE UNIQUE INDEX sources_import_revision
+    ON sources(path_key, revision_sha256) WHERE kind = 'import';
+
+-- A conversation source depends on every source recalled into its run, so
+-- forgetting a source also forgets answers that were built from it.
+CREATE TABLE source_links (
+    source_id INTEGER NOT NULL REFERENCES sources(id),
+    depends_on_source_id INTEGER NOT NULL REFERENCES sources(id),
+    PRIMARY KEY (source_id, depends_on_source_id),
+    CHECK (source_id > depends_on_source_id)
+);
+CREATE INDEX source_links_by_parent ON source_links(depends_on_source_id, source_id);
+
+CREATE TABLE memories (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES sources(id),
+    kind TEXT NOT NULL CHECK (kind IN ('excerpt', 'fact')),
+    text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) BETWEEN 1 AND 4096),
+    created_at_unix_ms INTEGER NOT NULL,
+    -- Fingerprint of the model that produced this row's vector; NULL = pending.
+    embedding_model TEXT
+);
+CREATE INDEX memories_by_source ON memories(source_id, id);
+
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+    text, content = 'memories', content_rowid = 'id', tokenize = 'porter unicode61'
+);
+CREATE VIRTUAL TABLE memory_vectors USING vec0(embedding float[384]);
+
+CREATE TRIGGER memories_after_insert AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER memories_after_delete AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    DELETE FROM memory_vectors WHERE rowid = old.id;
+END;
+CREATE TRIGGER memories_text_is_immutable BEFORE UPDATE OF text ON memories BEGIN
+    SELECT RAISE(ABORT, 'memory text is immutable');
+END;
+"#;
+
+const DROP_V3_TABLES: &str = r#"
+DROP TABLE memory_evidence;
+DROP TABLE memory_records;
+DROP TABLE memory_jobs;
+DROP TABLE source_suppressions;
+DROP TABLE source_dependencies;
+DROP TABLE source_parts;
+DROP TABLE memory_sources;
+DROP TABLE memory_state;
+PRAGMA user_version = 4;
+"#;
+
 pub(super) enum OpenResult {
     Ready(i64),
     Unsupported(i64),
@@ -180,50 +253,129 @@ pub(super) fn initialize(
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
-    let session_id = match version {
-        0 => {
-            transaction.execute_batch(CREATE_SCHEMA_V1)?;
-            transaction.execute_batch(MIGRATE_V1_TO_V2)?;
-            transaction.execute_batch(MIGRATE_V2_TO_V3)?;
-            create_session(&transaction, started_at_unix_ms)?
-        }
-        1 => {
-            transaction.execute_batch(MIGRATE_V1_TO_V2)?;
-            transaction.execute_batch(MIGRATE_V2_TO_V3)?;
-            create_session(&transaction, started_at_unix_ms)?
-        }
-        2 => {
-            transaction.execute_batch(MIGRATE_V2_TO_V3)?;
-            create_session(&transaction, started_at_unix_ms)?
-        }
-        SCHEMA_VERSION => create_session(&transaction, started_at_unix_ms)?,
-        unsupported => return Ok(OpenResult::Unsupported(unsupported)),
-    };
-
-    // LEARNING: A `running` row means the process previously owned this lease.
-    // Startup returns it to the durable queue; the new claim increments its
-    // token so a late result from the old run cannot be committed.
-    transaction.execute(
-        "UPDATE memory_jobs
-         SET status = CASE WHEN attempt_count >= 3 THEN 'failed' ELSE 'queued' END,
-             failure_category = CASE WHEN attempt_count >= 3
-                 THEN 'attempts_exhausted' ELSE NULL END,
-             lease_token = lease_token + 1, lease_until_unix_ms = NULL
-         WHERE status = 'running'",
-        [],
-    )?;
-    transaction.execute(
-        "UPDATE memory_sources
-         SET extraction_state = CASE WHEN EXISTS (
-                 SELECT 1 FROM memory_jobs j
-                 WHERE j.source_id = memory_sources.id AND j.status = 'failed'
-             ) THEN 'failed' ELSE 'queued' END
-         WHERE extraction_state = 'running'",
-        [],
-    )?;
+    // LEARNING: each arm falls through the remaining migrations in order, so a
+    // database at any older version reaches the current schema in one commit.
+    if !(0..=SCHEMA_VERSION).contains(&version) {
+        return Ok(OpenResult::Unsupported(version));
+    }
+    if version < 1 {
+        transaction.execute_batch(CREATE_SCHEMA_V1)?;
+    }
+    if version < 2 {
+        transaction.execute_batch(MIGRATE_V1_TO_V2)?;
+    }
+    if version < 3 {
+        transaction.execute_batch(MIGRATE_V2_TO_V3)?;
+    }
+    if version < 4 {
+        migrate_v3_to_v4(&transaction)?;
+    }
+    let session_id = create_session(&transaction, started_at_unix_ms)?;
 
     transaction.commit()?;
     Ok(OpenResult::Ready(session_id))
+}
+
+/// Moves v3 memory into the v4 tables, keeping source ids so lineage links map
+/// one-to-one. Suppressed sources become `forgotten` and keep no memories.
+fn migrate_v3_to_v4(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(CREATE_V4_TABLES)?;
+
+    transaction.execute(
+        "INSERT OR IGNORE INTO sources (
+            id, kind, turn_id, path_key, display_name, revision_sha256, state,
+            created_at_unix_ms
+         )
+         SELECT s.id, s.kind,
+                CASE WHEN s.kind = 'conversation' THEN s.turn_id END,
+                CASE WHEN s.kind = 'import' THEN s.source_key END,
+                CASE WHEN s.kind = 'import' THEN COALESCE(s.display_source, s.source_key) END,
+                CASE WHEN s.kind = 'import' THEN s.revision_sha256 END,
+                CASE
+                    WHEN s.state = 'suppressed' OR EXISTS (
+                        SELECT 1 FROM source_suppressions ss WHERE ss.source_id = s.id
+                    ) THEN 'forgotten'
+                    WHEN s.state = 'superseded' THEN 'superseded'
+                    ELSE 'active'
+                END,
+                s.created_at_unix_ms
+         FROM memory_sources s
+         WHERE s.kind IN ('conversation', 'import')
+         ORDER BY s.id",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO source_links (source_id, depends_on_source_id)
+         SELECT d.source_id, d.depends_on_source_id FROM source_dependencies d
+         WHERE d.source_id IN (SELECT id FROM sources)
+           AND d.depends_on_source_id IN (SELECT id FROM sources)",
+        [],
+    )?;
+
+    // Completed, eligible turns that were never backfilled get a source now.
+    transaction.execute(
+        "INSERT INTO sources (kind, turn_id, created_at_unix_ms)
+         SELECT 'conversation', t.id, t.created_at_unix_ms FROM turns t
+         WHERE t.outcome = 'completed' AND t.memory_eligible = 1
+           AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.turn_id = t.id)
+         ORDER BY t.id",
+        [],
+    )?;
+
+    // Conversations are re-chunked from the archived turn text.
+    let turns = {
+        let mut statement = transaction.prepare(
+            "SELECT s.id, s.created_at_unix_ms, t.user_text, t.assistant_text
+             FROM sources s JOIN turns t ON t.id = s.turn_id
+             WHERE s.kind = 'conversation' AND s.state = 'active'
+               AND t.assistant_text IS NOT NULL
+             ORDER BY s.id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (source_id, created_at, user_text, assistant_text) in turns {
+        for chunk in split(
+            &conversation_text(&user_text, &assistant_text),
+            MAX_CHUNK_BYTES,
+        ) {
+            transaction.execute(
+                "INSERT INTO memories (source_id, kind, text, created_at_unix_ms)
+                 VALUES (?1, 'excerpt', ?2, ?3)",
+                params![source_id, chunk, created_at],
+            )?;
+        }
+    }
+
+    // Imported chunks and extracted facts keep their v3 text.
+    transaction.execute(
+        "INSERT INTO memories (source_id, kind, text, created_at_unix_ms)
+         SELECT r.source_id, 'excerpt', r.text, r.created_at_unix_ms
+         FROM memory_records r JOIN sources s ON s.id = r.source_id
+         WHERE r.record_kind = 'imported_chunk' AND r.status = 'active'
+           AND s.kind = 'import' AND s.state = 'active'
+         ORDER BY r.id",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT INTO memories (source_id, kind, text, created_at_unix_ms)
+         SELECT r.source_id, 'fact', r.text, r.created_at_unix_ms
+         FROM memory_records r JOIN sources s ON s.id = r.source_id
+         WHERE r.record_kind NOT IN ('source_excerpt', 'imported_chunk')
+           AND r.status = 'active' AND s.state = 'active'
+         ORDER BY r.id",
+        [],
+    )?;
+
+    transaction.execute_batch(DROP_V3_TABLES)
 }
 
 pub(super) fn create_session(
@@ -236,3 +388,7 @@ pub(super) fn create_session(
     )?;
     Ok(transaction.last_insert_rowid())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/storage/schema_tests.rs"]
+mod tests;

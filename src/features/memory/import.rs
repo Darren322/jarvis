@@ -2,9 +2,9 @@ use std::{path::Path, time::Duration};
 
 use tokio::io::AsyncReadExt;
 
-use crate::storage::{MemoryRepository, SourceReceiptState};
+use crate::storage::{ImportReceipt, MemoryRepository};
 
-use super::{MemoryError, types::ImportReceipt};
+use super::MemoryError;
 
 const MAX_IMPORT_BYTES: usize = 1024 * 1024;
 const FILE_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -51,19 +51,7 @@ pub(crate) async fn import_file(
         .filter(|name| !name.is_empty())
         .ok_or(MemoryError::InvalidImport)?
         .to_owned();
-    let receipt = repository
+    Ok(repository
         .import_source(path_key, display_path, text)
-        .await?;
-    Ok(ImportReceipt {
-        source_id: receipt.source_id,
-        revision_sha256: receipt.revision_sha256,
-        state: match receipt.state {
-            SourceReceiptState::Created => "created",
-            SourceReceiptState::AlreadyCurrent => "already_current",
-            SourceReceiptState::Reactivated => "reactivated",
-            SourceReceiptState::SuppressedRevision => "suppressed_revision",
-        }
-        .to_owned(),
-        parts: 1,
-    })
+        .await?)
 }

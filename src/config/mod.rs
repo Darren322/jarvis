@@ -5,7 +5,6 @@ use std::{
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
 const DEFAULT_EMBEDDING_MODEL_DIR: &str = "data/embeddings";
-const DEFAULT_MEMORY_INDEX_DIR: &str = "data/memory-index";
 
 /// Process settings. Every path is absolute: relative values are resolved
 /// against the working directory once, at load time.
@@ -13,7 +12,6 @@ pub struct AppConfig {
     pub local_llm: LocalLlmConfig,
     pub archive_path: PathBuf,
     pub embedding_model_dir: PathBuf,
-    pub memory_index_dir: PathBuf,
     pub tts: OptionalTtsConfig,
 }
 
@@ -70,7 +68,6 @@ impl AppConfig {
             local_llm,
             archive_path: path("JARVIS_ARCHIVE_PATH", DEFAULT_ARCHIVE_PATH),
             embedding_model_dir: path("JARVIS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
-            memory_index_dir: path("JARVIS_MEMORY_INDEX_DIR", DEFAULT_MEMORY_INDEX_DIR),
             tts: load_tts_config(&current_dir),
         })
     }

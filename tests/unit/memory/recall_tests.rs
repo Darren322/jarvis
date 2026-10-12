@@ -1,136 +1,81 @@
-use std::collections::{HashMap, HashSet};
+use crate::storage::{MemoryId, MemoryKind, RecalledMemory, SourceId, SourceKind};
 
-use super::*;
-use crate::storage::{
-    MemoryAttribution, MemoryEvidence, MemoryRecordKind, MemoryRecordStatus, SourceKind,
-    SourcePartRole,
-};
+use super::{BGE_MIN_COSINE, Candidates, keyword_query, select_context};
 
-fn memory(id: i64, text: &str, source: i64, start: u32, end: u32) -> HydratedMemory {
-    memory_in_part(id, text, source, 0, SourcePartRole::User, start, end)
-}
-
-fn memory_in_part(
-    id: i64,
-    text: &str,
-    source: i64,
-    part_index: u32,
-    role: SourcePartRole,
-    start: u32,
-    end: u32,
-) -> HydratedMemory {
-    HydratedMemory {
+fn memory(id: i64, source: i64, text: &str) -> RecalledMemory {
+    RecalledMemory {
         id: MemoryId(id),
+        source_id: SourceId(source),
+        source_kind: SourceKind::Conversation,
+        source_name: None,
+        source_created_at_unix_ms: 1_000,
+        kind: MemoryKind::Excerpt,
         text: text.to_owned(),
-        kind: MemoryRecordKind::Preference,
-        attribution: MemoryAttribution::UserStatement,
-        status: MemoryRecordStatus::Active,
-        correction_state: CorrectionState::None,
-        supersedes_id: None,
-        source_created_at_unix_ms: 1_800_000_000_000,
-        evidence: vec![MemoryEvidence {
-            source_id: SourceId(source),
-            part_index,
-            source_kind: SourceKind::Conversation,
-            source_name: None,
-            role,
-            start_byte: start,
-            end_byte: end,
-            quote: Some(text.to_owned()),
-            source_created_at_unix_ms: 1_800_000_000_000,
-        }],
     }
 }
 
 #[test]
-fn lexical_exact_record_survives_but_generic_overlap_and_weak_semantics_do_not() {
-    let candidates = SearchCandidates {
-        fused: vec![MemoryId(1), MemoryId(2), MemoryId(3)],
-        cosine: HashMap::from([(MemoryId(2), 0.56), (MemoryId(3), 0.74)]),
-        lexical: HashSet::from([MemoryId(1)]),
-    };
-    let snapshot = select_context(
-        vec![
-            memory(1, "My dog's name is Miso.", 10, 0, 22),
-            memory(2, "My favorite project name is Asana.", 11, 0, 35),
-            memory(3, "My dog is called Miso.", 12, 0, 22),
-        ],
-        &candidates,
-        &[],
+fn keyword_query_quotes_substantive_terms_only() {
+    assert_eq!(
+        keyword_query("What is my cat's name?").as_deref(),
+        Some("\"cat\" \"name\"")
     );
+    assert_eq!(keyword_query("what is it?"), None);
+    assert_eq!(keyword_query("   "), None);
+}
 
-    assert_eq!(snapshot.documents.len(), 2);
-    assert!(
-        snapshot.documents[0]
-            .to_string()
-            .contains("source_timestamp_unix_ms")
+#[test]
+fn keyword_query_cannot_inject_fts_syntax() {
+    let query = keyword_query("cat\" OR NEAR(dog*) -x").expect("terms remain");
+    assert_eq!(query, "\"cat\" \"near\" \"dog\"");
+    assert!(!query.contains('*') && !query.contains('('));
+}
+
+#[test]
+fn fusion_rewards_agreement_and_drops_weak_semantic_matches() {
+    let candidates = Candidates {
+        keyword: vec![MemoryId(1), MemoryId(2)],
+        semantic: vec![
+            (MemoryId(2), 0.9),
+            (MemoryId(3), BGE_MIN_COSINE),
+            (MemoryId(4), BGE_MIN_COSINE - 0.01),
+        ],
+    };
+    assert_eq!(
+        candidates.fused(),
+        vec![MemoryId(2), MemoryId(1), MemoryId(3)]
     );
 }
 
 #[test]
-fn unrelated_query_with_only_weak_vector_candidates_returns_empty() {
-    let candidates = SearchCandidates {
-        fused: vec![MemoryId(1), MemoryId(2)],
-        cosine: HashMap::from([(MemoryId(1), 0.56), (MemoryId(2), 0.63)]),
-        lexical: HashSet::new(),
-    };
-    let snapshot = select_context(
-        vec![
-            memory(1, "My dog's name is Miso.", 10, 0, 22),
-            memory(2, "My favorite project name is Asana.", 11, 0, 35),
-        ],
-        &candidates,
-        &[],
-    );
+fn context_follows_fused_order_and_skips_excluded_and_duplicate_text() {
+    let ordered = [MemoryId(3), MemoryId(1), MemoryId(2), MemoryId(4)];
+    let hydrated = vec![
+        memory(1, 10, "My cat is Miso."),
+        memory(2, 20, "my   CAT is miso."),
+        memory(3, 30, "Already in history."),
+        // Memory 4 was forgotten after search, so it is missing here.
+    ];
 
-    assert_eq!(snapshot.state, RecallState::Empty);
-    assert!(snapshot.documents.is_empty());
-    assert!(snapshot.source_ids.is_empty());
+    let (documents, sources) = select_context(&ordered, hydrated, &[SourceId(30)]);
+
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].id, "1");
+    assert_eq!(documents[0].additional_props["source"], "conversation");
+    assert_eq!(sources, vec![SourceId(10)]);
 }
 
 #[test]
-fn same_source_duplicate_or_nearly_identical_spans_are_collapsed() {
-    let candidates = SearchCandidates {
-        fused: vec![MemoryId(1), MemoryId(2), MemoryId(3)],
-        cosine: HashMap::new(),
-        lexical: HashSet::from([MemoryId(1), MemoryId(2), MemoryId(3)]),
-    };
-    let snapshot = select_context(
-        vec![
-            memory(1, "I prefer green tea.", 10, 0, 50),
-            memory(2, "  I   prefer green tea. ", 10, 0, 50),
-            memory(3, "I prefer tea.", 10, 1, 49),
-        ],
-        &candidates,
-        &[],
-    );
-    assert_eq!(snapshot.documents.len(), 1);
-}
+fn context_is_bounded_by_document_count_and_bytes() {
+    let ordered = (1..=8).map(MemoryId).collect::<Vec<_>>();
+    let hydrated = (1..=8)
+        .map(|id| memory(id, id, &format!("memory number {id}")))
+        .collect();
+    let (documents, _) = select_context(&ordered, hydrated, &[]);
+    assert_eq!(documents.len(), 5);
 
-#[test]
-fn same_offsets_in_distinct_parts_and_roles_are_not_deduplicated() {
-    let candidates = SearchCandidates {
-        fused: vec![MemoryId(1), MemoryId(2), MemoryId(3)],
-        cosine: HashMap::new(),
-        lexical: HashSet::from([MemoryId(1), MemoryId(2), MemoryId(3)]),
-    };
-    let snapshot = select_context(
-        vec![
-            memory_in_part(1, "I prefer green tea.", 10, 0, SourcePartRole::User, 0, 19),
-            memory_in_part(2, "I prefer black tea.", 10, 1, SourcePartRole::User, 0, 19),
-            memory_in_part(
-                3,
-                "I prefer green tea.",
-                10,
-                2,
-                SourcePartRole::Assistant,
-                0,
-                19,
-            ),
-        ],
-        &candidates,
-        &[],
-    );
-
-    assert_eq!(snapshot.documents.len(), 3);
+    let large = "x".repeat(3000);
+    let hydrated = vec![memory(1, 1, &large), memory(2, 2, &(large.clone() + "y"))];
+    let (documents, _) = select_context(&[MemoryId(1), MemoryId(2)], hydrated, &[]);
+    assert_eq!(documents.len(), 1);
 }

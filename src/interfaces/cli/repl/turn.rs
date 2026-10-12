@@ -12,7 +12,7 @@ use crate::interfaces::cli::presentation::AssistantPresenter;
 pub(super) async fn stream_turn<P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
-    memory: &mut Option<MemoryService>,
+    memory: Option<&MemoryService>,
     presenter: &mut P,
     prompt: &str,
 ) -> io::Result<crate::features::conversation::ConversationTurn>
@@ -23,7 +23,7 @@ where
     // The response future and bounded receiver stay in this foreground scope. A
     // terminal write failure drops the native Rig run; new input remains queued
     // until this serial foreground response completes.
-    let mut response = Box::pin(session.respond_stream(assistant, memory.as_mut(), prompt, sender));
+    let mut response = Box::pin(session.respond_stream(assistant, memory, prompt, sender));
     let mut receiver_open = true;
 
     enum Event {

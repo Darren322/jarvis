@@ -6,9 +6,9 @@ use super::history::{History, merge_source_dependencies};
 use crate::features::assistant::{
     Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta,
 };
-use crate::features::memory::{MemoryService, RecallSnapshot, RecallState};
+use crate::features::memory::{MemoryService, RecallSnapshot};
 use crate::storage::{
-    ArchiveOutcome, ConversationArchive, MemoryEligibility, MemoryEnqueueState, MemoryRepository,
+    ArchiveOutcome, ConversationArchive, MemoryEligibility, MemoryRepository, MemorySaveState,
     SourceId, StorageError,
 };
 
@@ -31,7 +31,7 @@ pub(crate) struct ConversationTurn {
     pub(crate) run: Result<AssistantRun, Box<AssistantRunError>>,
     pub(crate) context_warning: Option<String>,
     pub(crate) archive_error: Option<StorageError>,
-    pub(crate) memory_state: Option<MemoryEnqueueState>,
+    pub(crate) memory_state: Option<MemorySaveState>,
     pub(crate) current_source_id: Option<SourceId>,
 }
 
@@ -84,7 +84,7 @@ impl ConversationSession {
     pub(crate) async fn respond_stream(
         &mut self,
         assistant: &Assistant,
-        memory: Option<&mut MemoryService>,
+        memory: Option<&MemoryService>,
         prompt: &str,
         deltas: mpsc::Sender<AssistantTextDelta>,
     ) -> ConversationTurn {
@@ -95,10 +95,7 @@ impl ConversationSession {
                 "local memory storage is unavailable; normal chat is continuing",
             ),
         };
-        let context_warning = match &recall.state {
-            RecallState::Available | RecallState::Empty => None,
-            RecallState::Unavailable(message) => Some(message.clone()),
-        };
+        let context_warning = recall.warning.clone();
         let history = self.history.messages();
 
         // LEARNING: These Documents are request context, not Message history.
@@ -131,7 +128,7 @@ impl ConversationSession {
                 Ok(receipt) => (
                     receipt.source_id,
                     None,
-                    receipt.memory == MemoryEnqueueState::Suppressed,
+                    receipt.memory == MemorySaveState::Suppressed,
                     Some(receipt.memory),
                 ),
                 Err(error) => (None, Some(error), false, None),

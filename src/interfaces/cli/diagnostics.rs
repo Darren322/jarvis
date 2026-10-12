@@ -1,10 +1,10 @@
 use crate::features::assistant::{AssistantError, CallUsage, RunReport};
-use crate::storage::MemoryEnqueueState;
+use crate::storage::MemorySaveState;
 
 pub(super) fn report_turn_warnings(
     context_warning: Option<&str>,
     archive_error: Option<&crate::storage::StorageError>,
-    memory_state: Option<MemoryEnqueueState>,
+    memory_state: Option<MemorySaveState>,
 ) {
     if let Some(warning) = context_warning {
         eprintln!("Warning: {warning}");
@@ -12,9 +12,9 @@ pub(super) fn report_turn_warnings(
     if let Some(error) = archive_error {
         eprintln!("Warning: this turn could not be saved to the local archive: {error}");
     }
-    if matches!(memory_state, Some(MemoryEnqueueState::Pending)) {
+    if matches!(memory_state, Some(MemorySaveState::Suppressed)) {
         eprintln!(
-            "Memory extraction is pending. Check /memory status for backlog or retry details."
+            "This answer used a memory that was forgotten while it ran, so it was not remembered."
         );
     }
 }

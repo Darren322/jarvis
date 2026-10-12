@@ -11,7 +11,6 @@ pub(super) enum Command {
     ForgetDetail(String),
     Import(String),
     MemoryStatus,
-    Retry(String),
     Rebuild,
 }
 
@@ -36,9 +35,6 @@ pub(super) fn parse(input: String) -> Command {
     }
     if let Some(path) = input.trim_start().strip_prefix("/import ") {
         return Command::Import(path.trim_start().to_owned());
-    }
-    if let Some(job_id) = trimmed.strip_prefix("/memory retry ") {
-        return Command::Retry(job_id.trim().to_owned());
     }
 
     let natural = trimmed.trim_start();
@@ -91,6 +87,6 @@ pub(super) mod memory;
 
 pub(super) fn print_help() {
     println!(
-        "Commands: /memories [query], /forget <memory-id>, forget that, forget <detail>, /import <path>, /memory status, /memory retry <job-id>, /memory rebuild, /reset, /stop, /help, /exit. Natural forgetting only proceeds for one current target or one unique active match."
+        "Commands: /memories [query], /forget <memory-id>, forget that, forget <detail>, /import <path>, /memory status, /memory rebuild, /reset, /stop, /help, /exit. Natural forgetting only proceeds for one current target or one unique match."
     );
 }
