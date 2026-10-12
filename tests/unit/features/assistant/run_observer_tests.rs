@@ -3,7 +3,7 @@ use futures_util::StreamExt;
 use rig_agent::{
     AgentBuilder,
     agent::{
-        MultiTurnStreamItem,
+        AgentRunner, MultiTurnStreamItem, PromptResponse, StreamingError,
         hook::{
             AgentHook, HookContext, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
         },
@@ -11,10 +11,9 @@ use rig_agent::{
     tool::{Tool, ToolContext, ToolExecutionError},
 };
 use rig_core::{
-    completion::{AssistantContent, Usage},
-    message::{ToolCall as MessageToolCall, ToolFunction},
+    completion::Usage,
     serde_json::{self, json},
-    test_utils::{MockCompletionModel, MockStreamEvent, MockTurn},
+    test_utils::{MockCompletionModel, MockStreamEvent},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -123,14 +122,24 @@ impl AgentHook for ResultRecorder {
     }
 }
 
-fn probe_call(id: &str, outcome: &str, label: &str) -> AssistantContent {
-    AssistantContent::ToolCall(MessageToolCall::from_wire(
+fn probe_call(id: &str, outcome: &str, label: &str) -> MockStreamEvent {
+    MockStreamEvent::tool_call(
         id,
-        ToolFunction::new(
-            GatedProbeTool::NAME.to_string(),
-            json!({ "outcome": outcome, "label": label }),
-        ),
-    ))
+        GatedProbeTool::NAME,
+        json!({ "outcome": outcome, "label": label }),
+    )
+}
+
+/// Runs Rig's streaming path, as production does, to its final response.
+async fn stream_to_final(runner: AgentRunner) -> Result<PromptResponse, StreamingError> {
+    let mut stream = runner.stream().await;
+    let mut final_response = None;
+    while let Some(item) = stream.next().await {
+        if let MultiTurnStreamItem::FinalResponse(response) = item? {
+            final_response = Some(response);
+        }
+    }
+    Ok(final_response.expect("a completed stream ends with a final response"))
 }
 
 fn populated_usage() -> Usage {
@@ -194,16 +203,19 @@ async fn observer_correlates_overlapping_tool_results_and_keeps_all_rig_usage() 
     let executed = Arc::new(Mutex::new(Vec::new()));
 
     let first_usage = populated_usage();
-    let model = MockCompletionModel::from_turns([
-        MockTurn::from_contents([
+    let model = MockCompletionModel::from_stream_turns([
+        vec![
             probe_call("provider-slow", "success", "slow"),
             probe_call("provider-fast", "success", "fast"),
             probe_call("provider-error", "error", "error"),
             probe_call("provider-refused", "refused", "refused"),
             probe_call("provider-skip", "success", "skip"),
-        ])
-        .with_usage(first_usage),
-        MockTurn::text("complete").with_usage(Usage::new()),
+            MockStreamEvent::final_response(first_usage),
+        ],
+        vec![
+            MockStreamEvent::text("complete"),
+            MockStreamEvent::final_response(Usage::new()),
+        ],
     ]);
     let agent = AgentBuilder::new(model)
         .tool(GatedProbeTool {
@@ -218,14 +230,13 @@ async fn observer_correlates_overlapping_tool_results_and_keeps_all_rig_usage() 
 
     let observer = RunObserver::default();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel();
-    let run = agent
+    let runner = agent
         .runner("run all probe calls")
         .add_hook(observer.clone())
         .add_hook(ResultRecorder(result_tx))
         .max_turns(2)
-        .tool_concurrency(5)
-        .run();
-    let run = tokio::spawn(run);
+        .tool_concurrency(5);
+    let run = tokio::spawn(stream_to_final(runner));
 
     let mut started = HashSet::new();
     while !started.contains("slow") || !started.contains("fast") {
@@ -453,22 +464,20 @@ impl Tool for PendingTool {
 
 #[tokio::test]
 async fn cancelled_rig_run_finalizes_a_pending_tool_as_incomplete() {
-    let model = MockCompletionModel::new([MockTurn::tool_call(
-        "provider-pending",
-        PendingTool::NAME,
-        json!({}),
-    )]);
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::tool_call("provider-pending", PendingTool::NAME, json!({})),
+        MockStreamEvent::final_response(Usage::new()),
+    ]]);
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
     let agent = AgentBuilder::new(model)
         .tool(PendingTool(started_tx))
         .build();
     let observer = RunObserver::default();
-    let run = agent
+    let runner = agent
         .runner("wait for tool")
         .add_hook(observer.clone())
-        .tool_concurrency(1)
-        .run();
-    let run = tokio::spawn(run);
+        .tool_concurrency(1);
+    let run = tokio::spawn(stream_to_final(runner));
 
     started_rx.recv().await.expect("pending tool should start");
     run.abort();
@@ -496,11 +505,15 @@ async fn poisoned_observation_state_is_discarded_and_callbacks_stay_passive() {
     })
     .join();
 
-    let response = AgentBuilder::new(MockCompletionModel::text("passive observer"))
+    let model = MockCompletionModel::from_stream_turns([[
+        MockStreamEvent::text("passive observer"),
+        MockStreamEvent::final_response(Usage::new()),
+    ]]);
+    let runner = AgentBuilder::new(model)
         .build()
         .runner("reply")
-        .add_hook(observer.clone())
-        .run()
+        .add_hook(observer.clone());
+    let response = stream_to_final(runner)
         .await
         .expect("poisoned observations must not steer or panic in the run");
     assert_eq!(response.output, "passive observer");

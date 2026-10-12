@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 
 use rig_agent::AgentBuilder;
 use rig_core::{
-    completion::{CompletionModel, CompletionRequest},
-    message::{AssistantContent, Message, UserContent},
+    message::{Message, UserContent},
+    serde_json::{Value, json},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
@@ -84,7 +84,7 @@ fn dns_results_must_be_nonempty_and_every_address_local() {
     assert_eq!(validate_resolved_addresses(vec![local, public]), None);
 }
 
-async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value> {
+async fn request_bodies(server: &MockServer) -> Vec<Value> {
     let requests = server
         .received_requests()
         .await
@@ -92,16 +92,9 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
 
     requests
         .iter()
+        .filter(|request| request.method.as_str() == "POST")
         .map(|request| {
-            assert_eq!(request.method.as_str(), "POST");
-            assert!(
-                matches!(
-                    request.url.path(),
-                    "/chat/completions" | "/v1/chat/completions"
-                ),
-                "unexpected completion path: {}",
-                request.url.path()
-            );
+            assert_eq!(request.url.path(), "/v1/chat/completions");
             request
                 .body_json()
                 .expect("completion request should contain JSON")
@@ -109,296 +102,155 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
         .collect()
 }
 
+/// One OpenAI `chat.completion.chunk` carrying `delta`.
+fn chunk(delta: Value, finish_reason: Option<&str>) -> Value {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test-model",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    })
+}
+
+/// The trailing usage-only chunk llama.cpp sends when usage is requested.
+fn usage_chunk() -> Value {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "created": 0,
+        "model": "test-model",
+        "choices": [],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    })
+}
+
+/// A server-sent-events body, as a streaming OpenAI-compatible server returns.
+fn sse(chunks: &[Value]) -> ResponseTemplate {
+    let mut body = String::new();
+    for chunk in chunks {
+        body.push_str(&format!("data: {chunk}\n\n"));
+    }
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+}
+
+fn text_stream(text: &str) -> ResponseTemplate {
+    sse(&[
+        chunk(json!({"role": "assistant", "content": text}), None),
+        chunk(json!({}), Some("stop")),
+        usage_chunk(),
+    ])
+}
+
+/// Builds the production client against `origin` (scheme, host and port).
+fn local_assistant(origin: &str) -> (LocalLlm, Assistant) {
+    let config = LocalLlmConfig {
+        base_url: format!("{origin}/v1"),
+        health_url: format!("{origin}/health"),
+        model: "test-model".to_string(),
+    };
+    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
+    let assistant = Assistant::new(
+        AgentBuilder::new(local_llm.model())
+            .tool(SystemStatusTool)
+            .build(),
+    );
+    (local_llm, assistant)
+}
+
 #[tokio::test]
-async fn openai_adapter_parses_plain_text_response() {
+async fn streams_text_from_a_localhost_endpoint_and_health_uses_its_own_url() {
     let server = MockServer::start().await;
     let port = reqwest::Url::parse(&server.uri())
         .expect("WireMock URI should be valid")
         .port()
         .expect("WireMock should use a random port");
-
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-                "id": "chatcmpl-test",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "test-model",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "JARVIS ONLINE"
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2
-                }
-            })),
-        )
+        .respond_with(sse(&[
+            chunk(json!({"role": "assistant", "content": "JARVIS "}), None),
+            chunk(json!({"content": "ONLINE"}), None),
+            chunk(json!({}), Some("stop")),
+            usage_chunk(),
+        ]))
         .mount(&server)
         .await;
-
     Mock::given(method("GET"))
         .and(path("/health"))
         .respond_with(ResponseTemplate::new(204))
         .mount(&server)
         .await;
 
-    let config = LocalLlmConfig {
-        base_url: format!("http://localhost:{port}/v1"),
-        health_url: format!("http://localhost:{port}/health"),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-    let model = local_llm.model();
-
-    let request = CompletionRequest {
-        preamble: None,
-        chat_history: vec![Message::user("Say JARVIS ONLINE")],
-        documents: vec![],
-        tools: vec![],
-        temperature: None,
-        max_tokens: None,
-        tool_choice: None,
-        additional_params: None,
-
-        model: None,
-        output_schema: None,
-        record_telemetry_content: false,
-    };
-    let response = model
-        .completion(request)
+    // `localhost` exercises the local-only DNS resolver end to end.
+    let (local_llm, assistant) = local_assistant(&format!("http://localhost:{port}"));
+    let run = assistant
+        .respond("Reply with exactly: JARVIS ONLINE", &[])
         .await
-        .expect("OpenAI response should deserialize");
+        .expect("a streamed text answer succeeds");
+    assert_eq!(run.response.output, "JARVIS ONLINE");
 
-    let text = response
-        .choice
-        .iter()
-        .find_map(|content| match content {
-            AssistantContent::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .expect("Rig should parse assistant text");
-
-    assert_eq!(text, "JARVIS ONLINE");
-    assert_eq!(request_bodies(&server).await.len(), 1);
-
-    let requests = server
-        .received_requests()
-        .await
-        .expect("WireMock should record completion request");
-    let completion = requests
-        .iter()
-        .find(|request| request.method.as_str() == "POST")
-        .expect("localhost should reach the completion fixture");
-    assert_eq!(completion.url.path(), "/v1/chat/completions");
-    let expected_host = format!("localhost:{port}");
-    assert_eq!(
-        completion
-            .headers
-            .get("host")
-            .and_then(|value| value.to_str().ok()),
-        Some(expected_host.as_str())
-    );
+    let bodies = request_bodies(&server).await;
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["stream"], true);
+    assert_eq!(bodies[0]["max_tokens"], 1024);
 
     local_llm
         .health_check()
         .await
-        .expect("localhost health check should reach the same fixture");
+        .expect("health check reaches its configured path");
     let requests = server
         .received_requests()
         .await
-        .expect("WireMock should record health request");
-    let health = requests
-        .iter()
-        .find(|request| request.method.as_str() == "GET" && request.url.path() == "/health")
-        .expect("health client should preserve its configured path");
-    assert_eq!(
-        health
-            .headers
-            .get("host")
-            .and_then(|value| value.to_str().ok()),
-        Some(expected_host.as_str())
+        .expect("WireMock records requests");
+    let expected_host = format!("localhost:{port}");
+    for request in &requests {
+        assert_eq!(
+            request
+                .headers
+                .get("host")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_host.as_str())
+        );
+    }
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method.as_str() == "GET" && request.url.path() == "/health")
     );
 }
 
 #[tokio::test]
-async fn openai_adapter_parses_system_status_tool_call() {
+async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     let server = MockServer::start().await;
+    // The tool call arrives as deltas: id and name first, arguments after.
     Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-                "id": "chatcmpl-tool-test",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "test-model",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": null,
-                            "tool_calls": [
-                                {
-                                    "id": "call-1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "system_status",
-                                        "arguments": "{}"
-                                    }
-                                }
-                            ]
-                        },
-                        "finish_reason": "tool_calls"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2
-                }
-            })),
-        )
-        .mount(&server)
-        .await;
-
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
-
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let model = local_llm.model();
-
-    let request = CompletionRequest {
-        preamble: None,
-        chat_history: vec![Message::user("Check the system status")],
-        documents: vec![],
-        tools: vec![],
-        temperature: None,
-        max_tokens: None,
-        tool_choice: None,
-        additional_params: None,
-        model: None,
-        output_schema: None,
-        record_telemetry_content: false,
-    };
-
-    let response = model
-        .completion(request)
-        .await
-        .expect("OpenAI tool-call response should deserialize");
-
-    let tool_call = response
-        .choice
-        .iter()
-        .find_map(|content| {
-            if let AssistantContent::ToolCall(tool_call) = content {
-                Some(tool_call)
-            } else {
-                None
-            }
-        })
-        .expect("expected Rig to parse a tool call");
-
-    assert_eq!(tool_call.function.name, "system_status");
-    assert_eq!(tool_call.id, "call-1");
-    assert_eq!(
-        tool_call.function.arguments,
-        rig_core::serde_json::json!({})
-    );
-    assert_eq!(request_bodies(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn openai_adapter_completes_system_status_roundtrip() {
-    let server = MockServer::start().await;
-
-    let tool_call_response =
-        ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-            "id": "chatcmpl-tool",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "test-model",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "system_status",
-                            "arguments": "{}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 1,
-                "completion_tokens": 1,
-                "total_tokens": 2
-            }
-        }));
-
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(tool_call_response)
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse(&[
+            chunk(
+                json!({"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": "call-1", "type": "function",
+                    "function": {"name": "system_status", "arguments": ""}
+                }]}),
+                None,
+            ),
+            chunk(
+                json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}),
+                None,
+            ),
+            chunk(json!({}), Some("tool_calls")),
+            usage_chunk(),
+        ]))
         .up_to_n_times(1)
         .mount(&server)
         .await;
-
-    let final_response = ResponseTemplate::new(200).set_body_json(rig_core::serde_json::json!({
-        "id": "chatcmpl-final",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "test-model",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": "System status retrieved."
-            },
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 1,
-            "completion_tokens": 1,
-            "total_tokens": 2
-        }
-    }));
-
     Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .respond_with(final_response)
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_stream("System status retrieved."))
         .mount(&server)
         .await;
-    let config = LocalLlmConfig {
-        base_url: server.uri(),
-        health_url: format!("{}/health", server.uri()),
-        model: "test-model".to_string(),
-    };
 
-    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
-
-    let agent = AgentBuilder::new(local_llm.model())
-        .tool(SystemStatusTool)
-        .build();
-
-    let assistant = Assistant::new(agent);
+    let (_local_llm, assistant) = local_assistant(&server.uri());
 
     let response = assistant
         .respond("Check the system status.", &[])

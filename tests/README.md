@@ -45,6 +45,12 @@ cargo test --locked --offline
 python3 -B tests/unit/features/speech/supertonic_worker/test_supertonic_worker.py
 ```
 
+Model tests always use the streaming path production uses: Rig mocks are
+scripted with `MockCompletionModel::from_stream_turns`, and Wiremock fixtures
+return OpenAI-style server-sent events. Don't add tests through Rig's
+non-streaming `.run()` or `.completion()`; they would test code Jarvis never
+calls.
+
 The Rust suite uses mocks, temporary SQLite files (with the statically linked
 sqlite-vec extension), and localhost Wiremock servers; it never calls a real
 model. The Python suite uses standard-library fixtures and needs no Supertonic

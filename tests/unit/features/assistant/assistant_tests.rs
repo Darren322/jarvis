@@ -10,12 +10,9 @@ use rig_core::{
     completion::{CompletionRequest, CompletionResponse, Document, Usage},
     message::{AssistantContent, Message, Text, UserContent},
     streaming::StreamingCompletionResponse,
-    test_utils::{MockCompletionModel, MockStreamEvent, MockTurn},
+    test_utils::{MockCompletionModel, MockStreamEvent},
 };
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
@@ -30,40 +27,29 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::{
-    MAX_TEXT_DELTA_BYTES, RUN_DEADLINE, consume_stream, finalize_response, send_text_deltas,
-};
+use super::{MAX_TEXT_DELTA_BYTES, consume_stream, send_text_deltas};
 
 impl Assistant {
-    /// Test-only blocking run over the same configured runner. Rig raises the
-    /// same hook lifecycle on `.run()` and `.stream()`; prompt failures are
-    /// wrapped in `StreamingError::Prompt` so production keeps one error shape.
+    /// Runs the production streaming path and drains visible deltas, as the
+    /// CLI does. Tests that inspect individual deltas call `respond_stream`.
     pub(crate) async fn respond(
         &self,
         prompt: &str,
         history: &[Message],
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
-        let observer = RunObserver::default();
-        let started_at = Instant::now();
-        let result = tokio::time::timeout(
-            RUN_DEADLINE,
-            self.configured_runner(prompt, history, &[], &observer)
-                .run(),
-        )
-        .await;
-
-        match result {
-            Ok(Ok(response)) => finalize_response(response, observer, started_at.elapsed()),
-            Ok(Err(error)) => Err(Box::new(AssistantRunError {
-                error: AssistantError::Stream(StreamingError::Prompt(Box::new(error))),
-                report: observer.finish(RunOutcome::PromptFailed, started_at.elapsed()),
-            })),
-            Err(_) => Err(Box::new(AssistantRunError {
-                error: AssistantError::RunTimeout,
-                report: observer.finish(RunOutcome::TimedOut, started_at.elapsed()),
-            })),
-        }
+        let (deltas, mut receiver) = mpsc::channel(16);
+        let drain = async { while receiver.recv().await.is_some() {} };
+        let (result, ()) = tokio::join!(self.respond_stream(prompt, history, &[], deltas), drain);
+        result
     }
+}
+
+/// One scripted streamed model turn: visible text, then the final event.
+pub(crate) fn streamed_text(text: &str, usage: Usage) -> Vec<MockStreamEvent> {
+    vec![
+        MockStreamEvent::text(text),
+        MockStreamEvent::final_response(usage),
+    ]
 }
 
 #[derive(Clone)]
@@ -74,15 +60,15 @@ impl CompletionModel for PendingCompletionModel {
         &self,
         _request: CompletionRequest,
     ) -> Result<CompletionResponse, CompletionError> {
-        // Simulate an LLM request that never returns.
-        std::future::pending().await
+        // The assistant only streams; this path is never used.
+        unreachable!("Assistant uses the streaming path")
     }
 
     async fn stream(
         &self,
         _request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse, CompletionError> {
-        // Not used by Assistant::respond(), but required by CompletionModel.
+        // Simulate a provider that accepts the request but never streams.
         std::future::pending().await
     }
 }
@@ -96,7 +82,8 @@ fn assert_incomplete_model(stage: &ModelStage, turn: usize) {
 
 #[tokio::test]
 async fn assistant_text_run_returns_success_report_without_tools() {
-    let model = MockCompletionModel::from_turns([MockTurn::text("JARVIS ONLINE")]);
+    let model =
+        MockCompletionModel::from_stream_turns([streamed_text("JARVIS ONLINE", Usage::new())]);
     let agent = AgentBuilder::new(model).tool(SystemStatusTool).build();
     let assistant = Assistant::new(agent);
 
@@ -128,9 +115,9 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
         tool_use_prompt_tokens: 5,
         reasoning_tokens: 6,
     };
-    let model = MockCompletionModel::from_turns([
-        MockTurn::text("usage reported").with_usage(expected),
-        MockTurn::text("usage omitted").with_usage(Usage::new()),
+    let model = MockCompletionModel::from_stream_turns([
+        streamed_text("usage reported", expected),
+        streamed_text("usage omitted", Usage::new()),
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
@@ -183,7 +170,8 @@ async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
 
 #[tokio::test]
 async fn provider_prompt_failure_reports_incomplete_model_stage_and_keeps_error_chain() {
-    let model = MockCompletionModel::from_turns([MockTurn::error("provider failed")]);
+    let model =
+        MockCompletionModel::from_stream_turns([vec![MockStreamEvent::error("provider failed")]]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
 

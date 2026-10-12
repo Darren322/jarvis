@@ -4,10 +4,10 @@
 
 use rig_agent::AgentBuilder;
 use rig_agent::tool::{Tool, ToolContext};
-use rig_core::completion::CompletionRequest;
+use rig_core::completion::{CompletionRequest, Usage};
 use rig_core::message::{AssistantContent, Message, ToolChoice, UserContent};
 use rig_core::serde_json::{Value, json};
-use rig_core::test_utils::{MockCompletionModel, MockTurn};
+use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -62,13 +62,13 @@ struct Outcome {
     requests: Vec<CompletionRequest>,
 }
 
-async fn run(turns: Vec<MockTurn>, should_fail: bool) -> Outcome {
+async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
     let executions = Arc::new(AtomicUsize::new(0));
     let tool = CountingStatusTool {
         executions: Arc::clone(&executions),
         should_fail,
     };
-    let model = MockCompletionModel::from_turns(turns);
+    let model = MockCompletionModel::from_stream_turns(turns);
     let handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(tool).build());
     let result = assistant.respond("Check the system status.", &[]).await;
@@ -79,8 +79,24 @@ async fn run(turns: Vec<MockTurn>, should_fail: bool) -> Outcome {
     }
 }
 
-fn status_call(id: &str) -> AssistantContent {
-    AssistantContent::tool_call(id, "system_status", json!({}))
+/// A streamed model turn made of the given events, ending with the final event.
+fn turn(events: impl IntoIterator<Item = MockStreamEvent>) -> Vec<MockStreamEvent> {
+    events
+        .into_iter()
+        .chain([MockStreamEvent::final_response(Usage::new())])
+        .collect()
+}
+
+fn text(value: &str) -> Vec<MockStreamEvent> {
+    turn([MockStreamEvent::text(value)])
+}
+
+fn status_call(id: &str) -> MockStreamEvent {
+    MockStreamEvent::tool_call(id, "system_status", json!({}))
+}
+
+fn tool_call(id: &str, name: &str, arguments: Value) -> Vec<MockStreamEvent> {
+    turn([MockStreamEvent::tool_call(id, name, arguments)])
 }
 
 /// Asserts the call in request 2's history is answered by a matching result.
@@ -108,8 +124,8 @@ fn assert_result_correlates_with_call(request: &CompletionRequest) {
 async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() {
     let outcome = run(
         vec![
-            MockTurn::from_contents([AssistantContent::text("Checking."), status_call("call-1")]),
-            MockTurn::text("All good."),
+            turn([MockStreamEvent::text("Checking."), status_call("call-1")]),
+            text("All good."),
         ],
         false,
     )
@@ -142,14 +158,14 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
 
 #[tokio::test]
 async fn tool_count_boundary_zero_and_one_run_but_two_run_nothing() {
-    let zero = run(vec![MockTurn::text("Hello.")], false).await;
+    let zero = run(vec![text("Hello.")], false).await;
     assert!(zero.result.is_ok());
     assert_eq!((zero.executions, zero.requests.len()), (0, 1));
 
     let one = run(
         vec![
-            MockTurn::tool_call("call-1", "system_status", json!({})),
-            MockTurn::text("Done."),
+            tool_call("call-1", "system_status", json!({})),
+            text("Done."),
         ],
         false,
     )
@@ -159,10 +175,7 @@ async fn tool_count_boundary_zero_and_one_run_but_two_run_nothing() {
 
     // A batch over the limit is rejected whole: not even the first call runs.
     let two = run(
-        vec![MockTurn::from_contents([
-            status_call("call-1"),
-            status_call("call-2"),
-        ])],
+        vec![turn([status_call("call-1"), status_call("call-2")])],
         false,
     )
     .await;
@@ -174,8 +187,8 @@ async fn tool_count_boundary_zero_and_one_run_but_two_run_nothing() {
 async fn turn_boundary_a_tool_on_the_second_turn_is_rejected_after_one_execution() {
     let outcome = run(
         vec![
-            MockTurn::tool_call("call-1", "system_status", json!({})),
-            MockTurn::tool_call("call-2", "system_status", json!({})),
+            tool_call("call-1", "system_status", json!({})),
+            tool_call("call-2", "system_status", json!({})),
         ],
         false,
     )
@@ -192,13 +205,13 @@ async fn rejected_turns_stop_after_one_request_without_running_the_tool() {
     let cases = [
         (
             "unknown tool",
-            MockTurn::tool_call("call-1", "forbidden_tool", json!({})),
+            tool_call("call-1", "forbidden_tool", json!({})),
         ),
         (
             "invalid arguments",
-            MockTurn::tool_call("call-1", "system_status", json!({"x": 1})),
+            tool_call("call-1", "system_status", json!({"x": 1})),
         ),
-        ("empty content", MockTurn::from_contents([])),
+        ("empty content", turn([])),
     ];
     for (name, turn) in cases {
         let outcome = run(vec![turn], false).await;
@@ -215,8 +228,8 @@ async fn rejected_turns_stop_after_one_request_without_running_the_tool() {
 async fn a_failed_tool_consumes_its_attempt_and_still_gets_one_final_answer() {
     let outcome = run(
         vec![
-            MockTurn::tool_call("call-1", "system_status", json!({})),
-            MockTurn::text("Status could not be retrieved."),
+            tool_call("call-1", "system_status", json!({})),
+            text("Status could not be retrieved."),
         ],
         true,
     )
