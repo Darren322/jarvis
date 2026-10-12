@@ -19,7 +19,6 @@ async fn binary_runs_help_reset_exit_with_local_health_and_no_model_request() {
     let directory = tempfile::tempdir().expect("temporary integration directory opens");
     let archive_path = directory.path().join("archive.sqlite3");
     let missing_assets = directory.path().join("missing-model-assets");
-    let index_path = directory.path().join("memory-index");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .env_clear()
@@ -29,7 +28,6 @@ async fn binary_runs_help_reset_exit_with_local_health_and_no_model_request() {
         .env("LOCAL_LLM_MODEL", "integration-model")
         .env("JARVIS_ARCHIVE_PATH", &archive_path)
         .env("JARVIS_EMBEDDING_MODEL_DIR", &missing_assets)
-        .env("JARVIS_MEMORY_INDEX_DIR", &index_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -5,7 +5,7 @@
 - Jarvis is a Rust 2024 application. `rig-agent` and `rig-core` are pinned to exactly `0.42.0`.
 - Treat the current working tree (including uncommitted changes), `Cargo.lock`, and phase documents as the source of project facts.
 - Verify library behavior against the locked or cached version and its primary documentation before using an API. Do not treat unversioned skill examples as API authority.
-- Read only the relevant sections of [the architecture roadmap](docs/JARVIS_ARCHITECTURE_ROADMAP.md) for phase-specific details. Local handoffs and phase reports live in the untracked `notes/` directory.
+- Read [the roadmap](docs/ROADMAP.md) for current priorities and fixed principles. Local handoffs, phase reports, and the archived full roadmap live in the untracked `notes/` directory; they are history, not rules.
 
 ## Planning and collaboration
 

@@ -41,8 +41,10 @@ suite uses standard-library fixtures; it does not load Supertonic or require
 model weights or audio hardware. These checks do not establish Pi playback
 acceptance.
 
-Private-module tests remain unit tests even when they use temporary SQLite or
-LanceDB files or a localhost HTTP mock. Integration tests exercise the compiled
+Private-module tests remain unit tests even when they use temporary SQLite
+files or a localhost HTTP mock. Memory tests run against real SQLite with the
+statically linked sqlite-vec extension; the v3-to-v4 migration is covered by
+`unit/storage/schema_tests.rs`. Integration tests exercise the compiled
 binary through its public input/output and configuration; they do not include
 `src/` modules. No library conversion or visibility widening is required.
 

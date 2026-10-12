@@ -3,7 +3,6 @@
 .env
 .env.*
 !.env.example
-docs/
 __pycache__/
 *.py[cod]
 notes/
