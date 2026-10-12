@@ -25,16 +25,33 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 | `src/clients/` | Provider construction and transport (`local_llm`, `local_embeddings`). |
 | `src/tools/` | Rig tools and `ALLOWED_TOOLS`. |
 | `src/features/assistant/` | One bounded Rig run: `Assistant`, policy, policy hook, run observer and report. |
+| `src/features/control/` | Interface-neutral commands: `parse`, the `COMMANDS` help table, and `MemoryControl` (memory commands and the "forget that" focus) returning `Notice`s. |
 | `src/features/conversation/` | Session history and archive coordination. |
 | `src/features/memory/` | Recall, imports, forgetting, idle embedding (`MemoryService`, `Embedder`). |
 | `src/features/speech/` | Synthesis worker, playback, cleanup. |
-| `src/interfaces/cli/` | Terminal input, command parsing, REPL, presentation. |
-| `src/storage/` | SQLite schema, migrations, chunking, and every SQL statement. |
+| `src/interfaces/cli/` | Terminal input, the REPL loop, streaming display, speech control, printing notices. No command logic. |
+| `src/storage/` | SQLite schema, migrations, chunking, and every SQL statement. Each storage module keeps its own types (`archive.rs`, `memory_repository/types.rs`); `storage/mod.rs` re-exports them. |
 
 - Dependencies point one way: `interfaces` → `features` → `storage` / `clients` / `tools`. Storage and features never import `App` or the CLI; the CLI never depends on `App`.
 - `foo.rs` for a leaf module; `foo/mod.rs` only when it has submodules. A feature's main type may live in its `mod.rs` (`Assistant`, `MemoryService`). Don't name a file after its parent (`assistant/assistant.rs` trips `clippy::module_inception`).
 - Don't add `services/`, `adapters/`, or other parents just to relocate files, empty placeholder files or directories, or layers that only forward calls. Split a file when it holds two separable concerns, not because of its line count.
 - Production code lives in `src/`; tests live in `tests/` (see Testing).
+- **Adding a command:** add a variant, a `parse` arm, and a `COMMANDS` row in `features/control/command.rs`, and handle it in `features/control/`. An interface changes only if the command controls the interface itself (`/stop`, `/exit`). Command handlers return `Notice`s; they never print.
+
+### When to restructure
+
+Split or add structure when one of these triggers is hit, and not before:
+
+| Area | Trigger | Then |
+| --- | --- | --- |
+| `src/tools/` | About 8 tools, or measured wrong tool choices | Group by domain (`tools/calendar/{read,create}.rs`) and offer only the relevant tools per request via `RequestPatch::active_tools`. |
+| Tool permissions | The first tool that writes or acts (roadmap 8B) | Add an access level to `ToolRule`. The approval prompt belongs to the interface, not the tool. |
+| Tool clients | A tool needs the network | Transport in `src/clients/` with the `local_llm.rs` endpoint protections; a thin `Tool` wrapper in `src/tools/`. Secrets come from config, never from tool arguments. |
+| `src/config.rs` | A third settings section (beyond LLM and TTS) | `config/mod.rs` plus one file per section (`config/tts.rs`, ...). |
+| `src/storage/schema.rs` | About six schema versions | Move each migration's SQL into `storage/migrations/vN.sql`, loaded with `include_str!`. |
+| New storage domain | Calendar cache, observations, enrollment | Its own `storage/<domain>/` module with its own types and SQL; the schema stays in `schema.rs`. |
+| `src/app.rs` | `App::run` does more than wiring | Extract named startup helpers (`open_memory`, `start_speech`); `App` stays the composition root. |
+| Second interface | Push-to-talk (roadmap 15A) | `src/interfaces/voice/` produces text for `control::parse` and renders `Notice`s; it shares nothing with the terminal module except `features/`. |
 
 ## Rust conventions
 

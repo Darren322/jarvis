@@ -6,11 +6,12 @@ Jarvis is a local-first Rust assistant. `src/main.rs` handles runtime setup and 
 
 - `src/features/assistant/` owns one bounded Rig run and its policy and report.
 - `src/features/conversation/` owns selected session history and archive coordination.
+- `src/features/control/` owns interface-neutral command parsing, help, and memory commands.
 - `src/features/memory/` owns recall (hybrid keyword + vector search), imports, forgetting, and idle embedding.
 - `src/features/speech/` owns synthesis, playback, and worker cleanup.
-- `src/clients/` owns provider construction.
+- `src/clients/` owns provider construction; `src/tools/` owns the model's tools, registered by `tools::register`.
 - `src/storage/` owns the SQLite schema, migrations, chunking, and transactions; `src/storage/memory_repository/` contains the memory SQL.
-- `src/config/` owns settings; `src/tools/` owns capability adapters.
+- `src/config.rs` owns settings.
 - Rust and Python unit tests live under `tests/unit/`; black-box workflows live under `tests/integration/`.
 
 ## Build and verify
