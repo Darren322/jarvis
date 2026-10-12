@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::LocalLlmConfig;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use rig_core::client::CompletionClient;
 use rig_core::providers::openai;
@@ -156,11 +156,11 @@ impl LocalLlm {
     pub fn model(&self) -> openai::CompletionModel {
         self.model.clone()
     }
-    pub fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(config: &LocalLlmConfig) -> Result<Self, Box<dyn std::error::Error>> {
         // Both destinations are checked before any request can be made. Do not
         // include the configured string in errors: URLs can contain secrets.
-        let base_url = validate_local_endpoint(&config.local_llm_base_url)?;
-        let health_url = validate_local_endpoint(&config.local_llm_health_url)?;
+        let base_url = validate_local_endpoint(&config.base_url)?;
+        let health_url = validate_local_endpoint(&config.health_url)?;
 
         // LEARNING: These builders configure the provider client and HTTP
         // client; they do not build a Rig agent or execute a model request.
@@ -178,7 +178,7 @@ impl LocalLlm {
             .http_client(generation_http_client)
             .build()?;
 
-        let model = client.completion_model(&config.local_llm_model);
+        let model = client.completion_model(&config.model);
 
         // LEARNING: Health checks use their own shorter timeout; model HTTP
         // uses 30 seconds with retries disabled. A timeout still cannot prove

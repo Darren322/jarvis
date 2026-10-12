@@ -120,7 +120,7 @@ async fn executes_system_status_once_then_returns_final_text() {
     // First request may use system_status.
     assert_eq!(requests[0].tools.len(), 1);
     assert_eq!(requests[0].tools[0].name, "system_status");
-    assert_eq!(requests[0].max_tokens, Some(1026));
+    assert_eq!(requests[0].max_tokens, Some(1024));
     assert_eq!(requests[0].tool_choice, Some(ToolChoice::Auto));
 
     // Finalization request must not be allowed to execute tools.
@@ -450,7 +450,7 @@ async fn rejects_empty_assistant_content() {
     let result = assistant.respond("Say something.", &[]).await;
 
     let error = result.expect_err("empty assistant content must be rejected");
-    assert!(matches!(&error.error, AssistantError::Prompt(_)));
+    assert!(matches!(&error.error, AssistantError::Stream(_)));
     assert!(matches!(&error.report.outcome, RunOutcome::PromptFailed));
 
     // Policy should reject immediately after the first model response.

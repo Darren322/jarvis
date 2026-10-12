@@ -190,8 +190,6 @@ impl ConversationSession {
 // diagnostics remain in the run and are not archived.
 fn archive_outcome(error: &AssistantRunError) -> ArchiveOutcome {
     match &error.error {
-        #[cfg(test)]
-        AssistantError::Prompt(_) => ArchiveOutcome::PromptFailed,
         AssistantError::Stream(_)
         | AssistantError::MissingFinalResponse
         | AssistantError::DeltaReceiverClosed => ArchiveOutcome::PromptFailed,

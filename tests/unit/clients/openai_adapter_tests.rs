@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use rig_agent::AgentBuilder;
-use rig_agent::completion::PromptError;
+use rig_agent::{agent::StreamingError, completion::PromptError};
 use rig_core::{
     completion::{CompletionModel, CompletionRequest},
     message::{AssistantContent, Message, UserContent},
@@ -15,7 +15,7 @@ use crate::{
     clients::local_llm::{
         LocalEndpointError, LocalLlm, validate_local_endpoint, validate_resolved_addresses,
     },
-    config::{AppConfig, OptionalTtsConfig},
+    config::LocalLlmConfig,
     features::assistant::{Assistant, CallUsage},
     tools::system_status_tool::SystemStatusTool,
 };
@@ -109,7 +109,8 @@ async fn request_bodies(server: &MockServer) -> Vec<rig_core::serde_json::Value>
 fn prompt_error<'a>(error: &'a (dyn std::error::Error + 'static)) -> &'a PromptError {
     let mut source = error;
     loop {
-        if let Some(prompt_error) = source.downcast_ref::<PromptError>() {
+        if let Some(StreamingError::Prompt(prompt_error)) = source.downcast_ref::<StreamingError>()
+        {
             return prompt_error;
         }
         source = source
@@ -160,14 +161,10 @@ async fn openai_adapter_parses_plain_text_response() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: format!("http://localhost:{port}/v1"),
-        local_llm_health_url: format!("http://localhost:{port}/health"),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: format!("http://localhost:{port}/v1"),
+        health_url: format!("http://localhost:{port}/health"),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -284,14 +281,10 @@ async fn openai_adapter_parses_system_status_tool_call() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -403,14 +396,10 @@ async fn openai_adapter_completes_system_status_roundtrip() {
         .respond_with(final_response)
         .mount(&server)
         .await;
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -451,7 +440,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
     assert_eq!(request_bodies.len(), 2);
     let first_request = &request_bodies[0];
     assert_eq!(first_request["tool_choice"], "auto");
-    assert_eq!(first_request["max_tokens"], 1026);
+    assert_eq!(first_request["max_tokens"], 1024);
 
     let first_tools = first_request["tools"]
         .as_array()
@@ -476,7 +465,7 @@ async fn openai_adapter_completes_system_status_roundtrip() {
     let second_request = &request_bodies[1];
     assert!(second_request.get("tools").is_none());
     assert_eq!(second_request["tool_choice"], "none");
-    assert_eq!(second_request["max_tokens"], 1026);
+    assert_eq!(second_request["max_tokens"], 1024);
 
     let second_messages = second_request["messages"]
         .as_array()
@@ -593,14 +582,10 @@ async fn openai_adapter_rejects_length_terminated_tool_call() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -660,14 +645,10 @@ async fn openai_adapter_rejects_content_filtered_tool_call() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -727,14 +708,10 @@ async fn openai_adapter_rejects_unknown_finish_reason() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -794,14 +771,10 @@ async fn openai_adapter_rejects_unknown_tool_call() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
@@ -862,14 +835,10 @@ async fn openai_adapter_rejects_invalid_system_status_arguments() {
         .mount(&server)
         .await;
 
-    let config = AppConfig {
-        local_llm_base_url: server.uri(),
-        local_llm_health_url: format!("{}/health", server.uri()),
-        local_llm_model: "test-model".to_string(),
-        archive_path: "data/jarvis.sqlite3".to_string(),
-        embedding_model_dir: "data/embeddings".into(),
-        memory_index_dir: "data/memory-index".into(),
-        tts: OptionalTtsConfig::Disabled,
+    let config = LocalLlmConfig {
+        base_url: server.uri(),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
     };
 
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");

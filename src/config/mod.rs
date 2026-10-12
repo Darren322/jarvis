@@ -1,17 +1,38 @@
-use std::{env, path::PathBuf};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+};
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
 const DEFAULT_EMBEDDING_MODEL_DIR: &str = "data/embeddings";
 const DEFAULT_MEMORY_INDEX_DIR: &str = "data/memory-index";
 
+/// Process settings. Every path is absolute: relative values are resolved
+/// against the working directory once, at load time.
 pub struct AppConfig {
-    pub local_llm_base_url: String,
-    pub local_llm_health_url: String,
-    pub local_llm_model: String,
-    pub archive_path: String,
+    pub local_llm: LocalLlmConfig,
+    pub archive_path: PathBuf,
     pub embedding_model_dir: PathBuf,
     pub memory_index_dir: PathBuf,
     pub tts: OptionalTtsConfig,
+}
+
+pub struct LocalLlmConfig {
+    pub base_url: String,
+    pub health_url: String,
+    pub model: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("required environment variable {name} is missing or not valid Unicode")]
+    Var {
+        name: &'static str,
+        #[source]
+        source: env::VarError,
+    },
+    #[error("could not resolve the current working directory")]
+    CurrentDir(#[source] io::Error),
 }
 
 #[derive(Clone, Debug)]
@@ -31,36 +52,32 @@ pub struct TtsConfig {
 }
 
 impl AppConfig {
-    pub fn load() -> Result<Self, env::VarError> {
+    pub fn load() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
 
-        // Keep required LLM settings first so their existing VarError behavior
-        // remains unchanged. Optional speech problems are represented in `tts`
-        // and leave text chat available.
-        let local_llm_base_url = env::var("LOCAL_LLM_BASE_URL")?;
-        let local_llm_health_url = env::var("LOCAL_LLM_HEALTH_URL")?;
-        let local_llm_model = env::var("LOCAL_LLM_MODEL")?;
-        let archive_path =
-            env::var("JARVIS_ARCHIVE_PATH").unwrap_or_else(|_| DEFAULT_ARCHIVE_PATH.to_string());
-        let embedding_model_dir = configured_path(
-            env::var_os("JARVIS_EMBEDDING_MODEL_DIR"),
-            DEFAULT_EMBEDDING_MODEL_DIR,
-        );
-        let memory_index_dir = configured_path(
-            env::var_os("JARVIS_MEMORY_INDEX_DIR"),
-            DEFAULT_MEMORY_INDEX_DIR,
-        );
+        // Required LLM settings fail startup. Optional speech problems are
+        // represented in `tts` and leave text chat available.
+        let local_llm = LocalLlmConfig {
+            base_url: required_env("LOCAL_LLM_BASE_URL")?,
+            health_url: required_env("LOCAL_LLM_HEALTH_URL")?,
+            model: required_env("LOCAL_LLM_MODEL")?,
+        };
+        let current_dir = env::current_dir().map_err(ConfigError::CurrentDir)?;
+        let path =
+            |name, default| resolve_from(&current_dir, configured_path(env::var_os(name), default));
 
         Ok(Self {
-            local_llm_base_url,
-            local_llm_health_url,
-            local_llm_model,
-            archive_path,
-            embedding_model_dir,
-            memory_index_dir,
-            tts: load_tts_config(),
+            local_llm,
+            archive_path: path("JARVIS_ARCHIVE_PATH", DEFAULT_ARCHIVE_PATH),
+            embedding_model_dir: path("JARVIS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
+            memory_index_dir: path("JARVIS_MEMORY_INDEX_DIR", DEFAULT_MEMORY_INDEX_DIR),
+            tts: load_tts_config(&current_dir),
         })
     }
+}
+
+fn required_env(name: &'static str) -> Result<String, ConfigError> {
+    env::var(name).map_err(|source| ConfigError::Var { name, source })
 }
 
 fn configured_path(value: Option<std::ffi::OsString>, default: &str) -> PathBuf {
@@ -70,7 +87,7 @@ fn configured_path(value: Option<std::ffi::OsString>, default: &str) -> PathBuf 
         .unwrap_or_else(|| PathBuf::from(default))
 }
 
-fn load_tts_config() -> OptionalTtsConfig {
+fn load_tts_config(current_dir: &Path) -> OptionalTtsConfig {
     let model_dir = match optional_env("JARVIS_TTS_MODEL_DIR") {
         Ok(None) => return OptionalTtsConfig::Disabled,
         Ok(Some(value)) if !value.is_empty() => PathBuf::from(value),
@@ -100,18 +117,9 @@ fn load_tts_config() -> OptionalTtsConfig {
         return OptionalTtsConfig::Invalid("JARVIS_TTS_PYTHON must be an absolute path.");
     }
 
-    let current_dir = match env::current_dir() {
-        Ok(path) => path,
-        Err(_) => {
-            return OptionalTtsConfig::Invalid(
-                "speech paths could not be resolved from the current directory.",
-            );
-        }
-    };
-
     let worker_script = match optional_env("JARVIS_TTS_WORKER") {
         Ok(None) => current_dir.join("scripts/tts/supertonic_worker.py"),
-        Ok(Some(value)) if !value.is_empty() => resolve_from(&current_dir, PathBuf::from(value)),
+        Ok(Some(value)) if !value.is_empty() => resolve_from(current_dir, PathBuf::from(value)),
         Ok(Some(_)) => {
             return OptionalTtsConfig::Invalid("JARVIS_TTS_WORKER cannot be empty.");
         }
@@ -149,7 +157,7 @@ fn load_tts_config() -> OptionalTtsConfig {
     OptionalTtsConfig::Configured(TtsConfig {
         python,
         worker_script,
-        model_dir: resolve_from(&current_dir, model_dir),
+        model_dir: resolve_from(current_dir, model_dir),
         threads,
         audio_device,
     })
@@ -163,7 +171,7 @@ fn optional_env(name: &str) -> Result<Option<String>, env::VarError> {
     }
 }
 
-fn resolve_from(current_dir: &std::path::Path, path: PathBuf) -> PathBuf {
+fn resolve_from(current_dir: &Path, path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
     } else {

@@ -18,6 +18,7 @@ use crate::features::assistant::{
 
 const RUN_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_TEXT_DELTA_BYTES: usize = 1024;
+const MAX_RESPONSE_TOKENS: u64 = 1024;
 
 /// One bounded piece of visible assistant text from the native Rig stream.
 pub(crate) struct AssistantTextDelta {
@@ -94,7 +95,7 @@ impl Assistant {
             .add_hook(JarvisPolicyHook)
             .max_turns(2)
             .tool_concurrency(1)
-            .max_tokens(1026)
+            .max_tokens(MAX_RESPONSE_TOKENS)
             .max_invalid_tool_call_retries(0)
             .without_memory()
     }

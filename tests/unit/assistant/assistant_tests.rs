@@ -2,7 +2,6 @@ use futures_util::StreamExt as _;
 use rig_agent::{
     AgentBuilder,
     agent::{MultiTurnStreamItem, PromptResponse, StreamingError},
-    completion::PromptError,
     prelude::{CompletionError, CompletionModel},
     streaming::StreamedAssistantContent,
     tool::Tool,
@@ -34,7 +33,9 @@ use crate::{
 use super::{MAX_TEXT_DELTA_BYTES, RUN_DEADLINE, consume_stream, finalize_response};
 
 impl Assistant {
-    #[cfg(test)]
+    /// Test-only blocking run over the same configured runner. Rig raises the
+    /// same hook lifecycle on `.run()` and `.stream()`; prompt failures are
+    /// wrapped in `StreamingError::Prompt` so production keeps one error shape.
     pub(crate) async fn respond(
         &self,
         prompt: &str,
@@ -49,13 +50,10 @@ impl Assistant {
         )
         .await;
 
-        // LEARNING: `timeout` wraps the run's `Result`: `Ok(Ok(response))` is
-        // success, `Ok(Err(error))` is a Rig failure, and `Err(_)` means Tokio
-        // stopped waiting. It does not prove the remote model cancelled work.
         match result {
             Ok(Ok(response)) => finalize_response(response, observer, started_at.elapsed()),
             Ok(Err(error)) => Err(Box::new(AssistantRunError {
-                error: AssistantError::Prompt(error),
+                error: AssistantError::Stream(StreamingError::Prompt(Box::new(error))),
                 report: observer.finish(RunOutcome::PromptFailed, started_at.elapsed()),
             })),
             Err(_) => Err(Box::new(AssistantRunError {
@@ -212,25 +210,24 @@ async fn provider_prompt_failure_reports_incomplete_model_stage_and_keeps_error_
         .await
         .expect_err("provider failure must be returned");
 
-    assert!(matches!(&error.error, AssistantError::Prompt(_)));
+    assert!(matches!(&error.error, AssistantError::Stream(_)));
     assert!(matches!(&error.report.outcome, RunOutcome::PromptFailed));
     assert!(error.report.observations_available);
     assert_eq!(error.report.model_stages.len(), 1);
     assert_incomplete_model(&error.report.model_stages[0], 1);
 
     let mut source: &(dyn std::error::Error + 'static) = error.as_ref();
-    let prompt_error = loop {
-        if let Some(prompt_error) = source.downcast_ref::<PromptError>() {
-            break prompt_error;
+    let completion_error = loop {
+        if let Some(completion_error) = source.downcast_ref::<CompletionError>() {
+            break completion_error;
         }
         source = source
             .source()
-            .expect("prompt error source chain continues");
+            .expect("completion error source chain continues");
     };
     assert!(matches!(
-        prompt_error,
-        PromptError::CompletionError(CompletionError::ProviderError(message))
-            if message == "provider failed"
+        completion_error,
+        CompletionError::ProviderError(message) if message == "provider failed"
     ));
     assert_eq!(model_handle.request_count(), 1);
 }
@@ -411,7 +408,7 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].documents, vec![document.clone()]);
     assert_eq!(requests[1].documents, vec![document.clone()]);
-    assert_eq!(requests[0].max_tokens, Some(1026));
+    assert_eq!(requests[0].max_tokens, Some(1024));
     assert_eq!(requests[0].tools.len(), 1);
     assert!(requests[1].tools.is_empty());
     for request in &requests {

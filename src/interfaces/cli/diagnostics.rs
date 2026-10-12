@@ -21,8 +21,6 @@ pub(super) fn report_turn_warnings(
 
 pub(super) fn safe_error_message(error: &AssistantError) -> &'static str {
     match error {
-        #[cfg(test)]
-        AssistantError::Prompt(_) => "The model request failed.",
         AssistantError::Stream(_)
         | AssistantError::MissingFinalResponse
         | AssistantError::DeltaReceiverClosed => "The streamed model response failed.",
