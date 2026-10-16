@@ -21,7 +21,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 | --- | --- |
 | `src/main.rs` | Tokio runtime, config load, `App`, bounded shutdown. Nothing else. |
 | `src/app.rs` | Assembling clients and services; startup. No parsing, REPL flow, or domain logic. |
-| `src/config.rs` | Environment parsing. Every path is resolved to absolute once, here. |
+| `src/config/` | Environment parsing, one file per settings section (`local_llm.rs`, `tts.rs`, ...). Every path is resolved to absolute once, here. |
 | `src/clients/` | Provider construction and transport (`local_llm`, `local_embeddings`). |
 | `src/tools/` | Rig tools and `ALLOWED_TOOLS`. |
 | `src/features/assistant/` | One bounded Rig run: `Assistant`, policy, policy hook, run observer and report. |
@@ -47,7 +47,6 @@ Split or add structure when one of these triggers is hit, and not before:
 | `src/tools/` | About 8 tools, or measured wrong tool choices | Group by domain (`tools/calendar/{read,create}.rs`) and offer only the relevant tools per request via `RequestPatch::active_tools`. |
 | Tool permissions | The first tool that writes or acts (roadmap 8B) | Add an access level to `ToolRule`. The approval prompt belongs to the interface, not the tool. |
 | Tool clients | A tool needs the network | Transport in `src/clients/` with the `local_llm.rs` endpoint protections; a thin `Tool` wrapper in `src/tools/`. Secrets come from config, never from tool arguments. |
-| `src/config.rs` | A third settings section (beyond LLM and TTS) | `config/mod.rs` plus one file per section (`config/tts.rs`, ...). |
 | `src/storage/schema.rs` | About six schema versions | Move each migration's SQL into `storage/migrations/vN.sql`, loaded with `include_str!`. |
 | New storage domain | Calendar cache, observations, enrollment | Its own `storage/<domain>/` module with its own types and SQL; the schema stays in `schema.rs`. |
 | `src/app.rs` | `App::run` does more than wiring | Extract named startup helpers (`open_memory`, `start_speech`); `App` stays the composition root. |
