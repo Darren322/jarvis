@@ -33,7 +33,7 @@ This file is the short, current plan. The full design history (revision 22 and e
 Work through these in order. Each step ends with a commit and a short note of what was verified.
 
 1. **Pi acceptance of the current build.** Back up `data/jarvis.sqlite3`, run the v4 migration on the 8 GB Pi, and check speech start/stop, recall, `/forget`, and `/memory status` on real hardware.
-2. **Remote BGE embeddings.** Run [the deployment benchmark](TWO_PI_BGE_DEPLOYMENT.md) on the 16 GB Pi, then follow [the integration guide](BGE_SERVER_INTEGRATION.md). This removes ONNX Runtime from the 8 GB Pi.
+2. **Remote BGE embeddings.** The server runs on the 16 GB Pi and Jarvis uses it (`3287032`). Remaining: restart the server with `--parallel 1 --alias bge-small-en-v1.5` as a systemd service ([section 8](TWO_PI_BGE_DEPLOYMENT.md)), then [switch the 8 GB Pi](MEMORY_STORAGE_OPERATIONS.md#switching-the-8-gb-pi-to-the-embedding-server) and measure Gemma latency while it re-embeds.
 3. **Push-to-talk input (15A).** Capture worker → bounded audio → speech-to-text → the normal request path. Evaluate Whisper.cpp, `parakeet-rs` and Moonshine on the Pi before choosing. No always-listening and no cloud transcription.
 4. **Second tool: read one calendar (8A).** Add it to `ALLOWED_TOOLS`. The first tool that *writes* (8B, create an event) also introduces per-tool permission levels with explicit, content-bound user approval.
 

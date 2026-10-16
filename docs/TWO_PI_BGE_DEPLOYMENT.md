@@ -1,13 +1,13 @@
 # Manual BGE GGUF deployment for the two-Pi Jarvis setup
 
-Prepared 2026-10-09; reviewed 2026-10-10. Deployment is **not verified**. Codex has no SSH access and has run none of these Pi commands. This guide changes only the separate embedding deployment; Jarvis's memory integration waits for your results.
+Prepared 2026-10-09; reviewed 2026-10-10. **Status 2026-10-16:** the server runs on the 16 GB Pi (llama.cpp `b11177`). From the LAN it returns 384-dimension unit vectors in about 36 ms per question. Jarvis uses it since `3287032`. Not yet done: `--parallel 1` (it has 4 slots), `--alias`, the systemd service (section 8), and latency measured from the 8 GB Pi. The server rejects input over 512 tokens with HTTP 500; the Jarvis client truncates before sending.
 
 ## What will run where
 
 | Host | Responsibility |
 | --- | --- |
 | **16 GB Pi — jarvis-ai.local** | Existing Gemma llama-server on 8080; new BGE llama-server on suggested port 8081. You download and install the embedding model here. |
-| **8 GB Pi — Jarvis** | Rust/Tokio application, TTS, and SQLite (archive, memories, FTS5 and sqlite-vec indexes). For now only test LAN access from here. Do not change Jarvis configuration or remove ONNX assets yet. |
+| **8 GB Pi — Jarvis** | Rust/Tokio application, TTS, and SQLite (archive, memories, FTS5 and sqlite-vec indexes). Switch it with [the operations guide](MEMORY_STORAGE_OPERATIONS.md#switching-the-8-gb-pi-to-the-embedding-server). |
 
 Run the shell blocks below in **Bash** on the indicated Pi. Keep Gemma idle during embedding measurements. Do not run Jarvis at the same time as these manual inference tests: its idle embedding pass and chat requests would skew the measurements.
 
@@ -33,7 +33,7 @@ Q8_0 is a small initial CPU candidate, not a claim that it is faster or more acc
 
 Sources: [publisher card](https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/blob/main/README.md), [artifact and SHA-256](https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/blob/d32f8c040ea3b516330eeb75b72bcc2d3a780ab7/bge-small-en-v1.5-q8_0.gguf), [BAAI model/config](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/main/config.json), [CLS pooling config](https://huggingface.co/BAAI/bge-small-en-v1.5/blob/main/1_Pooling/config.json), [BAAI recipe](https://huggingface.co/BAAI/bge-small-en-v1.5).
 
-**Rebuild required later:** GGUF Q8_0 and ONNX INT8 are different vector recipes even though both return 384 values. Do not mix their vectors in the current index. Preserve SQLite; integration assigns a new model fingerprint, and Jarvis re-embeds every memory during idle time. Hybrid FTS5 + sqlite-vec fusion stays unchanged. See [the integration guide](BGE_SERVER_INTEGRATION.md).
+**Rebuild required later:** GGUF Q8_0 and ONNX INT8 are different vector recipes even though both return 384 values. Do not mix their vectors in the current index. Preserve SQLite; the server client has a new model fingerprint, and Jarvis re-embeds every memory during idle time. Hybrid FTS5 + sqlite-vec fusion stays unchanged.
 
 ## 2. First checkpoint — 16 GB Pi only
 
@@ -361,7 +361,7 @@ curl --noproxy '*' --max-time 5 -i "http://$EMBED_BIND:$EMBED_PORT/health"
 curl --noproxy '*' --fail --max-time 5 "http://$EMBED_BIND:$EMBED_PORT/v1/models"
 ~~~
 
-On the 8 GB Pi, do not install the model or change .env. JARVIS_EMBEDDING_MODEL_DIR still names local ONNX model and tokenizer files, not a URL, and Jarvis has no HTTP embedding setting. EMBED_BASE configures only the standalone probe.py; it is not a Jarvis setting. For the later Jarvis change, see [BGE_SERVER_INTEGRATION.md](BGE_SERVER_INTEGRATION.md).
+On the 8 GB Pi, do not install the model. EMBED_BASE configures only the standalone probe.py; Jarvis reads JARVIS_EMBEDDING_BASE_URL instead (see [the operations guide](MEMORY_STORAGE_OPERATIONS.md#switching-the-8-gb-pi-to-the-embedding-server)).
 
 On the 8 GB Pi, with Jarvis still stopped, use the stable mDNS name if it resolves. If it does not, substitute the verified private IPv4 address for jarvis-ai.local; do not use a public endpoint. Set the same test port used on the 16 GB Pi:
 
