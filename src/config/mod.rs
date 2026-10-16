@@ -1,3 +1,4 @@
+mod embedding;
 mod local_llm;
 mod tts;
 
@@ -6,18 +7,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
 pub use tts::{OptionalTtsConfig, TtsConfig};
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
-const DEFAULT_EMBEDDING_MODEL_DIR: &str = "data/embeddings";
 
 /// Process settings. Every path is absolute: relative values are resolved
 /// against the working directory once, at load time.
 pub struct AppConfig {
     pub local_llm: LocalLlmConfig,
+    pub embedding: EmbeddingConfig,
     pub archive_path: PathBuf,
-    pub embedding_model_dir: PathBuf,
     pub tts: OptionalTtsConfig,
 }
 
@@ -37,17 +38,20 @@ impl AppConfig {
     pub fn load() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
 
-        // Required LLM settings fail startup. Optional speech problems are
+        // Required model-server settings fail startup. Optional speech problems are
         // represented in `tts` and leave text chat available.
         let local_llm = LocalLlmConfig::from_env()?;
+        let embedding = EmbeddingConfig::from_env()?;
         let current_dir = env::current_dir().map_err(ConfigError::CurrentDir)?;
-        let path =
-            |name, default| resolve_from(&current_dir, configured_path(env::var_os(name), default));
+        let archive_path = resolve_from(
+            &current_dir,
+            configured_path(env::var_os("JARVIS_ARCHIVE_PATH"), DEFAULT_ARCHIVE_PATH),
+        );
 
         Ok(Self {
             local_llm,
-            archive_path: path("JARVIS_ARCHIVE_PATH", DEFAULT_ARCHIVE_PATH),
-            embedding_model_dir: path("JARVIS_EMBEDDING_MODEL_DIR", DEFAULT_EMBEDDING_MODEL_DIR),
+            embedding,
+            archive_path,
             tts: OptionalTtsConfig::from_env(&current_dir),
         })
     }

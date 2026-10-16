@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+use wiremock::MockServer;
+
+use crate::clients::remote_embeddings::RemoteEmbeddings;
+use crate::config::EmbeddingConfig;
 use crate::features::{
     control::{MemoryCommand, Notice},
     conversation::ConversationSession,
@@ -25,6 +29,8 @@ struct Fixture {
     session: ConversationSession,
     archive: ConversationArchive,
     memory: MemoryService,
+    /// No routes, so the embedder is unavailable and recall is keyword-only.
+    _embedding_server: MockServer,
 }
 
 impl Fixture {
@@ -35,17 +41,24 @@ impl Fixture {
         let archive = ConversationArchive::open(&path)
             .await
             .expect("archive opens");
+        let embedding_server = MockServer::start().await;
+        let embeddings = RemoteEmbeddings::new(&EmbeddingConfig {
+            base_url: format!("{}/v1", embedding_server.uri()),
+            model: "bge-test".to_owned(),
+        })
+        .expect("a localhost URL is allowed");
         let memory = MemoryService::open(
             session
                 .memory_repository()
                 .expect("repository is available"),
-            PathBuf::from("/nonexistent/jarvis-embeddings"),
+            embeddings,
         );
         Self {
             path,
             session,
             archive,
             memory,
+            _embedding_server: embedding_server,
         }
     }
 

@@ -237,7 +237,7 @@ async fn status(memory: &MemoryService) -> Vec<Notice> {
     match memory.status().await {
         Ok(status) => {
             let embedder = match status.embedder {
-                EmbedderState::Loading => "loading",
+                EmbedderState::Connecting => "connecting",
                 EmbedderState::Ready => "ready",
                 EmbedderState::Unavailable => "unavailable (keyword-only recall)",
             };

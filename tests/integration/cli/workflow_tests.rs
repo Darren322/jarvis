@@ -16,9 +16,11 @@ async fn binary_runs_help_reset_exit_with_local_health_and_no_model_request() {
         .mount(&server)
         .await;
 
+    // No routes: the embedder reports unavailable and memory stays keyword-only.
+    let embedding_server = MockServer::start().await;
+
     let directory = tempfile::tempdir().expect("temporary integration directory opens");
     let archive_path = directory.path().join("archive.sqlite3");
-    let missing_assets = directory.path().join("missing-model-assets");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .env_clear()
@@ -27,7 +29,8 @@ async fn binary_runs_help_reset_exit_with_local_health_and_no_model_request() {
         .env("LOCAL_LLM_HEALTH_URL", server.uri() + "/health")
         .env("LOCAL_LLM_MODEL", "integration-model")
         .env("JARVIS_ARCHIVE_PATH", &archive_path)
-        .env("JARVIS_EMBEDDING_MODEL_DIR", &missing_assets)
+        .env("JARVIS_EMBEDDING_BASE_URL", embedding_server.uri() + "/v1")
+        .env("JARVIS_EMBEDDING_MODEL", "integration-embedding-model")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

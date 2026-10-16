@@ -5,7 +5,7 @@ use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
-pub(super) enum LocalEndpointError {
+pub(crate) enum LocalEndpointError {
     #[error("local model endpoint URL is invalid")]
     InvalidUrl,
     #[error("local model endpoints must use HTTP or HTTPS")]

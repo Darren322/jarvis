@@ -22,7 +22,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 | `src/main.rs` | Tokio runtime, config load, `App`, bounded shutdown. Nothing else. |
 | `src/app.rs` | Assembling clients and services; startup. No parsing, REPL flow, or domain logic. |
 | `src/config/` | Environment parsing, one file per settings section (`local_llm.rs`, `tts.rs`, ...). Every path is resolved to absolute once, here. |
-| `src/clients/` | Provider construction and transport (`local_llm`, `local_embeddings`). |
+| `src/clients/` | Provider construction and transport (`local_llm`, `remote_embeddings`) and the shared `local_endpoint` guard. |
 | `src/tools/` | Rig tools and `ALLOWED_TOOLS`. |
 | `src/features/assistant/` | One bounded Rig run: `Assistant`, policy, policy hook, run observer and report. |
 | `src/features/control/` | Interface-neutral commands: `parse`, the `COMMANDS` help table, and `MemoryControl` (memory commands and the "forget that" focus) returning `Notice`s. |
@@ -82,14 +82,14 @@ Split or add structure when one of these triggers is hit, and not before:
 - Take only the config you need: `LocalLlm::new(&LocalLlmConfig)`, not the whole `AppConfig`.
 
 ### Async and concurrency
-- Native inference and blocking file or CPU work run in `spawn_blocking` (see `Embedder`). SQLite goes through `tokio-rusqlite`'s connection handle.
+- Blocking file or CPU work runs in `spawn_blocking`. SQLite goes through `tokio-rusqlite`'s connection handle. Model inference happens on the 16 GB Pi over HTTP, never in-process.
 - Every external wait has a named timeout. A timeout means Jarvis stopped waiting. It does not mean remote or native work stopped, so never infer that it had no effect.
 - Futures raced in `tokio::select!` must be safe to drop at any `.await`: commit durable state in single transactions, and keep in-flight native work owned (e.g., by a semaphore permit). Use `biased;` when user input must win.
 - Use bounded channels. Use `Arc<Mutex<_>>` only for genuinely shared state, keep lock scopes short, and never hold a lock across `.await`.
 - There is no `CancellationToken` or `JoinSet` supervision yet. Add one when a long-lived background task needs it (roadmap phase 6), not before.
 
 ### Unsafe
-- `unsafe` is limited to FFI in `storage/sqlite_vec.rs` and `clients/local_embeddings.rs`. Each block is minimal and carries a `// SAFETY:` comment stating the invariant. Don't add `unsafe` elsewhere without discussion.
+- `unsafe` is limited to FFI in `storage/sqlite_vec.rs`. Each block is minimal and carries a `// SAFETY:` comment stating the invariant. Don't add `unsafe` elsewhere without discussion.
 
 ### Comments and docs
 - Use `///` on items used across modules, stating the invariant, limit, or why. Don't restate the code. Use `//!` for a module's purpose when it isn't obvious from the name.
@@ -119,6 +119,7 @@ Split or add structure when one of these triggers is hit, and not before:
 - SQLite (`data/jarvis.sqlite3`) is the only durable store. The FTS5 index (`memories_fts`) and sqlite-vec index (`memory_vectors`) live in the same file and are kept in sync by triggers. Don't add a second store that must be kept consistent with it.
 - All SQL lives in `src/storage/`. Write paths use `TransactionBehavior::Immediate`. An archived turn and its memory source commit in one transaction.
 - Memory text is immutable (a trigger enforces this). To change a memory, delete it and insert a new row. Forgetting deletes memory rows and marks sources `forgotten`, cascading through `source_links`. Archived `turns` are kept.
+- Embeddings come from the BGE server on the 16 GB Pi through `clients/remote_embeddings.rs`, one request at a time. The server rejects input over 512 tokens, so the client tokenizes long text and keeps the first 511 tokens plus [SEP]. Any success marks the embedder ready again; idle embedding waits while it is unavailable.
 - `memories.embedding_model` records which model made each vector. A new embedder fingerprint makes every row pending, and idle passes re-embed it. Vectors are 384-dimensional (`EMBEDDING_DIMENSIONS`).
 - **Changing the schema:**
   1. Bump `SCHEMA_VERSION`.

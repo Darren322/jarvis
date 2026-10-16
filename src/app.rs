@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use rig_agent::AgentBuilder;
 use tokio::io::BufReader;
 
-use crate::clients::local_llm::LocalLlm;
+use crate::clients::{local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings};
 use crate::config::{AppConfig, OptionalTtsConfig};
 use crate::features::{
     assistant::{Assistant, SYSTEM_PREAMBLE},
@@ -19,8 +19,8 @@ use crate::tools;
 pub struct App {
     assistant: Assistant,
     local_llm: LocalLlm,
+    embeddings: RemoteEmbeddings,
     archive_path: PathBuf,
-    embedding_model_dir: PathBuf,
     tts_config: OptionalTtsConfig,
 }
 
@@ -30,6 +30,7 @@ impl App {
     // call need not take ownership of config values it only reads.
     pub fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
         let local_llm = LocalLlm::new(&config.local_llm)?;
+        let embeddings = RemoteEmbeddings::new(&config.embedding)?;
         // LEARNING: Java fluent builders often mutate and return `this`; these
         // Rust methods take and return the owned builder. `.build()` makes a
         // reusable `Agent` but sends no request. The preamble guides the model;
@@ -45,8 +46,8 @@ impl App {
         Ok(Self {
             assistant,
             local_llm,
+            embeddings,
             archive_path: config.archive_path.clone(),
-            embedding_model_dir: config.embedding_model_dir.clone(),
             tts_config: config.tts.clone(),
         })
     }
@@ -72,10 +73,7 @@ impl App {
         }
         let repository = session.memory_repository();
         let memory = match repository {
-            Some(repository) => Some(MemoryService::open(
-                repository,
-                self.embedding_model_dir.clone(),
-            )),
+            Some(repository) => Some(MemoryService::open(repository, self.embeddings.clone())),
             None => {
                 eprintln!(
                     "Warning: local memory storage is unavailable; continuing with normal chat."

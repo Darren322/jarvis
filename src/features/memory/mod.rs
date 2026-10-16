@@ -3,8 +3,9 @@ mod import;
 mod recall;
 mod types;
 
-use std::{path::Path, path::PathBuf, time::Duration};
+use std::{path::Path, time::Duration};
 
+use crate::clients::remote_embeddings::RemoteEmbeddings;
 use crate::storage::{
     ForgetReceipt, ImportReceipt, MemoryId, MemoryRepository, MemorySummary, SourceId,
 };
@@ -27,11 +28,11 @@ pub(crate) struct MemoryService {
 }
 
 impl MemoryService {
-    /// Returns immediately; the embedding model keeps loading in the background.
-    pub(crate) fn open(repository: MemoryRepository, model_dir: PathBuf) -> Self {
+    /// Returns immediately; the embedding server is checked in the background.
+    pub(crate) fn open(repository: MemoryRepository, embeddings: RemoteEmbeddings) -> Self {
         Self {
             repository,
-            embedder: Embedder::load(model_dir),
+            embedder: Embedder::connect(embeddings),
         }
     }
 
@@ -40,7 +41,7 @@ impl MemoryService {
         let mut warning = None;
         let vector = match self
             .embedder
-            .embed(query.to_owned(), EmbedKind::Query, RECALL_QUEUE_WAIT)
+            .embed(query, EmbedKind::Query, RECALL_QUEUE_WAIT)
             .await
         {
             Ok(vector) => Some(vector),
@@ -137,7 +138,7 @@ impl MemoryService {
         for (id, text) in pending {
             let vector = self
                 .embedder
-                .embed(text, EmbedKind::Document, Duration::ZERO)
+                .embed(&text, EmbedKind::Document, Duration::ZERO)
                 .await?;
             if self.repository.store_embedding(id, model, vector).await? {
                 pass.embedded += 1;
@@ -146,7 +147,7 @@ impl MemoryService {
         Ok(pass)
     }
 
-    /// Resolves once no native embedding task is running.
+    /// Resolves once no embedding request is in flight.
     pub(crate) async fn wait_until_embedder_idle(&self) {
         self.embedder.wait_until_idle().await;
     }

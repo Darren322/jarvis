@@ -3,24 +3,27 @@ use std::{ffi::OsString, path::PathBuf};
 use super::configured_path;
 
 #[test]
-fn memory_paths_default_when_unset_or_empty_and_preserve_custom_paths() {
+fn paths_default_when_unset_or_empty_and_preserve_custom_paths() {
     assert_eq!(
-        configured_path(None, "data/embeddings"),
-        PathBuf::from("data/embeddings")
+        configured_path(None, "data/jarvis.sqlite3"),
+        PathBuf::from("data/jarvis.sqlite3")
     );
     assert_eq!(
-        configured_path(Some(OsString::new()), "data/memory-index"),
-        PathBuf::from("data/memory-index")
+        configured_path(Some(OsString::new()), "data/jarvis.sqlite3"),
+        PathBuf::from("data/jarvis.sqlite3")
     );
     assert_eq!(
         configured_path(
-            Some(OsString::from("/var/lib/jarvis/embeddings")),
-            "data/embeddings"
+            Some(OsString::from("/var/lib/jarvis/jarvis.sqlite3")),
+            "data/jarvis.sqlite3"
         ),
-        PathBuf::from("/var/lib/jarvis/embeddings")
+        PathBuf::from("/var/lib/jarvis/jarvis.sqlite3")
     );
     assert_eq!(
-        configured_path(Some(OsString::from("cache/index")), "data/memory-index"),
-        PathBuf::from("cache/index")
+        configured_path(
+            Some(OsString::from("archive/jarvis.sqlite3")),
+            "data/jarvis.sqlite3"
+        ),
+        PathBuf::from("archive/jarvis.sqlite3")
     );
 }

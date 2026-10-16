@@ -29,8 +29,8 @@ where
     loop {
         // LEARNING: `biased` polls input first, so a ready line always wins.
         // Dropping the losing idle future is safe: every stored vector commits
-        // on its own, and an in-flight native embedding keeps its worker permit
-        // until it finishes, so nothing durable is left half-done.
+        // on its own, and dropping an in-flight embedding request only stops
+        // Jarvis waiting for it, so nothing durable is left half-done.
         let event = tokio::select! {
             biased;
             line = &mut input_future => Event::Input(line),
