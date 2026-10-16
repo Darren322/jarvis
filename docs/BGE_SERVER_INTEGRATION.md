@@ -24,7 +24,7 @@ Only the inside of `Embedder` (`src/features/memory/embedder.rs`) changes. Every
 
 ## Step 1: configuration
 
-In `src/config/mod.rs`, add an embedding section next to `LocalLlmConfig`:
+Embedding is the third settings section, which is the `AGENTS.md` trigger for splitting config. Turn `src/config.rs` into `src/config/mod.rs` with one file per section (`config/local_llm.rs`, `config/tts.rs`, `config/embedding.rs`) as its own refactor commit first, then add the embedding section:
 
 ```rust
 pub struct EmbeddingConfig {
@@ -141,7 +141,7 @@ A timeout means Jarvis stopped waiting, not that the server stopped computing. T
 
 ## Step 6: tests
 
-Add `tests/unit/clients/remote_embeddings_tests.rs`, using `wiremock` the way `openai_adapter_tests.rs` does:
+Add `tests/unit/clients/remote_embeddings_tests.rs`, using `wiremock` the way `tests/unit/clients/local_llm_tests.rs` does:
 
 - [ ] A 384-value unit vector is accepted. The query request body contains the prefix exactly once; the document request body contains no prefix.
 - [ ] Wrong dimensions, a NaN value, a non-unit norm, and zero or two `data` items are each rejected.
