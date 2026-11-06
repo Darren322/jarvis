@@ -44,20 +44,22 @@ impl Assistant {
         prompt: &str,
         history: &[Message],
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
-        self.respond_with_recall(prompt, history, &[]).await
+        self.respond_with_recall(prompt, history, &[], &[]).await
     }
 
-    /// Same as `respond`, with recalled memories supplied as the session does.
+    /// Same as `respond`, with the history split and recalled memories supplied
+    /// as the session does.
     async fn respond_with_recall(
         &self,
         prompt: &str,
-        history: &[Message],
+        earlier_history: &[Message],
+        latest_exchange: &[Message],
         documents: &[Document],
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
         let (result, ()) = tokio::join!(
-            self.respond_stream(prompt, history, documents, deltas),
+            self.respond_stream(prompt, earlier_history, latest_exchange, documents, deltas),
             drain
         );
         result
@@ -178,7 +180,7 @@ async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
     let (delta_tx, _delta_rx) = mpsc::channel(2);
 
     let error = assistant
-        .respond_stream("Hello", &[], &[], delta_tx)
+        .respond_stream("Hello", &[], &[], &[], delta_tx)
         .await
         .expect_err("pending provider stream should hit the Assistant deadline");
 
@@ -360,13 +362,21 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
-    let prior_history = vec![Message::user("prior user message")];
+    let earlier_history = vec![
+        Message::user("older question"),
+        Message::assistant("older answer"),
+    ];
+    let latest_exchange = vec![
+        Message::user("latest question"),
+        Message::assistant("latest answer"),
+    ];
     let (delta_tx, mut delta_rx) = mpsc::channel(8);
 
     let run = assistant
         .respond_stream(
             "Check the system status.",
-            &prior_history,
+            &earlier_history,
+            &latest_exchange,
             std::slice::from_ref(&document),
             delta_tx,
         )
@@ -410,27 +420,30 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
         )],
     };
     let prompt_message = Message::user("Check the system status.");
-    // Turn 1: history, memory, prompt. Turn 2 keeps that order and appends
-    // the native tool call and its correlated result.
+    // Turn 1: earlier history, memory, latest exchange, prompt. Turn 2 keeps
+    // that order and appends the native tool call and its correlated result.
     let turn_one: Vec<Message> = requests[0].chat_history.to_vec();
     assert_eq!(
         turn_one,
         vec![
-            prior_history[0].clone(),
+            earlier_history[0].clone(),
+            earlier_history[1].clone(),
             memory_message.clone(),
+            latest_exchange[0].clone(),
+            latest_exchange[1].clone(),
             prompt_message.clone()
         ]
     );
     let turn_two: Vec<Message> = requests[1].chat_history.to_vec();
-    assert_eq!(turn_two.len(), 5);
-    assert_eq!(turn_two[..3], turn_one[..]);
+    assert_eq!(turn_two.len(), 8);
+    assert_eq!(turn_two[..6], turn_one[..]);
     assert!(matches!(
-        &turn_two[3],
+        &turn_two[6],
         Message::Assistant { content, .. }
             if matches!(content.first(), Some(AssistantContent::ToolCall(_)))
     ));
     assert!(matches!(
-        &turn_two[4],
+        &turn_two[7],
         Message::User { content }
             if matches!(content.first(), Some(UserContent::ToolResult(_)))
     ));
@@ -484,7 +497,7 @@ async fn streaming_policy_rejection_still_records_the_completed_model_call() {
     let (delta_tx, _delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Call status twice", &[], &[], delta_tx)
+        .respond_stream("Call status twice", &[], &[], &[], delta_tx)
         .await
         .expect_err("policy must reject multiple tool calls");
 
@@ -511,7 +524,7 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
     let (delta_tx, mut delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Hello", &[], &[], delta_tx)
+        .respond_stream("Hello", &[], &[], &[], delta_tx)
         .await
         .expect_err("midstream provider failure must not produce success");
 
@@ -649,113 +662,194 @@ fn wire(role: &str, text: &str) -> (String, String) {
     (role.to_owned(), text.to_owned())
 }
 
+/// A stored exchange as the session keeps it: the prompt, then the answer.
+fn exchange(question: &str, answer: &str) -> Vec<Message> {
+    vec![Message::user(question), Message::assistant(answer)]
+}
+
+/// A stored exchange that used a tool: four messages, one batch.
+fn tool_exchange(question: &str, answer: &str) -> Vec<Message> {
+    vec![
+        Message::user(question),
+        Message::Assistant {
+            id: None,
+            content: vec![AssistantContent::tool_call(
+                "call-1",
+                SystemStatusTool::NAME,
+                json!({}),
+            )],
+        },
+        Message::tool_result("call-1", SystemStatusTool::NAME, "all systems nominal"),
+        Message::assistant(answer),
+    ]
+}
+
 #[tokio::test]
-async fn recalled_memories_sit_between_the_history_and_the_prompt_on_the_wire() {
-    let history = vec![
-        Message::user("earlier question"),
-        Message::assistant("earlier answer"),
-    ];
+async fn recalled_memories_sit_before_the_last_exchange_on_the_wire() {
     let cat = recalled("m1", "My cat is Miso.");
     let tea = recalled("m2", "I drink oolong.");
-    let cases: [(&[Document], WireMessages); 3] = [
-        (
-            &[],
-            vec![
-                wire("system", "system prompt"),
-                wire("user", "earlier question"),
-                wire("assistant", "earlier answer"),
-                wire("user", "new question"),
+    let cat_text = "<file id: m1>\nMy cat is Miso.\n</file>\n";
+    let both_text =
+        "<file id: m1>\nMy cat is Miso.\n</file>\n<file id: m2>\nI drink oolong.\n</file>\n";
+    let system = || wire("system", "system prompt");
+    let prompt = || wire("user", "new question");
+
+    struct Case {
+        name: &'static str,
+        earlier: Vec<Message>,
+        latest: Vec<Message>,
+        documents: Vec<Document>,
+        expected: WireMessages,
+    }
+    let cases = [
+        Case {
+            name: "no history: memories go directly before the prompt",
+            earlier: vec![],
+            latest: vec![],
+            documents: vec![cat.clone()],
+            expected: vec![system(), wire("user", cat_text), prompt()],
+        },
+        Case {
+            name: "one batch: memories go before it",
+            earlier: vec![],
+            latest: exchange("q1", "a1"),
+            documents: vec![cat.clone()],
+            expected: vec![
+                system(),
+                wire("user", cat_text),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                prompt(),
             ],
-        ),
-        (
-            std::slice::from_ref(&cat),
-            vec![
-                wire("system", "system prompt"),
-                wire("user", "earlier question"),
-                wire("assistant", "earlier answer"),
-                wire("user", "<file id: m1>\nMy cat is Miso.\n</file>\n"),
-                wire("user", "new question"),
+        },
+        Case {
+            name: "two batches: only the last stays after the memories",
+            earlier: exchange("q1", "a1"),
+            latest: exchange("q2", "a2"),
+            documents: vec![cat.clone(), tea.clone()],
+            expected: vec![
+                system(),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", both_text),
+                wire("user", "q2"),
+                wire("assistant", "a2"),
+                prompt(),
             ],
-        ),
-        (
-            &[cat.clone(), tea.clone()],
-            vec![
-                wire("system", "system prompt"),
-                wire("user", "earlier question"),
-                wire("assistant", "earlier answer"),
-                wire(
-                    "user",
-                    "<file id: m1>\nMy cat is Miso.\n</file>\n<file id: m2>\nI drink oolong.\n</file>\n",
-                ),
-                wire("user", "new question"),
+        },
+        Case {
+            name: "a tool-call last batch moves as four messages",
+            earlier: exchange("q1", "a1"),
+            latest: tool_exchange("q2", "a2"),
+            documents: vec![cat.clone()],
+            expected: vec![
+                system(),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", cat_text),
+                wire("user", "q2"),
+                wire("assistant", ""),
+                wire("tool", "all systems nominal"),
+                wire("assistant", "a2"),
+                prompt(),
             ],
-        ),
+        },
+        Case {
+            name: "no recall: no memory message",
+            earlier: exchange("q1", "a1"),
+            latest: exchange("q2", "a2"),
+            documents: vec![],
+            expected: vec![
+                system(),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", "q2"),
+                wire("assistant", "a2"),
+                prompt(),
+            ],
+        },
     ];
 
-    for (documents, expected) in cases {
+    for case in cases {
         let server = answering_server("ok").await;
         let assistant = wire_assistant(&server);
         assistant
-            .respond_with_recall("new question", &history, documents)
+            .respond_with_recall("new question", &case.earlier, &case.latest, &case.documents)
             .await
             .expect("the run should succeed");
 
         let requests = wire_messages(&server).await;
-        assert_eq!(requests, vec![expected]);
+        assert_eq!(requests, vec![case.expected], "{}", case.name);
     }
 }
 
 #[tokio::test]
-async fn a_changed_recall_leaves_the_earlier_conversation_as_an_exact_prefix() {
-    let server = answering_server("first answer").await;
+async fn a_changed_recall_leaves_the_older_conversation_as_an_exact_prefix() {
+    let server = answering_server("answer").await;
     let assistant = wire_assistant(&server);
-    let first = assistant
-        .respond_with_recall(
-            "first question",
-            &[],
-            &[recalled("m1", "Recalled for the first question.")],
-        )
-        .await
-        .expect("first run should succeed");
-    // What the session would store: the run's own batch, with no recall in it.
-    let history = first
-        .response
-        .messages()
-        .expect("native streamed response includes the Rig transcript")
-        .to_vec();
-    assistant
-        .respond_with_recall(
-            "second question",
-            &history,
-            &[recalled("m2", "Recalled for the second question.")],
-        )
-        .await
-        .expect("second run should succeed");
+    // What the session stores for each run: the run's own batch, no recall.
+    let mut batches: Vec<Vec<Message>> = Vec::new();
+    let prompts = [
+        "first question",
+        "second question",
+        "third question",
+        "fourth question",
+    ];
+    for (index, prompt) in prompts.iter().enumerate() {
+        let (earlier, latest): (Vec<Message>, Vec<Message>) = match batches.split_last() {
+            Some((last, older)) => (older.concat(), last.clone()),
+            None => (vec![], vec![]),
+        };
+        let run = assistant
+            .respond_with_recall(
+                prompt,
+                &earlier,
+                &latest,
+                &[recalled("m", &format!("Recall number {index}."))],
+            )
+            .await
+            .expect("run should succeed");
+        batches.push(
+            run.response
+                .messages()
+                .expect("native streamed response includes the Rig transcript")
+                .to_vec(),
+        );
+    }
 
     let requests = wire_messages(&server).await;
-    assert_eq!(requests.len(), 2);
-    let second = &requests[1];
+    assert_eq!(requests.len(), 4);
+    let memory_index = |request: &WireMessages| {
+        request
+            .iter()
+            .position(|(_, text)| text.starts_with("<file id: m>"))
+            .expect("every request carries its recalled memory")
+    };
+    // Everything before a request's memory message (the system prompt and the
+    // older batches) is byte-identical at the start of the next request.
+    for pair in requests.windows(2) {
+        let boundary = memory_index(&pair[0]);
+        assert_eq!(pair[0][..boundary], pair[1][..boundary]);
+    }
+    // The third request's cached region is non-trivial: system, first batch.
+    assert_eq!(memory_index(&requests[2]), 3);
+    let fourth = &requests[3];
     assert_eq!(
-        second[..3],
+        fourth[3..],
         [
-            wire("system", "system prompt"),
-            wire("user", "first question"),
-            wire("assistant", "first answer"),
-        ]
-    );
-    assert_eq!(
-        second[3..],
-        [
-            wire(
-                "user",
-                "<file id: m2>\nRecalled for the second question.\n</file>\n"
-            ),
             wire("user", "second question"),
+            wire("assistant", "answer"),
+            wire("user", "<file id: m>\nRecall number 3.\n</file>\n"),
+            wire("user", "third question"),
+            wire("assistant", "answer"),
+            wire("user", "fourth question"),
         ]
     );
     assert!(
-        !second
+        !fourth
             .iter()
-            .any(|(_, text)| text.contains("Recalled for the first question."))
+            .any(|(_, text)| text.contains("Recall number 0.")
+                || text.contains("Recall number 1.")
+                || text.contains("Recall number 2."))
     );
 }

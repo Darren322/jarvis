@@ -32,14 +32,29 @@ impl History {
         self.batches.clear();
     }
 
-    pub(super) fn messages(&self) -> Vec<Message> {
+    /// Splits the stored messages before the last whole batch: `(earlier, latest)`.
+    ///
+    /// The boundary is a batch boundary, never a message count, because one
+    /// exchange can hold a tool call and its result as well as the prompt and
+    /// answer. With no stored batch both halves are empty; with one, `earlier`
+    /// is empty.
+    pub(super) fn split_last_exchange(&self) -> (Vec<Message>, Vec<Message>) {
         // LEARNING: This resembles Java Streams `flatMap` and collection, but `.cloned().collect()`
         // builds an owned `Vec<Message>`.
         // Here `cloned()` copies each Message value rather than a Java-style shared object reference.
-        self.batches
+        let earlier_count = self.batches.len().saturating_sub(1);
+        let earlier = self
+            .batches
             .iter()
+            .take(earlier_count)
             .flat_map(|batch| batch.messages.iter().cloned())
-            .collect()
+            .collect();
+        let latest = self
+            .batches
+            .back()
+            .map(|batch| batch.messages.clone())
+            .unwrap_or_default();
+        (earlier, latest)
     }
 
     pub(super) fn source_ids(&self) -> Vec<SourceId> {

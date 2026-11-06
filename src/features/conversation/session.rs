@@ -73,8 +73,8 @@ impl ConversationSession {
         self.history.clear();
     }
 
-    /// Retrieves bounded memory once, sends it as one run-local message after the
-    /// history, and archives the canonical final only after the native stream completes.
+    /// Retrieves bounded memory once, sends it as one run-local message before the
+    /// last whole exchange, and archives the canonical final only after the native stream completes.
     pub(crate) async fn respond_stream(
         &mut self,
         assistant: &Assistant,
@@ -90,14 +90,22 @@ impl ConversationSession {
             ),
         };
         let context_warning = recall.warning.clone();
-        let history = self.history.messages();
+        let (earlier_history, latest_exchange) = self.history.split_last_exchange();
 
         // LEARNING: These Documents are request context, not Message history.
-        // The assistant sends them as one message after `history`; Rig's returned
-        // batch starts at the prompt, so the recall snapshot never enters the
-        // replayed conversation while native IDs/correlation are retained.
+        // The assistant sends them as one message between the earlier history and
+        // the last exchange, so the cache keeps the older turns and the latest
+        // exchange stays next to the question. Rig's returned batch starts at the
+        // prompt, so the recall snapshot never enters the replayed conversation
+        // while native IDs/correlation are retained.
         let run = assistant
-            .respond_stream(prompt, &history, &recall.documents, deltas)
+            .respond_stream(
+                prompt,
+                &earlier_history,
+                &latest_exchange,
+                &recall.documents,
+                deltas,
+            )
             .await;
 
         let (outcome, eligibility) = match &run {

@@ -187,7 +187,7 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
 
     let failed = session.respond(&assistant, "failed prompt").await;
     assert!(failed.run.is_err());
-    assert_eq!(session.history.messages(), first_messages);
+    assert_eq!(session.history.stored_messages(), first_messages);
 
     let third = session.respond(&assistant, "third prompt").await;
     assert!(third.run.is_ok());
@@ -265,10 +265,10 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
     let turn = session.respond(&assistant, "saved prompt").await;
     assert!(turn.run.is_ok());
     assert!(turn.archive_error.is_none());
-    assert!(!session.history.messages().is_empty());
+    assert!(!session.history.stored_messages().is_empty());
 
     assert!(session.reset().await.is_ok());
-    assert!(session.history.messages().is_empty());
+    assert!(session.history.stored_messages().is_empty());
     let next = session.respond(&assistant, "new session prompt").await;
     assert!(next.run.is_ok());
     drop(session);
@@ -429,7 +429,8 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
 
     let requests = model_handle.requests();
     assert_eq!(requests.len(), 2);
-    // The first request carried the memory ahead of the prompt...
+    // With no history yet, the first request carried the memory directly
+    // before the prompt (with history it would sit before the last exchange)...
     assert_eq!(requests[0].chat_history.len(), 2);
     assert!(
         format!("{:?}", requests[0].chat_history[0]).contains("Miso"),
@@ -453,7 +454,7 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         Some(&user_message("Anything else?"))
     );
     assert!(!format!("{:?}", requests[1].chat_history).contains("Miso"));
-    assert!(!format!("{:?}", session.history.messages()).contains("Miso"));
+    assert!(!format!("{:?}", session.history.stored_messages()).contains("Miso"));
 
     drop(memory);
     drop(session);

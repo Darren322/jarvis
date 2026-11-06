@@ -2,6 +2,15 @@ use rig_core::message::{Message, UserContent};
 
 use super::{History, MAX_HISTORY_BYTES, serialized_batch_bytes};
 
+impl History {
+    /// Every stored message, oldest first.
+    pub(crate) fn stored_messages(&self) -> Vec<Message> {
+        let (mut messages, latest) = self.split_last_exchange();
+        messages.extend(latest);
+        messages
+    }
+}
+
 fn user_message(text: &str) -> Message {
     Message::User {
         content: vec![UserContent::text(text)],
@@ -31,7 +40,7 @@ fn keeps_three_whole_successful_batches() {
     history.record_success(Some(&third), &[], None);
     history.record_success(Some(&fourth), &[], None);
 
-    assert_eq!(history.messages(), [second, third, fourth].concat());
+    assert_eq!(history.stored_messages(), [second, third, fourth].concat());
 }
 
 #[test]
@@ -46,11 +55,11 @@ fn history_byte_limit_keeps_exact_boundary_and_evicts_oldest_batch() {
         MAX_HISTORY_BYTES
     );
     assert_eq!(history.record_success(Some(&exact_batch), &[], None), None);
-    assert_eq!(history.messages(), exact_batch.to_vec());
+    assert_eq!(history.stored_messages(), exact_batch.to_vec());
 
     let newest = [user_message("newest")];
     assert_eq!(history.record_success(Some(&newest), &[], None), None);
-    assert_eq!(history.messages(), newest.to_vec());
+    assert_eq!(history.stored_messages(), newest.to_vec());
 }
 
 #[test]
@@ -67,7 +76,7 @@ fn oversized_new_batch_clears_older_context_and_is_not_retained() {
             .record_success(Some(&oversized), &[], None)
             .is_some()
     );
-    assert!(history.messages().is_empty());
+    assert!(history.stored_messages().is_empty());
 }
 
 #[test]
@@ -76,5 +85,5 @@ fn missing_messages_clears_active_history_and_warns() {
     history.record_success(Some(&[user_message("prior")]), &[], None);
 
     assert!(history.record_success(None, &[], None).is_some());
-    assert!(history.messages().is_empty());
+    assert!(history.stored_messages().is_empty());
 }

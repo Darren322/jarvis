@@ -50,12 +50,17 @@ impl Assistant {
 
     /// Run Rig's native multi-turn stream and forward only visible text.
     ///
+    /// `earlier_history` and `latest_exchange` are the stored conversation
+    /// split before its last whole exchange; recalled `documents` are sent
+    /// between them (see `history_with_recall`).
+    ///
     /// The caller owns both this future and the bounded receiver, so dropping
     /// either side cannot leave a detached producer running in the background.
     pub(crate) async fn respond_stream(
         &self,
         prompt: &str,
-        history: &[Message],
+        earlier_history: &[Message],
+        latest_exchange: &[Message],
         documents: &[Document],
         deltas: mpsc::Sender<AssistantTextDelta>,
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
@@ -67,7 +72,13 @@ impl Assistant {
         // returning the initial stream handle.
         let result = tokio::time::timeout(RUN_DEADLINE, async {
             let stream = self
-                .configured_runner(prompt, history, documents, &observer)
+                .configured_runner(
+                    prompt,
+                    earlier_history,
+                    latest_exchange,
+                    documents,
+                    &observer,
+                )
                 .stream()
                 .await;
             consume_stream(stream, deltas).await
@@ -90,7 +101,8 @@ impl Assistant {
     fn configured_runner(
         &self,
         prompt: &str,
-        history: &[Message],
+        earlier_history: &[Message],
+        latest_exchange: &[Message],
         documents: &[Document],
         observer: &RunObserver,
     ) -> AgentRunner {
@@ -99,9 +111,9 @@ impl Assistant {
         // completed model call even when Jarvis policy rejects that turn.
         // Rig's `run.messages()` (and so `PromptResponse::messages`) holds only
         // the prompt and the turns after it, never the input history. The recall
-        // message rides at the end of that input history, so it is structurally
-        // absent from the batch the session replays, without inspecting text.
-        let request_history = history_with_recall(history, documents);
+        // message rides inside that input history, so it is structurally absent
+        // from the batch the session replays, without inspecting text.
+        let request_history = history_with_recall(earlier_history, latest_exchange, documents);
         self.agent
             .runner(prompt)
             .history(request_history)
@@ -116,17 +128,28 @@ impl Assistant {
 }
 
 /// Returns the input history with the recalled memories as one user message
-/// placed after it, directly before the new prompt.
+/// placed between the earlier conversation and its last whole exchange.
 ///
-/// The order is prompt-cache driven: llama.cpp reuses a cached prefix only up
-/// to the first token that differs. Recall changes on almost every turn, so
-/// Rig's `.documents()` (which inserts right after the system message) made the
-/// whole history miss the cache. Here the system prompt and history stay
-/// byte-identical between turns and only the tail changes. The message is built
-/// exactly as Rig builds it for `.documents()`, so the wire text is unchanged.
-/// With no documents, no message is added.
-fn history_with_recall(history: &[Message], documents: &[Document]) -> Vec<Message> {
-    let mut messages = history.to_vec();
+/// The request order is `[earlier history, memories, latest exchange]`, and
+/// Rig then appends the prompt. The placement serves two needs:
+///
+/// - llama.cpp reuses a cached prefix only up to the first token that differs.
+///   Recall changes on almost every turn, so Rig's `.documents()` (which inserts
+///   right after the system message) made the whole history miss the cache.
+///   Here the system prompt and the earlier history stay byte-identical.
+/// - The latest exchange stays next to the question, so a reference such as
+///   "there" resolves to the conversation. With the memories directly before
+///   the prompt, Gemma copied an old recalled answer instead.
+///
+/// With no history the memories go directly before the prompt, and with no
+/// documents no message is added. The message is built exactly as Rig builds it
+/// for `.documents()`, so the wire text is unchanged.
+fn history_with_recall(
+    earlier_history: &[Message],
+    latest_exchange: &[Message],
+    documents: &[Document],
+) -> Vec<Message> {
+    let mut messages = earlier_history.to_vec();
     if !documents.is_empty() {
         let content = documents
             .iter()
@@ -136,6 +159,7 @@ fn history_with_recall(history: &[Message], documents: &[Document]) -> Vec<Messa
             .collect();
         messages.push(Message::User { content });
     }
+    messages.extend_from_slice(latest_exchange);
     messages
 }
 
