@@ -9,7 +9,7 @@ use std::{
 
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
-pub use tts::{OptionalTtsConfig, TtsConfig};
+pub use tts::{OptionalTtsConfig, TtsConfig, TtsEngine};
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
 

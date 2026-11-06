@@ -1,7 +1,7 @@
 mod error;
 mod protocol;
 
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{ffi::OsString, process::Stdio, time::Duration};
 
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
@@ -13,9 +13,11 @@ pub(crate) use error::WorkerError;
 
 use protocol::{PROTOCOL_VERSION, WorkerRequest, WorkerResponse};
 
+use super::sample_rate::SampleRate;
+use crate::config::{TtsConfig, TtsEngine};
+
 const MAX_FRAME_BYTES: u64 = 4 * 1024;
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
-const MAX_AUDIO_SAMPLES: usize = 5_292_000;
 const MAX_WAV_BYTES: usize = 16 * 1024 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const SYNTHESIS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -33,30 +35,85 @@ enum WorkerState {
     Terminated,
 }
 
-pub(super) struct SupertonicWorker {
+/// Supertonic bundle values the worker must report; Piper's come from its voice setting.
+const SUPERTONIC_ENGINE: &str = "supertonic-3";
+const SUPERTONIC_PRECISION: &str = "int8";
+const SUPERTONIC_VOICE: &str = "M5";
+const SUPERTONIC_VOICE_STYLE_FILE: &str = "voice.bin";
+const PIPER_ENGINE: &str = "piper";
+const PIPER_PRECISION: &str = "fp32";
+
+/// What a worker's ready frame must say, taken from the configured engine.
+///
+/// Both engines are single-speaker, English, CPU workers. The sample rate is not
+/// pinned here: each voice declares its own, which must fall in the accepted range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExpectedReady {
+    engine: &'static str,
+    precision: &'static str,
+    voice: String,
+    threads: u32,
+}
+
+impl ExpectedReady {
+    fn for_config(config: &TtsConfig) -> Self {
+        let (engine, precision, voice) = match &config.engine {
+            TtsEngine::Supertonic { .. } => (
+                SUPERTONIC_ENGINE,
+                SUPERTONIC_PRECISION,
+                SUPERTONIC_VOICE.to_owned(),
+            ),
+            TtsEngine::Piper { voice, .. } => (PIPER_ENGINE, PIPER_PRECISION, voice.clone()),
+        };
+        Self {
+            engine,
+            precision,
+            voice,
+            threads: config.threads,
+        }
+    }
+}
+
+/// Arguments after the interpreter: `-u`, the worker script, the engine's model arguments
+/// and the thread count.
+fn worker_arguments(config: &TtsConfig) -> Vec<OsString> {
+    let mut arguments = vec![OsString::from("-u"), config.worker_script.clone().into()];
+    match &config.engine {
+        TtsEngine::Supertonic { model_dir } => {
+            arguments.extend([
+                OsString::from("--model-dir"),
+                model_dir.clone().into(),
+                OsString::from("--voice-style"),
+                model_dir.join(SUPERTONIC_VOICE_STYLE_FILE).into(),
+            ]);
+        }
+        TtsEngine::Piper { model, .. } => {
+            arguments.extend([OsString::from("--model"), model.clone().into()]);
+        }
+    }
+    arguments.extend([
+        OsString::from("--threads"),
+        config.threads.to_string().into(),
+    ]);
+    arguments
+}
+
+/// One running TTS worker process, Supertonic or Piper, speaking protocol v1.
+pub(super) struct TtsWorker {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     state: WorkerState,
+    expected: ExpectedReady,
+    /// The rate the ready frame declared; every synthesized chunk must match it.
+    /// Set once the worker is ready.
+    sample_rate: Option<SampleRate>,
 }
 
-impl SupertonicWorker {
-    fn spawn_process(
-        python: &Path,
-        worker_script: &Path,
-        model_dir: &Path,
-        voice_style: &Path,
-        threads: u32,
-    ) -> Result<Child, WorkerError> {
-        Command::new(python)
-            .arg("-u")
-            .arg(worker_script)
-            .arg("--model-dir")
-            .arg(model_dir)
-            .arg("--voice-style")
-            .arg(voice_style)
-            .arg("--threads")
-            .arg(threads.to_string())
+impl TtsWorker {
+    fn spawn_process(config: &TtsConfig) -> Result<Child, WorkerError> {
+        Command::new(&config.python)
+            .args(worker_arguments(config))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -69,15 +126,8 @@ impl SupertonicWorker {
     ///
     /// If the caller cancels `wait_ready`, it must call `terminate` before dropping
     /// this owner or attempting another operation.
-    pub fn launch(
-        python: &Path,
-        worker_script: &Path,
-        model_dir: &Path,
-        voice_style: &Path,
-        threads: u32,
-    ) -> Result<Self, WorkerError> {
-        let mut child =
-            Self::spawn_process(python, worker_script, model_dir, voice_style, threads)?;
+    pub fn launch(config: &TtsConfig) -> Result<Self, WorkerError> {
+        let mut child = Self::spawn_process(config)?;
         let stdin = child.stdin.take().ok_or(WorkerError::MissingStdin)?;
         let stdout = child.stdout.take().ok_or(WorkerError::MissingStdout)?;
 
@@ -86,6 +136,8 @@ impl SupertonicWorker {
             stdin: Some(stdin),
             stdout: BufReader::new(stdout),
             state: WorkerState::Starting,
+            expected: ExpectedReady::for_config(config),
+            sample_rate: None,
         })
     }
 
@@ -93,7 +145,7 @@ impl SupertonicWorker {
         self.state == WorkerState::Idle && self.child.is_some() && self.stdin.is_some()
     }
 
-    pub async fn wait_ready(&mut self, threads: u32) -> Result<(), WorkerError> {
+    pub async fn wait_ready(&mut self) -> Result<(), WorkerError> {
         if self.state != WorkerState::Starting {
             return Err(WorkerError::InvalidState);
         }
@@ -116,7 +168,7 @@ impl SupertonicWorker {
             Err(_) => return Err(WorkerError::StartupTimeout),
         };
 
-        Self::validate_ready(response, threads, expected_pid)?;
+        let sample_rate = Self::validate_ready(response, &self.expected, expected_pid)?;
 
         if self
             .child
@@ -129,6 +181,7 @@ impl SupertonicWorker {
             return Err(WorkerError::WorkerExited);
         }
 
+        self.sample_rate = Some(sample_rate);
         self.state = WorkerState::Idle;
         Ok(())
     }
@@ -155,11 +208,12 @@ impl SupertonicWorker {
         serde_json::from_slice(&bytes).map_err(WorkerError::InvalidJson)
     }
 
+    /// Returns the sample rate the worker declared.
     fn validate_ready(
         response: WorkerResponse,
-        threads: u32,
+        expected: &ExpectedReady,
         expected_pid: u32,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<SampleRate, WorkerError> {
         let WorkerResponse::Ready {
             protocol,
             pid,
@@ -181,19 +235,18 @@ impl SupertonicWorker {
         }
 
         if pid != expected_pid
-            || engine != "supertonic-3"
-            || precision != "int8"
-            || voice != "M5"
+            || engine != expected.engine
+            || precision != expected.precision
+            || voice != expected.voice
             || language != "en"
             || provider != "cpu"
-            || ready_threads != threads
-            || sample_rate != 44_100
+            || ready_threads != expected.threads
             || num_speakers != 1
         {
             return Err(WorkerError::InvalidConfiguration);
         }
 
-        Ok(())
+        SampleRate::new(sample_rate).ok_or(WorkerError::InvalidConfiguration)
     }
 
     fn serialize_speak_request(
@@ -232,7 +285,8 @@ impl SupertonicWorker {
         stdout: &mut R,
         request: &[u8],
         expected_id: &str,
-    ) -> Result<(), WorkerError>
+        ready_rate: SampleRate,
+    ) -> Result<SampleRate, WorkerError>
     where
         W: AsyncWrite + Unpin,
         R: AsyncBufRead + Unpin,
@@ -240,7 +294,7 @@ impl SupertonicWorker {
         let transaction = async {
             Self::write_request(stdin, request).await?;
             let response = Self::read_frame(stdout).await?;
-            Self::validate_synthesis_response(response, expected_id)
+            Self::validate_synthesis_response(response, expected_id, ready_rate)
         };
 
         match timeout(SYNTHESIS_TIMEOUT, transaction).await {
@@ -249,10 +303,13 @@ impl SupertonicWorker {
         }
     }
 
+    /// Returns the sample rate of the chunk, which must be the rate the worker declared
+    /// when it became ready.
     fn validate_synthesis_response(
         response: WorkerResponse,
         expected_id: &str,
-    ) -> Result<(), WorkerError> {
+        ready_rate: SampleRate,
+    ) -> Result<SampleRate, WorkerError> {
         match response {
             WorkerResponse::Completed {
                 protocol,
@@ -269,16 +326,18 @@ impl SupertonicWorker {
                     return Err(WorkerError::MismatchedResponseId);
                 }
 
-                if sample_rate != 44_100
-                    || num_samples == 0
-                    || num_samples > MAX_AUDIO_SAMPLES
+                let sample_rate = SampleRate::new(sample_rate)
+                    .filter(|rate| *rate == ready_rate)
+                    .ok_or(WorkerError::InvalidAudioMetadata)?;
+                if num_samples == 0
+                    || num_samples > sample_rate.max_samples()
                     || wav_bytes == 0
                     || wav_bytes > MAX_WAV_BYTES
                 {
                     return Err(WorkerError::InvalidAudioMetadata);
                 }
 
-                Ok(())
+                Ok(sample_rate)
             }
 
             WorkerResponse::Error { protocol, id, .. } => {
@@ -302,18 +361,19 @@ impl SupertonicWorker {
         id: String,
         text: String,
         output_path: String,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<SampleRate, WorkerError> {
         if !self.is_idle() {
             return Err(WorkerError::InvalidState);
         }
+        let ready_rate = self.sample_rate.ok_or(WorkerError::InvalidState)?;
 
         let request = Self::serialize_speak_request(id.clone(), text, output_path)?;
         self.state = WorkerState::Synthesizing;
 
         let stdin = self.stdin.as_mut().ok_or(WorkerError::MissingStdin)?;
         let stdout = &mut self.stdout;
-        match Self::bounded_synthesis(stdin, stdout, &request, &id).await {
-            Ok(()) => {
+        match Self::bounded_synthesis(stdin, stdout, &request, &id, ready_rate).await {
+            Ok(sample_rate) => {
                 if self
                     .child
                     .as_mut()
@@ -326,7 +386,7 @@ impl SupertonicWorker {
                 }
 
                 self.state = WorkerState::Idle;
-                Ok(())
+                Ok(sample_rate)
             }
             Err(error) => Err(error),
         }
@@ -452,5 +512,5 @@ impl SupertonicWorker {
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/features/speech/supertonic_worker/supertonic_worker_tests.rs"]
+#[path = "../../../../tests/unit/features/speech/tts_worker/tts_worker_tests.rs"]
 mod tests;

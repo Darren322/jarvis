@@ -17,6 +17,10 @@ fn wake_noise_is_pcm16_range_noise_lasting_exactly_700ms() {
     assert!(samples.windows(2).any(|pair| pair[0] != pair[1]));
 }
 
+fn output_rate() -> SampleRate {
+    SampleRate::new(OUTPUT_SAMPLE_RATE).expect("the output rate is accepted")
+}
+
 fn test_player() -> (AudioPlayer, MixerSource) {
     let (mixer, source) = mixer::mixer(
         OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
@@ -45,8 +49,12 @@ fn chunks_queue_back_to_back_after_one_wake_noise() {
     let first = vec![0.5; 100];
     let second = vec![-0.5; 50];
 
-    player.append(first.clone()).expect("queue first chunk");
-    player.append(second.clone()).expect("queue second chunk");
+    player
+        .append(first.clone(), output_rate())
+        .expect("queue first chunk");
+    player
+        .append(second.clone(), output_rate())
+        .expect("queue second chunk");
     let heard = play_out(&player, &mut source);
 
     // rodio starts a queue with a few milliseconds of silence, so find the speech by level.
@@ -75,10 +83,14 @@ fn chunks_queue_back_to_back_after_one_wake_noise() {
 fn the_next_answer_gets_its_own_wake_noise() {
     let (mut player, mut source) = test_player();
 
-    player.append(vec![0.5; 10]).expect("queue first answer");
+    player
+        .append(vec![0.5; 10], output_rate())
+        .expect("queue first answer");
     let first = play_out(&player, &mut source);
     player.finish();
-    player.append(vec![0.5; 10]).expect("queue second answer");
+    player
+        .append(vec![0.5; 10], output_rate())
+        .expect("queue second answer");
     let second = play_out(&player, &mut source);
 
     assert!(first.len() >= WAKE_NOISE_SAMPLE_COUNT + 10);
@@ -88,8 +100,12 @@ fn the_next_answer_gets_its_own_wake_noise() {
 #[test]
 fn stopping_drops_everything_queued() {
     let (mut player, mut source) = test_player();
-    player.append(vec![0.5; 100]).expect("queue chunk");
-    player.append(vec![0.5; 100]).expect("queue chunk");
+    player
+        .append(vec![0.5; 100], output_rate())
+        .expect("queue chunk");
+    player
+        .append(vec![0.5; 100], output_rate())
+        .expect("queue chunk");
     assert!(player.is_playing());
 
     player.stop();
@@ -103,17 +119,37 @@ fn stopping_drops_everything_queued() {
 }
 
 #[test]
+fn a_22_khz_chunk_is_resampled_to_the_output_rate_not_played_fast() {
+    let (mut player, mut source) = test_player();
+    let piper_rate = SampleRate::new(22_050).expect("Piper's rate is accepted");
+    let chunk_samples = 22_050;
+
+    player
+        .append(vec![0.5; chunk_samples], piper_rate)
+        .expect("queue 22.05 kHz chunk");
+    let heard = play_out(&player, &mut source);
+
+    // 1 s of speech at 22.05 kHz fills 1 s of a 44.1 kHz output: twice the samples.
+    let speech_samples = heard.iter().filter(|sample| sample.abs() > 0.4).count();
+    let expected = chunk_samples * 2;
+    assert!(
+        speech_samples.abs_diff(expected) <= expected / 20,
+        "{speech_samples} output samples for {chunk_samples} input samples, expected about {expected}"
+    );
+}
+
+#[test]
 fn empty_chunks_and_failed_devices_are_rejected() {
     let (mut player, _source) = test_player();
     assert!(matches!(
-        player.append(Vec::new()),
+        player.append(Vec::new(), output_rate()),
         Err(PlaybackError::EmptySamples)
     ));
     assert!(!player.is_playing());
 
     player.device_failed.store(true, Ordering::Release);
     assert!(matches!(
-        player.append(vec![0.5]),
+        player.append(vec![0.5], output_rate()),
         Err(PlaybackError::DeviceFailed)
     ));
 }

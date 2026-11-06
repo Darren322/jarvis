@@ -16,17 +16,16 @@ use crate::config::TtsConfig;
 
 use super::{
     playback::{AudioPlayer, PlaybackError, WAKE_NOISE_DURATION},
-    supertonic_worker::{SupertonicWorker, WorkerError},
+    sample_rate::SampleRate,
+    tts_worker::{TtsWorker, WorkerError},
 };
 
 /// Worker failures in a row that disable speech for the session; a success resets the count.
 const MAX_CONSECUTIVE_SPEECH_FAILURES: u8 = 3;
 /// Limit for one chunk of text, checked per chunk; an answer has no limit of its own.
 const MAX_SPEECH_TEXT_BYTES: usize = 4 * 1024;
-const EXPECTED_SAMPLE_RATE: u32 = 44_100;
 const EXPECTED_CHANNELS: u16 = 1;
 const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
-const MAX_WAV_SAMPLES: usize = 5_292_000;
 const MAX_WAV_BYTES: u64 = 16 * 1024 * 1024;
 /// Slack after the queued audio should have ended before playback counts as hung.
 const PLAYBACK_GRACE: Duration = Duration::from_secs(2);
@@ -37,6 +36,8 @@ const PLAYBACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 struct ValidatedWav {
     samples: Vec<f32>,
+    /// The rate the worker declared and the WAV header confirmed.
+    sample_rate: SampleRate,
     duration: Duration,
 }
 
@@ -226,7 +227,7 @@ fn display_path_suffix(path: &Option<PathBuf>) -> String {
 
 pub(crate) struct SpeechOutput {
     config: TtsConfig,
-    worker: Option<SupertonicWorker>,
+    worker: Option<TtsWorker>,
     player: Option<AudioPlayer>,
     player_initialization: Option<JoinHandle<Result<AudioPlayer, PlaybackError>>>,
     active: Option<ActiveSpeech>,
@@ -355,7 +356,7 @@ impl SpeechOutput {
                 .player
                 .as_mut()
                 .expect("audio output initialized")
-                .append(validated.samples)
+                .append(validated.samples, validated.sample_rate)
             {
                 self.active = None;
                 self.count_failure_and_reset_player();
@@ -385,14 +386,7 @@ impl SpeechOutput {
     /// Launches the worker if the last answer left none and waits until it is ready.
     async fn ensure_worker(&mut self) -> Result<(), SpeechError> {
         if self.worker.is_none() {
-            let voice_style = self.config.model_dir.join("voice.bin");
-            match SupertonicWorker::launch(
-                &self.config.python,
-                &self.config.worker_script,
-                &self.config.model_dir,
-                &voice_style,
-                self.config.threads,
-            ) {
+            match TtsWorker::launch(&self.config) {
                 Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     return Err(self.fail_operation(SpeechError::WorkerLaunch(error)).await);
@@ -405,7 +399,7 @@ impl SpeechOutput {
                 .worker
                 .as_mut()
                 .expect("worker launched above")
-                .wait_ready(self.config.threads)
+                .wait_ready()
                 .await
         {
             return Err(self.fail_operation(SpeechError::WorkerStartup(error)).await);
@@ -453,19 +447,23 @@ impl SpeechOutput {
         active.operation_dir = Some(operation_dir);
         active.stage = SpeechStage::Synthesizing;
 
-        if let Err(error) = self
+        let sample_rate = match self
             .worker
             .as_mut()
             .expect("worker is ready")
             .speak(operation_id, text.to_owned(), output_path_string)
             .await
         {
-            return Err(self.fail_operation(SpeechError::Synthesis(error)).await);
-        }
+            Ok(sample_rate) => sample_rate,
+            Err(error) => {
+                return Err(self.fail_operation(SpeechError::Synthesis(error)).await);
+            }
+        };
 
         self.set_stage(SpeechStage::Decoding);
         let decode_path = output_path.clone();
-        let decode_task = tokio::task::spawn_blocking(move || Self::decode_wav(&decode_path));
+        let decode_task =
+            tokio::task::spawn_blocking(move || Self::decode_wav(&decode_path, sample_rate));
         self.active
             .as_mut()
             .expect("active answer was retained")
@@ -874,7 +872,10 @@ impl SpeechOutput {
         id
     }
 
-    fn decode_wav(path: &Path) -> Result<ValidatedWav, SpeechError> {
+    /// Decodes a worker's WAV, which must be at exactly the `declared` rate: the player
+    /// resamples from the rate it is given, so a WAV that disagreed would play at the
+    /// wrong pitch.
+    fn decode_wav(path: &Path, declared: SampleRate) -> Result<ValidatedWav, SpeechError> {
         let metadata = std::fs::metadata(path)
             .map_err(|error| SpeechError::OpenWav(hound::Error::IoError(error)))?;
         if metadata.len() > MAX_WAV_BYTES {
@@ -884,7 +885,7 @@ impl SpeechOutput {
         let mut reader = hound::WavReader::open(path).map_err(SpeechError::OpenWav)?;
         let spec = reader.spec();
         if spec.channels != EXPECTED_CHANNELS
-            || spec.sample_rate != EXPECTED_SAMPLE_RATE
+            || spec.sample_rate != declared.hz()
             || spec.bits_per_sample != EXPECTED_BITS_PER_SAMPLE
             || spec.sample_format != hound::SampleFormat::Int
         {
@@ -895,13 +896,14 @@ impl SpeechOutput {
         if declared_samples == 0 {
             return Err(SpeechError::EmptyWav);
         }
-        if declared_samples > MAX_WAV_SAMPLES {
+        let max_samples = declared.max_samples();
+        if declared_samples > max_samples {
             return Err(SpeechError::WavTooLong);
         }
 
         let mut samples = Vec::with_capacity(declared_samples);
         for sample in reader.samples::<i16>() {
-            if samples.len() == MAX_WAV_SAMPLES {
+            if samples.len() == max_samples {
                 return Err(SpeechError::WavTooLong);
             }
             let sample = sample.map_err(SpeechError::DecodeWav)?;
@@ -916,8 +918,12 @@ impl SpeechOutput {
             return Err(SpeechError::EmptyWav);
         }
 
-        let duration = Duration::from_secs_f64(samples.len() as f64 / EXPECTED_SAMPLE_RATE as f64);
-        Ok(ValidatedWav { samples, duration })
+        let duration = Duration::from_secs_f64(samples.len() as f64 / f64::from(declared.hz()));
+        Ok(ValidatedWav {
+            samples,
+            sample_rate: declared,
+            duration,
+        })
     }
 }
 

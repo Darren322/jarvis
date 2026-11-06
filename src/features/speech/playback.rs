@@ -18,7 +18,10 @@ use rodio::{
 };
 use thiserror::Error;
 
+use super::sample_rate::SampleRate;
+
 const OUTPUT_CHANNELS: u16 = 1;
+/// The wake noise is generated at this rate. Speech keeps the rate its worker declared.
 const OUTPUT_SAMPLE_RATE: u32 = 44_100;
 pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration::from_millis(700);
 const WAKE_NOISE_SAMPLE_COUNT: usize = (OUTPUT_SAMPLE_RATE as usize * 7) / 10;
@@ -105,8 +108,13 @@ impl AudioPlayer {
     /// Queues one chunk of speech behind whatever is already queued for this answer.
     ///
     /// The first chunk of an answer is preceded by the wake noise; later chunks follow
-    /// the previous one directly.
-    pub fn append(&mut self, samples: Vec<f32>) -> Result<(), PlaybackError> {
+    /// the previous one directly. `sample_rate` is the rate `samples` were synthesized at:
+    /// rodio resamples each chunk to the output device.
+    pub fn append(
+        &mut self,
+        samples: Vec<f32>,
+        sample_rate: SampleRate,
+    ) -> Result<(), PlaybackError> {
         if self.has_device_failed() {
             return Err(PlaybackError::DeviceFailed);
         }
@@ -116,10 +124,11 @@ impl AudioPlayer {
 
         let player = self.player.get_or_insert_with(|| {
             let player = Player::connect_new(&self.mixer);
-            player.append(samples_buffer(wake_noise()));
+            let wake_rate = OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate");
+            player.append(samples_buffer(wake_noise(), wake_rate));
             player
         });
-        player.append(samples_buffer(samples));
+        player.append(samples_buffer(samples, sample_rate.for_rodio()));
 
         Ok(())
     }
@@ -144,10 +153,10 @@ impl AudioPlayer {
     }
 }
 
-fn samples_buffer(samples: Vec<f32>) -> SamplesBuffer {
+fn samples_buffer(samples: Vec<f32>, sample_rate: rodio::SampleRate) -> SamplesBuffer {
     SamplesBuffer::new(
         OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
-        OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate"),
+        sample_rate,
         samples,
     )
 }

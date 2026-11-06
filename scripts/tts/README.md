@@ -120,8 +120,9 @@ speech. IPC requests are bounded to 32 KiB and responses to 4 KiB. Startup has a
 60 second deadline and the entire synthesis write/result operation 30 seconds.
 Blocking audio initialization is bounded to 60 seconds and WAV decoding to 30
 seconds; their handles remain owned if a deadline expires.
-Audio must be nonempty 44,100 Hz mono 16-bit PCM WAV, at most 16 MiB and 120
-seconds. Playback polls every 20 ms with a deadline of validated speech duration
+Audio must be nonempty mono 16-bit PCM WAV at the rate the worker declared when
+ready (16,000 to 48,000 Hz; Supertonic 44,100, Piper 22,050; rodio resamples to
+the device), at most 16 MiB and 120 seconds. Playback polls every 20 ms with a deadline of validated speech duration
 plus the 0.7-second noise prefix and two seconds of grace, at most 122.7 seconds. Temporary audio is private and
 ephemeral.
 
@@ -174,5 +175,19 @@ Run it by hand:
 ```
 
 `--model` is the `.onnx` path; the config must sit beside it as `<model>.json`.
-`--threads` (1-4, default 4) sets onnxruntime intra-op threads. Wiring into
-Jarvis is ticket R5b.
+`--threads` (1-4, default 4) sets onnxruntime intra-op threads.
+
+To make Jarvis speak with Piper, set in `.env`:
+
+```sh
+JARVIS_TTS_ENGINE=piper
+JARVIS_TTS_PIPER_MODEL="$HOME/.local/share/jarvis/piper/voices/en_GB-northern_english_male-medium.onnx"
+JARVIS_TTS_PYTHON="$HOME/.local/share/jarvis/piper/venv/bin/python"
+JARVIS_TTS_THREADS=4
+```
+
+`JARVIS_TTS_ENGINE` is `supertonic` (the default when unset) or `piper`; any
+other value disables speech with a warning. `JARVIS_TTS_WORKER` defaults to the
+engine's script here. Jarvis expects the voice the worker reports to be the
+model file name without `.onnx`, and the worker resolves symlinks first, so
+point at the real file. Jarvis's own `JARVIS_TTS_THREADS` default is 2.
