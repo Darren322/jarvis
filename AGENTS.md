@@ -2,6 +2,21 @@
 
 Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspberry Pi 5 (8 GB) and talks to a llama.cpp server on a second Pi (16 GB). Read [docs/ROADMAP.md](docs/ROADMAP.md) for current priorities and the principles that never change.
 
+## Current work
+
+- Active spec: [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md). Read its **Status** table first; it says what to resume.
+- At the end of every session, update that Status table (and the roadmap if a step finished) so the next session starts from current facts.
+
+## Engineering practice
+
+- **Don't reinvent the wheel.** Before writing a helper, check std, the pinned crates (their locked source in `~/.cargo/registry/src/`), existing modules in this repo, and standard tools (`arecord`, `systemd`, `nmcli`). Prefer them over custom code. Before each ticket, survey which existing crates, crate features, servers or frameworks would cut the most boilerplate, and propose them with trade-offs. A new crate or feature still needs Darren's approval.
+- **SOLID, applied with the rules below.** One responsibility per module (the Layout table). Extend by adding variants, tools and rows rather than editing unrelated code. Keep interfaces small, and depend on a trait only at a real seam with two implementations (e.g. production and test). "Add things when a concrete need exists" still wins over speculative abstraction.
+- **Pressman-style process.** Requirements live in a spec under `docs/specs/`. Each ticket traces to it and states acceptance criteria. Design before code; verify (the Verification list) and review every ticket before it counts as done; record the outcome in the spec's Status table.
+- **Skills to use.**
+  - Implementing: `rust-skills` (rules index in `~/.claude/skills/rust-skills/`), `tdd` / `test-driven-development`, `incremental-implementation`, and `source-driven-development` for library APIs.
+  - Reviewing: `code-review-and-quality`, plus `doubt-driven-development` for risky or irreversible steps.
+  - Interfaces: `api-and-interface-design` / `codebase-design`.
+
 ## Sources of truth
 
 - The working tree, `Cargo.lock`, and `docs/` are the project facts. `notes/` (untracked) holds handoffs and the archived full roadmap: history, not rules.
