@@ -1,6 +1,6 @@
 # Manual BGE GGUF deployment for the two-Pi Jarvis setup
 
-Prepared 2026-10-09; reviewed 2026-10-10. **Status 2026-10-16:** the server runs on the 16 GB Pi (llama.cpp `b11177`). From the LAN it returns 384-dimension unit vectors in about 36 ms per question. Jarvis uses it since `3287032`. Not yet done: `--parallel 1` (it has 4 slots), `--alias`, the systemd service (section 8), and latency measured from the 8 GB Pi. The server rejects input over 512 tokens with HTTP 500; the Jarvis client truncates before sending.
+Prepared 2026-10-09; reviewed 2026-10-10. **Status 2026-10-16:** the server runs on the 16 GB Pi (llama.cpp `b11177`). From the LAN it returns 384-dimension unit vectors in about 36 ms per question. Jarvis uses it since `3287032`. **Status 2026-11-06:** both Gemma and BGE now run as systemd services on the 16 GB Pi (section 8 records the installed units), with `--parallel 1` and `--alias bge-small-en-v1.5` for BGE and Wi-Fi power save off on both Pis. Not yet done: latency measured from the 8 GB Pi. The server rejects input over 512 tokens with HTTP 500; the Jarvis client truncates before sending.
 
 ## What will run where
 
@@ -471,6 +471,77 @@ curl --noproxy '*' --fail --max-time 5 "http://$EMBED_BIND:$EMBED_PORT/health"
 The subshell stops installation on a failed validation. A first health request can fail while the model is still loading; inspect the journal and repeat the health check after loading. Do not add arbitrary `LD_LIBRARY_PATH` values: if systemd cannot load a shared library, inspect the binary with `ldd "$LLAMA_SERVER"` and reproduce its verified runtime path. The service uses the actual resolved binary; future runtime upgrades change its identity and need revalidation. `systemctl active` does not mean model-ready; check health and one validated embedding after startup. To stop just this service: `sudo systemctl stop jarvis-embeddings.service`. To disable automatic startup: `sudo systemctl disable --now jarvis-embeddings.service`.
 
 No reboot is needed just for this setup. Check `systemctl is-enabled jarvis-embeddings.service`; verify health again after your next planned reboot. Binding a fixed address may fail if that interface/address is not ready despite network-online; diagnose the network's wait-online service or address reservation rather than silently binding publicly.
+
+### Units actually installed (2026-11-06)
+
+Both are system units under `/etc/systemd/system/`, run as `raspdarren-ai`, enabled for boot, with `Restart=on-failure`. They differ from the recipe above: the binary is `/home/raspdarren-ai/llama.cpp/build/bin/llama-server` (build `11177`, commit `1ab7e5ad2`; its shared libraries sit next to it, so no `LD_LIBRARY_PATH`), BGE binds `0.0.0.0` like Gemma instead of a fixed LAN IPv4 (the address is DHCP-assigned, and wlan0 is the only interface with an address), and there is no `WorkingDirectory` quoting or `ProtectHome` (the models live under `/home`).
+
+`jarvis-embeddings.service`, port 8081:
+
+```ini
+[Unit]
+Description=Jarvis BGE embeddings (llama.cpp, port 8081)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=raspdarren-ai
+Group=raspdarren-ai
+WorkingDirectory=/home/raspdarren-ai/models/bge-small-en-v1.5-gguf
+ExecStart=/home/raspdarren-ai/llama.cpp/build/bin/llama-server --model /home/raspdarren-ai/models/bge-small-en-v1.5-gguf/d32f8c040ea3b516330eeb75b72bcc2d3a780ab7/bge-small-en-v1.5-q8_0.gguf --alias bge-small-en-v1.5 --embedding --pooling cls --ctx-size 512 --batch-size 512 --ubatch-size 512 --parallel 1 --threads 2 --threads-batch 2 --gpu-layers 0 --host 0.0.0.0 --port 8081
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Gemma service
+
+Gemma was started by hand in a foreground shell until 2026-11-06 (see the shell history on the 16 GB Pi), so it died at the 2026-10-18 reboot and nothing restarted it. `jarvis-gemma.service` runs the last hand-started command. `--offline` makes `-hf` use the Hugging Face cache (`~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-qat-GGUF`: the `UD-Q4_K_XL` model, `mtp-gemma-4-E2B-it.gguf` draft and `mmproj-BF16.gguf`) without needing the network. A foreground run with these flags loaded the draft model and listened on 8080 in about 46 s.
+
+```ini
+[Unit]
+Description=Jarvis Gemma 4 E2B (llama.cpp, port 8080)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=raspdarren-ai
+Group=raspdarren-ai
+WorkingDirectory=/home/raspdarren-ai/llama.cpp
+Environment=HOME=/home/raspdarren-ai
+ExecStart=/home/raspdarren-ai/llama.cpp/build/bin/llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Both services returned `/health` 200 from the 8 GB Pi at `jarvis-ai.local` after install and after `sudo systemctl restart jarvis-gemma jarvis-embeddings`. A reboot test is still to do.
+
+### Wi-Fi power save (both Pis)
+
+Both Pis had Wi-Fi power save on (`iw dev wlan0 get power_save`, `brcmfmac: power save enabled` in `dmesg`). It was turned off on 2026-11-06 for the running interface and persistently in the `NG_FAMILY_5G` profile, without restarting NetworkManager:
+
+```bash
+sudo iw dev wlan0 set power_save off
+sudo nmcli connection modify NG_FAMILY_5G 802-11-wireless.powersave 2
+```
+
+The profile setting applies the next time the connection comes up (for example after a reboot). Check with `iw dev wlan0 get power_save`. A 20-packet ping from the 8 GB Pi to `jarvis-ai.local` gave 4.1/10.6/14.7 ms min/avg/max with power save off, against 7.3/10.1/13.6 ms before, so power save was not what made latency high: the 2026-11-06 reading of about 172 ms was not reproduced either way. `eth0` has link on both Pis but no address; it is unchanged.
 
 ## 9. Troubleshooting
 
