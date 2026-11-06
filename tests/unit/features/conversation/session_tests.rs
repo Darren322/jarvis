@@ -12,9 +12,15 @@ use rig_core::{
 };
 use rusqlite::Connection;
 use tokio::sync::mpsc;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 use crate::{
-    features::assistant::Assistant,
+    clients::remote_embeddings::RemoteEmbeddings,
+    config::EmbeddingConfig,
+    features::{assistant::Assistant, memory::MemoryService},
     storage::{ArchiveOutcome, MemoryEligibility},
     tools::system_status_tool::SystemStatusTool,
 };
@@ -28,6 +34,22 @@ impl ConversationSession {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
         let (turn, ()) = tokio::join!(self.respond_stream(assistant, None, prompt, deltas), drain);
+        turn
+    }
+
+    /// Same, with recall from `memory`.
+    async fn respond_with_memory(
+        &mut self,
+        assistant: &Assistant,
+        memory: &MemoryService,
+        prompt: &str,
+    ) -> ConversationTurn {
+        let (deltas, mut receiver) = mpsc::channel(16);
+        let drain = async { while receiver.recv().await.is_some() {} };
+        let (turn, ()) = tokio::join!(
+            self.respond_stream(assistant, Some(memory), prompt, deltas),
+            drain
+        );
         turn
     }
 }
@@ -339,5 +361,101 @@ async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
         .expect("saved turn count is readable");
     assert_eq!(saved_turn_count, 1);
     drop(connection);
+    remove_archive(&path);
+}
+
+#[tokio::test]
+async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
+    // An unreachable embedder makes recall keyword-only, which is enough here.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let embeddings = RemoteEmbeddings::new(&EmbeddingConfig {
+        base_url: format!("{}/v1", server.uri()),
+        model: "bge-test".to_owned(),
+    })
+    .expect("a localhost URL is allowed");
+
+    let model = MockCompletionModel::from_stream_turns([
+        answer("Your cat has a name."),
+        answer("No further notes."),
+    ]);
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_ok());
+    session
+        .archive
+        .as_ref()
+        .expect("archive is open")
+        .append_turn(
+            "My cat is called Miso.",
+            ArchiveOutcome::Completed("Noted, master.".to_owned()),
+            MemoryEligibility::Eligible,
+            &[],
+        )
+        .await
+        .expect("remembered turn archives");
+    let memory = MemoryService::open(
+        session.memory_repository().expect("archive is open"),
+        embeddings,
+    );
+    memory.wait_until_embedder_idle().await;
+
+    let first = session
+        .respond_with_memory(&assistant, &memory, "What is my cat called?")
+        .await;
+    let first_batch = first
+        .run
+        .as_ref()
+        .expect("first response succeeds")
+        .response
+        .messages()
+        .expect("Rig should return the successful batch")
+        .to_vec();
+    let second = session
+        .respond_with_memory(&assistant, &memory, "Anything else?")
+        .await;
+    assert!(second.run.is_ok());
+
+    let requests = model_handle.requests();
+    assert_eq!(requests.len(), 2);
+    // The first request carried the memory ahead of the prompt...
+    assert_eq!(requests[0].chat_history.len(), 2);
+    assert!(
+        format!("{:?}", requests[0].chat_history[0]).contains("Miso"),
+        "recalled memory should reach the model"
+    );
+    assert_eq!(
+        requests[0].chat_history[1],
+        user_message("What is my cat called?")
+    );
+    // ...but the stored batch is only the prompt and the answer, so the second
+    // request starts with exactly that batch and no memory message.
+    assert_eq!(first_batch.len(), 2);
+    assert_eq!(first_batch[0], user_message("What is my cat called?"));
+    assert!(!format!("{first_batch:?}").contains("Miso"));
+    assert_eq!(
+        requests[1].chat_history[..first_batch.len()],
+        first_batch[..]
+    );
+    assert_eq!(
+        requests[1].chat_history.last(),
+        Some(&user_message("Anything else?"))
+    );
+    assert!(!format!("{:?}", requests[1].chat_history).contains("Miso"));
+    assert!(!format!("{:?}", session.history.messages()).contains("Miso"));
+
+    drop(memory);
+    drop(session);
     remove_archive(&path);
 }

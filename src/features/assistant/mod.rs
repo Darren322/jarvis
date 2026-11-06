@@ -12,7 +12,10 @@ use rig_agent::{
     agent::{AgentRunner, MultiTurnStreamItem, PromptResponse, StreamingResult},
     streaming::StreamedAssistantContent,
 };
-use rig_core::{completion::Document, message::Message};
+use rig_core::{
+    completion::Document,
+    message::{DocumentMediaType, Message, UserContent},
+};
 use tokio::sync::mpsc;
 
 pub(crate) use error::AssistantError;
@@ -94,12 +97,14 @@ impl Assistant {
         // LEARNING: Rig stops this hook chain at the first non-Continue model
         // turn decision. Put the passive observer first so it records the
         // completed model call even when Jarvis policy rejects that turn.
-        // Explicit history and run-local documents keep retrieved context out of
-        // the session's replayable native message batches.
+        // Rig's `run.messages()` (and so `PromptResponse::messages`) holds only
+        // the prompt and the turns after it, never the input history. The recall
+        // message rides at the end of that input history, so it is structurally
+        // absent from the batch the session replays, without inspecting text.
+        let request_history = history_with_recall(history, documents);
         self.agent
             .runner(prompt)
-            .history(history.iter().cloned())
-            .documents(documents.iter().cloned())
+            .history(request_history)
             .add_hook(observer.clone())
             .add_hook(JarvisPolicyHook)
             .max_turns(2)
@@ -108,6 +113,30 @@ impl Assistant {
             .max_invalid_tool_call_retries(0)
             .without_memory()
     }
+}
+
+/// Returns the input history with the recalled memories as one user message
+/// placed after it, directly before the new prompt.
+///
+/// The order is prompt-cache driven: llama.cpp reuses a cached prefix only up
+/// to the first token that differs. Recall changes on almost every turn, so
+/// Rig's `.documents()` (which inserts right after the system message) made the
+/// whole history miss the cache. Here the system prompt and history stay
+/// byte-identical between turns and only the tail changes. The message is built
+/// exactly as Rig builds it for `.documents()`, so the wire text is unchanged.
+/// With no documents, no message is added.
+fn history_with_recall(history: &[Message], documents: &[Document]) -> Vec<Message> {
+    let mut messages = history.to_vec();
+    if !documents.is_empty() {
+        let content = documents
+            .iter()
+            .map(|document| {
+                UserContent::document(document.to_string(), Some(DocumentMediaType::TXT))
+            })
+            .collect();
+        messages.push(Message::User { content });
+    }
+    messages
 }
 
 async fn consume_stream(

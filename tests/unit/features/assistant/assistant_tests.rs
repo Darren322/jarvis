@@ -8,14 +8,21 @@ use rig_agent::{
 };
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, Document, Usage},
-    message::{AssistantContent, Message, Text, UserContent},
+    message::{AssistantContent, DocumentMediaType, Message, Text, UserContent},
     streaming::StreamingCompletionResponse,
     test_utils::{MockCompletionModel, MockStreamEvent},
 };
+use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::{mpsc, oneshot};
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 use crate::{
+    clients::local_llm::LocalLlm,
+    config::LocalLlmConfig,
     features::assistant::{
         Assistant,
         error::AssistantError,
@@ -37,9 +44,22 @@ impl Assistant {
         prompt: &str,
         history: &[Message],
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
+        self.respond_with_recall(prompt, history, &[]).await
+    }
+
+    /// Same as `respond`, with recalled memories supplied as the session does.
+    async fn respond_with_recall(
+        &self,
+        prompt: &str,
+        history: &[Message],
+        documents: &[Document],
+    ) -> Result<AssistantRun, Box<AssistantRunError>> {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
-        let (result, ()) = tokio::join!(self.respond_stream(prompt, history, &[], deltas), drain);
+        let (result, ()) = tokio::join!(
+            self.respond_stream(prompt, history, documents, deltas),
+            drain
+        );
         result
     }
 }
@@ -376,20 +396,54 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
 
     let requests = model_handle.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].documents, vec![document.clone()]);
-    assert_eq!(requests[1].documents, vec![document.clone()]);
+    // Recall travels in the message history, never in Rig's `documents`
+    // field, so it cannot move in front of the earlier conversation.
+    assert!(requests[0].documents.is_empty());
+    assert!(requests[1].documents.is_empty());
     assert_eq!(requests[0].max_tokens, Some(1024));
     assert_eq!(requests[0].tools.len(), 1);
     assert!(requests[1].tools.is_empty());
-    for request in &requests {
-        assert!(!format!("{:?}", request.chat_history).contains(&document.text));
-    }
+    let memory_message = Message::User {
+        content: vec![UserContent::document(
+            document.to_string(),
+            Some(DocumentMediaType::TXT),
+        )],
+    };
+    let prompt_message = Message::user("Check the system status.");
+    // Turn 1: history, memory, prompt. Turn 2 keeps that order and appends
+    // the native tool call and its correlated result.
+    let turn_one: Vec<Message> = requests[0].chat_history.to_vec();
+    assert_eq!(
+        turn_one,
+        vec![
+            prior_history[0].clone(),
+            memory_message.clone(),
+            prompt_message.clone()
+        ]
+    );
+    let turn_two: Vec<Message> = requests[1].chat_history.to_vec();
+    assert_eq!(turn_two.len(), 5);
+    assert_eq!(turn_two[..3], turn_one[..]);
+    assert!(matches!(
+        &turn_two[3],
+        Message::Assistant { content, .. }
+            if matches!(content.first(), Some(AssistantContent::ToolCall(_)))
+    ));
+    assert!(matches!(
+        &turn_two[4],
+        Message::User { content }
+            if matches!(content.first(), Some(UserContent::ToolResult(_)))
+    ));
 
     let messages = run
         .response
         .messages()
         .expect("native streamed response includes the Rig transcript");
     assert!(!format!("{messages:?}").contains(&document.text));
+    // Rig returns the prompt and everything after it, never the input history
+    // the recall message rode in on.
+    assert_eq!(messages.first(), Some(&prompt_message));
+    assert!(!messages.contains(&memory_message));
     let assistant_tool_call = messages.iter().find_map(|message| {
         let Message::Assistant { content, .. } = message else {
             return None;
@@ -497,4 +551,211 @@ async fn text_deltas_split_at_the_byte_cap_and_never_inside_a_character() {
     // A 4-byte character that would straddle the cap moves whole to the next chunk.
     let straddling = format!("{}🙂", "a".repeat(cap - 1));
     assert_eq!(chunk_lengths(&straddling).await, vec![cap - 1, 4]);
+}
+
+/// An OpenAI-compatible streaming answer: the text, then a stop chunk.
+fn text_response(text: &str) -> ResponseTemplate {
+    let chunks = [
+        json!({"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": text},
+                "finish_reason": null}]}),
+        json!({"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+    ];
+    let mut body = String::new();
+    for chunk in chunks {
+        body.push_str(&format!("data: {chunk}\n\n"));
+    }
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+}
+
+/// A production assistant (system prompt included) talking to `server`.
+fn wire_assistant(server: &MockServer) -> Assistant {
+    let config = LocalLlmConfig {
+        base_url: format!("{}/v1", server.uri()),
+        health_url: format!("{}/health", server.uri()),
+        model: "test-model".to_string(),
+    };
+    let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
+    Assistant::new(
+        AgentBuilder::new(local_llm.model())
+            .preamble("system prompt")
+            .tool(SystemStatusTool)
+            .build(),
+    )
+}
+
+/// Answers every chat completion with the same text.
+async fn answering_server(text: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_response(text))
+        .mount(&server)
+        .await;
+    server
+}
+
+/// One request's messages as `(role, text)`, in wire order.
+type WireMessages = Vec<(String, String)>;
+
+/// Every recorded request's messages.
+async fn wire_messages(server: &MockServer) -> Vec<WireMessages> {
+    let requests = server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled");
+    requests
+        .iter()
+        .map(|request| {
+            let body: Value = request
+                .body_json()
+                .expect("completion request should contain JSON");
+            body["messages"]
+                .as_array()
+                .expect("request carries a message array")
+                .iter()
+                .map(|message| {
+                    let role = message["role"].as_str().unwrap_or_default().to_owned();
+                    let text = match &message["content"] {
+                        Value::String(text) => text.clone(),
+                        parts => parts
+                            .as_array()
+                            .map(|parts| {
+                                parts
+                                    .iter()
+                                    .filter_map(|part| part["text"].as_str())
+                                    .collect::<String>()
+                            })
+                            .unwrap_or_default(),
+                    };
+                    (role, text)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn recalled(id: &str, text: &str) -> Document {
+    Document {
+        id: id.to_string(),
+        text: text.to_string(),
+        additional_props: HashMap::new(),
+    }
+}
+
+fn wire(role: &str, text: &str) -> (String, String) {
+    (role.to_owned(), text.to_owned())
+}
+
+#[tokio::test]
+async fn recalled_memories_sit_between_the_history_and_the_prompt_on_the_wire() {
+    let history = vec![
+        Message::user("earlier question"),
+        Message::assistant("earlier answer"),
+    ];
+    let cat = recalled("m1", "My cat is Miso.");
+    let tea = recalled("m2", "I drink oolong.");
+    let cases: [(&[Document], WireMessages); 3] = [
+        (
+            &[],
+            vec![
+                wire("system", "system prompt"),
+                wire("user", "earlier question"),
+                wire("assistant", "earlier answer"),
+                wire("user", "new question"),
+            ],
+        ),
+        (
+            std::slice::from_ref(&cat),
+            vec![
+                wire("system", "system prompt"),
+                wire("user", "earlier question"),
+                wire("assistant", "earlier answer"),
+                wire("user", "<file id: m1>\nMy cat is Miso.\n</file>\n"),
+                wire("user", "new question"),
+            ],
+        ),
+        (
+            &[cat.clone(), tea.clone()],
+            vec![
+                wire("system", "system prompt"),
+                wire("user", "earlier question"),
+                wire("assistant", "earlier answer"),
+                wire(
+                    "user",
+                    "<file id: m1>\nMy cat is Miso.\n</file>\n<file id: m2>\nI drink oolong.\n</file>\n",
+                ),
+                wire("user", "new question"),
+            ],
+        ),
+    ];
+
+    for (documents, expected) in cases {
+        let server = answering_server("ok").await;
+        let assistant = wire_assistant(&server);
+        assistant
+            .respond_with_recall("new question", &history, documents)
+            .await
+            .expect("the run should succeed");
+
+        let requests = wire_messages(&server).await;
+        assert_eq!(requests, vec![expected]);
+    }
+}
+
+#[tokio::test]
+async fn a_changed_recall_leaves_the_earlier_conversation_as_an_exact_prefix() {
+    let server = answering_server("first answer").await;
+    let assistant = wire_assistant(&server);
+    let first = assistant
+        .respond_with_recall(
+            "first question",
+            &[],
+            &[recalled("m1", "Recalled for the first question.")],
+        )
+        .await
+        .expect("first run should succeed");
+    // What the session would store: the run's own batch, with no recall in it.
+    let history = first
+        .response
+        .messages()
+        .expect("native streamed response includes the Rig transcript")
+        .to_vec();
+    assistant
+        .respond_with_recall(
+            "second question",
+            &history,
+            &[recalled("m2", "Recalled for the second question.")],
+        )
+        .await
+        .expect("second run should succeed");
+
+    let requests = wire_messages(&server).await;
+    assert_eq!(requests.len(), 2);
+    let second = &requests[1];
+    assert_eq!(
+        second[..3],
+        [
+            wire("system", "system prompt"),
+            wire("user", "first question"),
+            wire("assistant", "first answer"),
+        ]
+    );
+    assert_eq!(
+        second[3..],
+        [
+            wire(
+                "user",
+                "<file id: m2>\nRecalled for the second question.\n</file>\n"
+            ),
+            wire("user", "second question"),
+        ]
+    );
+    assert!(
+        !second
+            .iter()
+            .any(|(_, text)| text.contains("Recalled for the first question."))
+    );
 }

@@ -73,8 +73,8 @@ impl ConversationSession {
         self.history.clear();
     }
 
-    /// Retrieves bounded memory once, sends it as run-local Rig documents, and
-    /// archives the canonical final only after the native stream completes.
+    /// Retrieves bounded memory once, sends it as one run-local message after the
+    /// history, and archives the canonical final only after the native stream completes.
     pub(crate) async fn respond_stream(
         &mut self,
         assistant: &Assistant,
@@ -93,8 +93,9 @@ impl ConversationSession {
         let history = self.history.messages();
 
         // LEARNING: These Documents are request context, not Message history.
-        // The native transcript retains Rig IDs/correlation while this bounded
-        // recall snapshot stays out of the replayed conversation batch.
+        // The assistant sends them as one message after `history`; Rig's returned
+        // batch starts at the prompt, so the recall snapshot never enters the
+        // replayed conversation while native IDs/correlation are retained.
         let run = assistant
             .respond_stream(prompt, &history, &recall.documents, deltas)
             .await;
