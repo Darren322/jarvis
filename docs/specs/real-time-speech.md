@@ -9,10 +9,12 @@ Settled with Darren on 2026-11-06, after the T1 acceptance check of [push-to-tal
 | R0 Measure latency | done | Integrated 2026-11-06 (uncommitted): `first_text=` on the Model stage line and `Speech diagnostics: time_to_first_audio=`. Baseline in `notes/SPEECH_LATENCY.md`: Gemma first token 0.25 s cached / 0.5 s short / 6.7 s for 429 uncached tokens; Supertonic RTF 0.70–0.86, about 2 s fixed per request. Also: the CLI now prints the full error cause chain (Claude) |
 | R1 Speech recovery | done | Accepted after 2 review rounds; integrated into dev 2026-11-06 (uncommitted). `SpeechHealth` Ready/Recovering/Disabled; per-answer failures recover (the player is dropped and re-opened); only unclean state (a worker that won't terminate, failed cleanup) disables; `/stop` never counts; 3 consecutive failures disable; thiserror sources; stray debug print removed. 135 unit tests, clippy and the Python worker test pass. Follow-up: CLI prints the source chain (after R0). Not yet run on the Pi |
 | R2 Chunker | done | Accepted and integrated into dev 2026-11-06 (uncommitted): `SpeechChunker` push/finish, 40-char first chunk, 300-char force split, abbreviations/decimals; 19 tests; 126 unit tests and clippy pass. R3 notes: clean each chunk after chunking, skip chunks with no letters (e.g. a lone `...`), and handle list markers like `1.` |
-| R3 Streaming pipeline | not started | Unblocked (R1, R2 done). Fire the playback signal on the first chunk; play the lead-in once per answer |
-| R4 Voice decision | not started | Unblocked: RTF 0.70–0.86 exceeds the 0.5 bar, so compare Piper. Needs Darren's go (installs Piper on the 8 GB Pi) |
+| R3 Streaming pipeline | in review | Implemented 2026-11-06 at high effort; reviewed by Claude (narrowed `run_prompt` to `io::Result`). The REPL's `run_prompt` drives the text stream, speech and input in one biased select. The chunker feeds a 64-chunk bounded queue via `try_send` (overflow drops the rest of that answer's speech; the text never blocks). One rodio Player per answer: lead-in once, chunks appended gaplessly. `/stop` or a new prompt cancels, which is never a failure. 170 tests, clippy and fmt pass, stable over 3 runs. Awaiting Darren's Pi acceptance |
+| R4 Voice decision | done | Darren chose Piper `northern` on 2026-11-06 (S8). Measurements: Piper medium RTF about 0.10, a 7-word chunk in about 0.3 s; Supertonic 0.70–0.86, about 2 s |
+| R5a Piper worker (Python) | done | Accepted 2026-11-06 (uncommitted): `scripts/tts/piper_worker.py` uses the same protocol as Supertonic (v1, the same codes and limits); ready/completed frames carry `sample_rate` 22050; pinned lock with hashes; idempotent `setup_piper_pi.sh` with md5 checks; 16 Python tests (Claude added a literal limits test after a spot-check found drift went undetected). Ran once on the Pi: OK |
+| R5b Piper wiring (Rust) | not started | Blocked on R3 and R5a. Config selects the worker and voice; accept the worker's declared sample rate (22.05 kHz); Pi acceptance by ear |
 
-**Resume here:** start R3 with Supertonic. Darren decides whether R4 (Piper comparison) runs in parallel. Darren commits R0 and the CLI cause chain.
+**Resume here:** Darren tests R3 on the Pi (deploy dev, run, listen for speech starting while text streams; long story; `/stop`). Then R5b (Piper wiring, high effort).
 
 ## Goal
 
@@ -36,6 +38,7 @@ Jarvis starts speaking while Gemma is still generating. Synthesis and playback o
 | S5 | Chunking: the first chunk is cut at the first sentence end or clause break (`,` `;` `:`) once at least about 40 characters have arrived; later chunks are whole sentences; anything longer than about 300 characters is force-split at a word boundary. |
 | S6 | Pipeline: text stream, then chunker, then a **bounded** queue, then one synthesis at a time on the single worker while the previous chunk plays, with no gaps. `/stop` and a new prompt clear the queue and the current playback. The 700 ms lead-in noise plays once per answer, not per chunk. |
 | S7 | Engineering practice per AGENTS.md: reuse rodio's queueing (`Sink`/`Player` append) rather than a hand-written mixer; no new crates without approval. |
+| S8 | **Voice: Piper `en_GB-northern_english_male-medium`** (Darren, 2026-11-06, after listening): RTF about 0.10 vs Supertonic 0.70–0.86, trading a little expressiveness for speed. Supertonic stays a selectable fallback. Piper's 22.05 kHz output is played as-is: rodio resamples, so we loosen Jarvis's 44.1 kHz check rather than write an upsampler. Piper (`piper-tts` 1.8.0, GPL) runs as a separate worker process. |
 
 ## Tickets
 
@@ -62,6 +65,10 @@ Each ticket lists the files it owns. Code tickets finish with the full verificat
 - Wire the turn stream into the chunker, a bounded queue, the worker and gapless playback (S6). `/stop` and a new prompt clear everything. Time to first audio comes from R0's diagnostics.
 - Pi acceptance: Darren hears speech start while the text is still streaming; a long story plays fully; `/stop` cuts it off.
 - Owns: decided when R1 and R2 land.
+
+### R5: Piper voice
+- **R5a:** `scripts/tts/piper_worker.py`, the same JSON frames as `supertonic_worker.py` (ready, speak with `output_path`, completed or error), with the model loaded once. Plus a pinned setup script and Python tests mirroring the Supertonic worker tests. Owns `scripts/tts/piper*` and `tests/unit/features/speech/piper_worker/`.
+- **R5b:** config (`src/config/tts.rs`) chooses the Piper or Supertonic worker and the voice; playback accepts the worker's sample rate (rodio resamples); rename Supertonic-specific Rust naming only where it is now generic. Pi acceptance by ear.
 
 ### R4: voice decision
 - If R0's real-time factor is at most about 0.5, keep Supertonic and close this ticket. Otherwise, compare Piper on the Pi for speed and quality, judged by Darren.

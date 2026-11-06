@@ -146,3 +146,33 @@ Replay the same generated M5 WAV through retained output on cold use, repeatedly
 and after idle. Listen for the complete first word and measure audible stop
 latency. The historical standalone playback successes do not establish that
 intermittent USB/ALSA first-word clipping is resolved.
+
+## Piper
+
+`piper_worker.py` is a second worker that speaks the same JSON-lines protocol
+as `supertonic_worker.py` (ready frame, `speak` with `output_path`, `completed`
+or `error`, the same limits and error codes), using Piper
+`en_GB-northern_english_male-medium`. Piper (`piper-tts` 1.8.0, GPL) runs only
+in this separate process.
+
+It writes a mono 16-bit WAV at the voice's native rate (22,050 Hz) and does not
+resample. The rate is declared in the ready frame and in each `completed`
+response. The ready frame reports `engine` `piper`, `precision` `fp32`, `voice`
+the model file stem, `language` `en`, and `provider` `cpu`.
+
+Provision on the Pi (aarch64, Python 3.13) with
+`bash scripts/tts/setup_piper_pi.sh`. It installs `piper_requirements.lock` with
+required hashes and downloads the voice, checking each file's md5 against the
+rhasspy `voices.json`. Re-running keeps files that already verify. Override the
+locations with `JARVIS_PIPER_RUNTIME_ROOT`, `JARVIS_PIPER_VENV_DIR` and
+`JARVIS_PIPER_VOICE_DIR`.
+
+Run it by hand:
+
+```sh
+"$VENV/bin/python" scripts/tts/piper_worker.py --model "$VOICE_DIR/en_GB-northern_english_male-medium.onnx" --threads 4
+```
+
+`--model` is the `.onnx` path; the config must sit beside it as `<model>.json`.
+`--threads` (1-4, default 4) sets onnxruntime intra-op threads. Wiring into
+Jarvis is ticket R5b.
