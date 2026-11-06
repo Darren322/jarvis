@@ -5,6 +5,7 @@ use std::{
 };
 
 use tempfile::{Builder, TempDir};
+use thiserror::Error;
 use tokio::{task::JoinHandle, time::timeout};
 
 use crate::config::TtsConfig;
@@ -14,6 +15,8 @@ use super::{
     supertonic_worker::{SupertonicWorker, WorkerError},
 };
 
+/// Worker failures in a row that disable speech for the session; a success resets the count.
+const MAX_CONSECUTIVE_SPEECH_FAILURES: u8 = 3;
 const MAX_SPEECH_TEXT_BYTES: usize = 4 * 1024;
 const EXPECTED_SAMPLE_RATE: u32 = 44_100;
 const EXPECTED_CHANNELS: u16 = 1;
@@ -55,119 +58,140 @@ struct ActiveSpeech {
     decode_task: Option<JoinHandle<Result<ValidatedWav, SpeechError>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub(crate) enum CleanupFailure {
-    Worker(WorkerError),
-    TemporaryDirectory(std::io::Error),
+    #[error("speech worker cleanup failed")]
+    Worker(#[source] WorkerError),
+    #[error("temporary directory removal failed")]
+    TemporaryDirectory(#[source] std::io::Error),
+    #[error("blocking task did not finish before cleanup deadline")]
     BlockingTaskTimeout,
 }
 
-#[derive(Debug)]
+/// Why speech stopped for the rest of the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+pub(crate) enum DisabledReason {
+    #[error("speech failed {MAX_CONSECUTIVE_SPEECH_FAILURES} times in a row")]
+    ConsecutiveFailures,
+    /// The audio device, a temporary file or cleanup failed in a way that cannot be retried safely.
+    #[error("speech hit an unrecoverable audio or cleanup error")]
+    Unrecoverable,
+}
+
+/// Whether the next answer may be spoken.
+///
+/// A worker failure moves `Ready` to `Recovering`; the next answer starts a fresh worker.
+/// `Disabled` is terminal for the session and keeps its first reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpeechHealth {
+    Ready,
+    Recovering { consecutive_failures: u8 },
+    Disabled(DisabledReason),
+}
+
+impl SpeechHealth {
+    fn record_failure(&mut self) {
+        *self = match *self {
+            Self::Ready => Self::after_failures(1),
+            Self::Recovering {
+                consecutive_failures,
+            } => Self::after_failures(consecutive_failures.saturating_add(1)),
+            Self::Disabled(reason) => Self::Disabled(reason),
+        };
+    }
+
+    fn after_failures(consecutive_failures: u8) -> Self {
+        if consecutive_failures >= MAX_CONSECUTIVE_SPEECH_FAILURES {
+            Self::Disabled(DisabledReason::ConsecutiveFailures)
+        } else {
+            Self::Recovering {
+                consecutive_failures,
+            }
+        }
+    }
+
+    fn record_success(&mut self) {
+        match *self {
+            Self::Ready | Self::Recovering { .. } => *self = Self::Ready,
+            Self::Disabled(_) => {}
+        }
+    }
+
+    fn disable(&mut self) {
+        match *self {
+            Self::Ready | Self::Recovering { .. } => {
+                *self = Self::Disabled(DisabledReason::Unrecoverable);
+            }
+            Self::Disabled(_) => {}
+        }
+    }
+}
+
+#[derive(Debug, Error)]
 pub(crate) enum SpeechError {
+    #[error("speech text exceeded limit")]
     TextTooLarge,
-    Disabled,
+    #[error("speech is disabled for this session")]
+    Disabled(#[source] DisabledReason),
+    #[error("speech cleanup is still in progress")]
     AlreadyActive,
-    CreateTemp(std::io::Error),
+    #[error("failed to create temporary speech output")]
+    CreateTemp(#[source] std::io::Error),
+    #[error("temporary speech path is not valid utf-8")]
     InvalidTempPath,
-    WorkerLaunch(WorkerError),
-    WorkerStartup(WorkerError),
-    Synthesis(WorkerError),
-    Playback(PlaybackError),
+    #[error("failed to launch speech worker")]
+    WorkerLaunch(#[source] WorkerError),
+    #[error("speech worker failed to start")]
+    WorkerStartup(#[source] WorkerError),
+    #[error("speech synthesis failed")]
+    Synthesis(#[source] WorkerError),
+    #[error("speech playback failed")]
+    Playback(#[source] PlaybackError),
+    #[error("audio output device reported an error")]
     PlaybackDeviceFailed,
+    #[error("speech playback timed out")]
     PlaybackTimedOut,
+    #[error("audio output initialization timed out")]
     PlaybackInitializationTimedOut,
+    #[error("audio output initialization task failed")]
     PlaybackInitializationTaskFailed,
+    #[error("speech wav decoding timed out")]
     DecodeTimedOut,
+    #[error("speech wav decode task failed")]
     DecodeTaskFailed,
-    OpenWav(hound::Error),
-    DecodeWav(hound::Error),
+    #[error("failed to open synthesized wav")]
+    OpenWav(#[source] hound::Error),
+    #[error("failed to decode synthesized wav")]
+    DecodeWav(#[source] hound::Error),
+    #[error("synthesized wav has an invalid format")]
     InvalidWavFormat,
+    #[error("synthesized wav is empty")]
     EmptyWav,
+    #[error("synthesized wav exceeded duration limit")]
     WavTooLong,
+    #[error("synthesized wav exceeded size limit")]
     WavTooLarge,
+    #[error("synthesized wav contained a non-finite sample")]
     NonFiniteSample,
+    #[error("failed to settle {resource}{}", display_path_suffix(path))]
     CleanupFailed {
         resource: &'static str,
         path: Option<PathBuf>,
+        #[source]
         cause: CleanupFailure,
     },
+    #[error("speech cleanup also failed: {cleanup}")]
     OperationAndCleanup {
+        #[source]
         operation: Box<SpeechError>,
         cleanup: Box<SpeechError>,
     },
 }
 
-impl std::fmt::Display for SpeechError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TextTooLarge => write!(f, "speech text exceeded limit"),
-            Self::Disabled => write!(f, "speech is disabled for this session"),
-            Self::AlreadyActive => write!(f, "speech cleanup is still in progress"),
-            Self::CreateTemp(_) => write!(f, "failed to create temporary speech output"),
-            Self::InvalidTempPath => write!(f, "temporary speech path is not valid UTF-8"),
-            Self::WorkerLaunch(_) => write!(f, "failed to launch speech worker"),
-            Self::WorkerStartup(_) => write!(f, "speech worker failed to start"),
-            Self::Synthesis(_) => write!(f, "speech synthesis failed"),
-            Self::Playback(error) => write!(f, "speech playback failed: {error}"),
-            Self::PlaybackDeviceFailed => write!(f, "audio output device reported an error"),
-            Self::PlaybackTimedOut => write!(f, "speech playback timed out"),
-            Self::PlaybackInitializationTimedOut => {
-                write!(f, "audio output initialization timed out")
-            }
-            Self::PlaybackInitializationTaskFailed => {
-                write!(f, "audio output initialization task failed")
-            }
-            Self::DecodeTimedOut => write!(f, "speech WAV decoding timed out"),
-            Self::DecodeTaskFailed => write!(f, "speech WAV decode task failed"),
-            Self::OpenWav(_) => write!(f, "failed to open synthesized WAV"),
-            Self::DecodeWav(_) => write!(f, "failed to decode synthesized WAV"),
-            Self::InvalidWavFormat => write!(f, "synthesized WAV has an invalid format"),
-            Self::EmptyWav => write!(f, "synthesized WAV is empty"),
-            Self::WavTooLong => write!(f, "synthesized WAV exceeded duration limit"),
-            Self::WavTooLarge => write!(f, "synthesized WAV exceeded size limit"),
-            Self::NonFiniteSample => write!(f, "synthesized WAV contained a non-finite sample"),
-            Self::CleanupFailed {
-                resource,
-                path,
-                cause,
-            } => {
-                write!(f, "failed to settle {resource}")?;
-                if let Some(path) = path {
-                    write!(f, " at {}", path.display())?;
-                }
-                match cause {
-                    CleanupFailure::Worker(_) => write!(f, ": speech worker cleanup failed"),
-                    CleanupFailure::TemporaryDirectory(_) => {
-                        write!(f, ": temporary directory removal failed")
-                    }
-                    CleanupFailure::BlockingTaskTimeout => {
-                        write!(f, ": blocking task did not finish before cleanup deadline")
-                    }
-                }
-            }
-            Self::OperationAndCleanup { operation, cleanup } => write!(f, "{operation}; {cleanup}"),
-        }
-    }
-}
-
-impl std::error::Error for SpeechError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::CreateTemp(error) => Some(error),
-            Self::WorkerLaunch(error) | Self::WorkerStartup(error) | Self::Synthesis(error) => {
-                Some(error)
-            }
-            Self::Playback(error) => Some(error),
-            Self::OpenWav(error) | Self::DecodeWav(error) => Some(error),
-            Self::CleanupFailed { cause, .. } => match cause {
-                CleanupFailure::Worker(error) => Some(error),
-                CleanupFailure::TemporaryDirectory(error) => Some(error),
-                CleanupFailure::BlockingTaskTimeout => None,
-            },
-            Self::OperationAndCleanup { operation, .. } => Some(operation),
-            _ => None,
-        }
-    }
+fn display_path_suffix(path: &Option<PathBuf>) -> String {
+    path.as_ref()
+        .map(|path| format!(" at {}", path.display()))
+        .unwrap_or_default()
 }
 
 pub(crate) struct SpeechOutput {
@@ -177,8 +201,7 @@ pub(crate) struct SpeechOutput {
     player_initialization: Option<JoinHandle<Result<AudioPlayer, PlaybackError>>>,
     active: Option<ActiveSpeech>,
     next_id: u64,
-    cancelled_worker_restarts: u8,
-    disabled: bool,
+    health: SpeechHealth,
 }
 
 impl SpeechOutput {
@@ -191,13 +214,31 @@ impl SpeechOutput {
             player_initialization: None,
             active: None,
             next_id: 1,
-            cancelled_worker_restarts: 0,
-            disabled: false,
+            health: SpeechHealth::Ready,
         }
     }
 
     pub(crate) fn is_disabled(&self) -> bool {
-        self.disabled
+        self.disabled_reason().is_some()
+    }
+
+    /// Why speech is off for the rest of the session, if it is.
+    pub(crate) fn disabled_reason(&self) -> Option<DisabledReason> {
+        match self.health {
+            SpeechHealth::Ready | SpeechHealth::Recovering { .. } => None,
+            SpeechHealth::Disabled(reason) => Some(reason),
+        }
+    }
+
+    fn ensure_accepting(&self) -> Result<(), SpeechError> {
+        match self.health {
+            SpeechHealth::Disabled(reason) => return Err(SpeechError::Disabled(reason)),
+            SpeechHealth::Ready | SpeechHealth::Recovering { .. } => {}
+        }
+        if self.active.is_some() {
+            return Err(SpeechError::AlreadyActive);
+        }
+        Ok(())
     }
 
     pub(crate) async fn speak(
@@ -208,12 +249,7 @@ impl SpeechOutput {
         if text.len() > MAX_SPEECH_TEXT_BYTES {
             return Err(SpeechError::TextTooLarge);
         }
-        if self.disabled {
-            return Err(SpeechError::Disabled);
-        }
-        if self.active.is_some() {
-            return Err(SpeechError::AlreadyActive);
-        }
+        self.ensure_accepting()?;
 
         self.ensure_player().await?;
         if self
@@ -221,7 +257,7 @@ impl SpeechOutput {
             .as_ref()
             .is_some_and(AudioPlayer::has_device_failed)
         {
-            self.disabled = true;
+            self.count_failure_and_reset_player();
             return Err(SpeechError::PlaybackDeviceFailed);
         }
 
@@ -232,7 +268,7 @@ impl SpeechOutput {
         {
             Ok(operation_dir) => operation_dir,
             Err(error) => {
-                self.disabled = true;
+                self.health.record_failure();
                 return Err(SpeechError::CreateTemp(error));
             }
         };
@@ -307,24 +343,34 @@ impl SpeechOutput {
         let decoded = timeout(WAV_DECODE_TIMEOUT, self.await_decode()).await;
         let validated = match decoded {
             Err(_) => {
-                self.disabled = true;
-                return Err(SpeechError::DecodeTimedOut);
+                self.health.record_failure();
+                // The blocking decoder cannot be interrupted; settle it like a cancel so the
+                // directory is released, or disable speech if it will not finish.
+                return Err(match self.cancel_decode().await {
+                    Ok(()) => SpeechError::DecodeTimedOut,
+                    Err(cleanup) => {
+                        Self::combine_operation_and_cleanup(SpeechError::DecodeTimedOut, cleanup)
+                    }
+                });
             }
             Ok(Ok(validated)) => validated,
             Ok(Err(operation)) => {
-                self.disabled = true;
+                self.health.record_failure();
                 let cleanup = self.close_active_directory();
                 self.active = None;
                 return Err(match cleanup {
                     Ok(()) => operation,
-                    Err(cleanup) => Self::combine_operation_and_cleanup(operation, cleanup),
+                    Err(cleanup) => {
+                        self.health.disable();
+                        Self::combine_operation_and_cleanup(operation, cleanup)
+                    }
                 });
             }
         };
 
         if let Err(cleanup) = self.close_active_directory() {
             self.active = None;
-            self.disabled = true;
+            self.health.disable();
             return Err(cleanup);
         }
 
@@ -335,8 +381,8 @@ impl SpeechOutput {
             .expect("audio output initialized")
             .play(validated.samples)
         {
-            self.disabled = true;
             self.active = None;
+            self.count_failure_and_reset_player();
             return Err(SpeechError::Playback(error));
         }
         self.active
@@ -354,7 +400,7 @@ impl SpeechOutput {
                     .expect("audio output initialized")
                     .stop();
                 self.active = None;
-                self.disabled = true;
+                self.count_failure_and_reset_player();
                 return Err(SpeechError::PlaybackDeviceFailed);
             }
             if !player.is_playing() {
@@ -363,6 +409,7 @@ impl SpeechOutput {
                     .expect("audio output initialized")
                     .finish();
                 self.active = None;
+                self.health.record_success();
                 return Ok(());
             }
 
@@ -372,7 +419,7 @@ impl SpeechOutput {
                     .expect("audio output initialized")
                     .stop();
                 self.active = None;
-                self.disabled = true;
+                self.count_failure_and_reset_player();
                 return Err(SpeechError::PlaybackTimedOut);
             }
 
@@ -409,7 +456,7 @@ impl SpeechOutput {
                 worker.terminate().await
             };
             if let Err(error) = result {
-                self.disabled = true;
+                self.health.disable();
                 let cleanup = SpeechError::CleanupFailed {
                     resource: "speech worker",
                     path: None,
@@ -435,7 +482,7 @@ impl SpeechOutput {
             let cleanup = self.close_active_directory();
             self.active = None;
             if let Err(cleanup) = cleanup {
-                self.disabled = true;
+                self.health.disable();
                 shutdown_error = Some(match shutdown_error {
                     Some(operation) => Self::combine_operation_and_cleanup(operation, cleanup),
                     None => cleanup,
@@ -482,23 +529,24 @@ impl SpeechOutput {
 
         match result {
             Err(_) => {
-                self.disabled = true;
+                // The blocking task stays owned in `player_initialization`; the next answer
+                // waits for it again.
+                self.health.record_failure();
                 Err(SpeechError::PlaybackInitializationTimedOut)
             }
             Ok(Ok(Ok(player))) => {
                 self.player_initialization = None;
-                eprintln!("speech output configuration: {:?}", player.output_config());
                 self.player = Some(player);
                 Ok(())
             }
             Ok(Ok(Err(error))) => {
                 self.player_initialization = None;
-                self.disabled = true;
+                self.health.record_failure();
                 Err(SpeechError::Playback(error))
             }
             Ok(Err(_)) => {
                 self.player_initialization = None;
-                self.disabled = true;
+                self.health.record_failure();
                 Err(SpeechError::PlaybackInitializationTaskFailed)
             }
         }
@@ -519,7 +567,7 @@ impl SpeechOutput {
 
         match result {
             Err(_) => {
-                self.disabled = true;
+                self.health.disable();
                 Err(SpeechError::CleanupFailed {
                     resource: "audio output initialization",
                     path: None,
@@ -533,14 +581,8 @@ impl SpeechOutput {
                         self.player = Some(player);
                         Ok(())
                     }
-                    Ok(Err(error)) => {
-                        self.disabled = true;
-                        Err(SpeechError::Playback(error))
-                    }
-                    Err(_) => {
-                        self.disabled = true;
-                        Err(SpeechError::PlaybackInitializationTaskFailed)
-                    }
+                    Ok(Err(error)) => Err(SpeechError::Playback(error)),
+                    Err(_) => Err(SpeechError::PlaybackInitializationTaskFailed),
                 }
             }
         }
@@ -565,7 +607,7 @@ impl SpeechOutput {
         let path = self.active_directory_path();
         if let Some(worker) = self.worker.as_mut() {
             if let Err(error) = worker.terminate().await {
-                self.disabled = true;
+                self.health.disable();
                 return Err(SpeechError::CleanupFailed {
                     resource: "speech worker",
                     path,
@@ -573,18 +615,12 @@ impl SpeechOutput {
                 });
             }
             self.worker = None;
-
-            if self.cancelled_worker_restarts == 0 {
-                self.cancelled_worker_restarts = 1;
-            } else {
-                self.disabled = true;
-            }
         }
 
         let cleanup = self.close_active_directory();
         self.active = None;
         if let Err(error) = cleanup {
-            self.disabled = true;
+            self.health.disable();
             return Err(error);
         }
         Ok(())
@@ -595,7 +631,7 @@ impl SpeechOutput {
         let path = self.active_directory_path();
         match decode_result {
             Err(_) => {
-                self.disabled = true;
+                self.health.disable();
                 Err(SpeechError::CleanupFailed {
                     resource: "WAV decoder",
                     path,
@@ -607,15 +643,12 @@ impl SpeechOutput {
                 self.active = None;
                 match (result, cleanup) {
                     (Err(operation), Err(cleanup)) => {
-                        self.disabled = true;
+                        self.health.disable();
                         Err(Self::combine_operation_and_cleanup(operation, cleanup))
                     }
-                    (Err(operation), Ok(())) => {
-                        self.disabled = true;
-                        Err(operation)
-                    }
+                    (Err(operation), Ok(())) => Err(operation),
                     (Ok(_), Err(cleanup)) => {
-                        self.disabled = true;
+                        self.health.disable();
                         Err(cleanup)
                     }
                     (Ok(_), Ok(())) => Ok(()),
@@ -624,10 +657,16 @@ impl SpeechOutput {
         }
     }
 
+    /// Terminates the worker and cleans up after a failed answer.
+    ///
+    /// The failure is counted; the next answer starts a fresh worker unless this was the
+    /// last allowed one. If cleanup itself fails, speech is disabled because resources
+    /// may still be held.
     async fn fail_operation(&mut self, operation: SpeechError) -> SpeechError {
-        self.disabled = true;
+        self.health.record_failure();
         if let Some(worker) = self.worker.as_mut() {
             if let Err(error) = worker.terminate().await {
+                self.health.disable();
                 return Self::combine_operation_and_cleanup(
                     operation,
                     SpeechError::CleanupFailed {
@@ -644,7 +683,10 @@ impl SpeechOutput {
         self.active = None;
         match cleanup {
             Ok(()) => operation,
-            Err(cleanup) => Self::combine_operation_and_cleanup(operation, cleanup),
+            Err(cleanup) => {
+                self.health.disable();
+                Self::combine_operation_and_cleanup(operation, cleanup)
+            }
         }
     }
 
@@ -667,19 +709,32 @@ impl SpeechOutput {
     }
 
     fn close_unowned_dir(&mut self, directory: TempDir, operation: SpeechError) -> SpeechError {
-        self.disabled = true;
+        self.health.record_failure();
         let path = directory.path().to_path_buf();
         match directory.close() {
             Ok(()) => operation,
-            Err(error) => Self::combine_operation_and_cleanup(
-                operation,
-                SpeechError::CleanupFailed {
-                    resource: "temporary speech directory",
-                    path: Some(path),
-                    cause: CleanupFailure::TemporaryDirectory(error),
-                },
-            ),
+            Err(error) => {
+                self.health.disable();
+                Self::combine_operation_and_cleanup(
+                    operation,
+                    SpeechError::CleanupFailed {
+                        resource: "temporary speech directory",
+                        path: Some(path),
+                        cause: CleanupFailure::TemporaryDirectory(error),
+                    },
+                )
+            }
         }
+    }
+
+    /// Counts a failed answer and drops the audio player so the next answer opens the
+    /// device again; a USB device can glitch and recover.
+    fn count_failure_and_reset_player(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.stop();
+        }
+        self.player = None;
+        self.health.record_failure();
     }
 
     fn active_directory_path(&self) -> Option<PathBuf> {

@@ -10,8 +10,9 @@ use rodio::{
         self,
         traits::{DeviceTrait, HostTrait},
     },
-    stream::{DeviceSinkBuilder, DeviceSinkConfig, DeviceSinkError, MixerDeviceSink},
+    stream::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink},
 };
+use thiserror::Error;
 
 const OUTPUT_CHANNELS: u16 = 1;
 const OUTPUT_SAMPLE_RATE: u32 = 44_100;
@@ -19,48 +20,18 @@ pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration:
 const WAKE_NOISE_SAMPLE_COUNT: usize = (OUTPUT_SAMPLE_RATE as usize * 7) / 10;
 const WAKE_NOISE_PCM16_LIMIT: i16 = 75;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub(crate) enum PlaybackError {
-    EnumerateDevices(cpal::DevicesError),
-    OpenDevice(DeviceSinkError),
+    #[error("failed to list audio output devices")]
+    EnumerateDevices(#[source] cpal::DevicesError),
+    #[error("failed to open audio output device")]
+    OpenDevice(#[source] DeviceSinkError),
+    #[error("configured audio output device identifier or name was not found: {0}")]
     RequestedDeviceNotFound(String),
+    #[error("audio samples are empty")]
     EmptySamples,
+    #[error("audio output device reported an error")]
     DeviceFailed,
-}
-
-impl std::fmt::Display for PlaybackError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EnumerateDevices(error) => {
-                write!(f, "failed to list audio output devices: {error}")
-            }
-            Self::OpenDevice(error) => {
-                write!(f, "failed to open audio output device: {error}")?;
-                if let Some(source) = std::error::Error::source(error) {
-                    write!(f, ": {source}")?;
-                }
-                Ok(())
-            }
-            Self::RequestedDeviceNotFound(name) => {
-                write!(
-                    f,
-                    "configured audio output device identifier or name was not found: {name}"
-                )
-            }
-            Self::EmptySamples => write!(f, "audio samples are empty"),
-            Self::DeviceFailed => write!(f, "audio output device reported an error"),
-        }
-    }
-}
-
-impl std::error::Error for PlaybackError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::EnumerateDevices(error) => Some(error),
-            Self::OpenDevice(error) => Some(error),
-            _ => None,
-        }
-    }
 }
 
 pub(super) struct AudioPlayer {
@@ -93,13 +64,15 @@ impl AudioPlayer {
 
         let device_failed = Arc::new(AtomicBool::new(false));
         let callback_state = Arc::clone(&device_failed);
-        let sink = DeviceSinkBuilder::from_device(device)
+        let mut sink = DeviceSinkBuilder::from_device(device)
             .map_err(PlaybackError::OpenDevice)?
             .with_error_callback(move |_| {
                 callback_state.store(true, Ordering::Release);
             })
             .open_sink_or_fallback()
             .map_err(PlaybackError::OpenDevice)?;
+        // rodio otherwise prints a notice to stderr, into the prompt, whenever the sink is dropped.
+        sink.log_on_drop(false);
 
         Ok(Self {
             device: sink,
@@ -148,10 +121,6 @@ impl AudioPlayer {
 
     pub fn has_device_failed(&self) -> bool {
         self.device_failed.load(Ordering::Acquire)
-    }
-
-    pub fn output_config(&self) -> DeviceSinkConfig {
-        *self.device.config()
     }
 }
 

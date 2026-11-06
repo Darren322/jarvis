@@ -1,77 +1,53 @@
-#[derive(Debug)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub(crate) enum WorkerError {
-    Spawn(std::io::Error),
+    #[error("failed to spawn tts worker")]
+    Spawn(#[source] std::io::Error),
+    #[error("tts worker stdin unavailable")]
     MissingStdin,
+    #[error("tts worker stdout unavailable")]
     MissingStdout,
+    #[error("tts worker startup timed out")]
     StartupTimeout,
+    #[error("tts worker exited before readiness")]
     StartupEof,
+    #[error("tts worker response exceeded limit")]
     ResponseTooLarge,
-    Read(std::io::Error),
-    InvalidJson(serde_json::Error),
+    #[error("failed to read from tts worker")]
+    Read(#[source] std::io::Error),
+    #[error("tts worker returned invalid json")]
+    InvalidJson(#[source] serde_json::Error),
+    #[error("tts worker returned unexpected startup frame")]
     UnexpectedStartupFrame,
+    #[error("unsupported tts worker protocol: {0}")]
     UnsupportedProtocol(u32),
+    #[error("tts worker reported unexpected configuration")]
     InvalidConfiguration,
-    ChildStatus(std::io::Error),
+    #[error("failed to inspect tts worker process")]
+    ChildStatus(#[source] std::io::Error),
+    #[error("tts worker exited unexpectedly")]
     WorkerExited,
+    #[error("tts worker is not ready for this operation")]
     InvalidState,
+    #[error("tts worker cleanup failed")]
     CleanupFailed,
+    #[error("tts worker cleanup timed out")]
     CleanupTimedOut,
-    Write(std::io::Error),
+    #[error("failed to write to tts worker")]
+    Write(#[source] std::io::Error),
+    #[error("tts synthesis timed out")]
     SynthesisTimeout,
+    #[error("tts worker exited during synthesis")]
     WorkerEof,
+    #[error("tts worker reported a synthesis error")]
     WorkerReported,
+    #[error("tts worker returned unexpected response")]
     UnexpectedResponse,
+    #[error("tts worker returned mismatched response id")]
     MismatchedResponseId,
+    #[error("tts worker returned invalid audio metadata")]
     InvalidAudioMetadata,
+    #[error("tts worker request exceeded limit")]
     RequestTooLarge,
-}
-
-impl std::fmt::Display for WorkerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Spawn(_) => write!(f, "failed to spawn TTS worker"),
-            Self::MissingStdin => write!(f, "TTS worker stdin unavailable"),
-            Self::MissingStdout => write!(f, "TTS worker stdout unavailable"),
-            Self::StartupTimeout => write!(f, "TTS worker startup timed out"),
-            Self::StartupEof => write!(f, "TTS worker exited before readiness"),
-            Self::ResponseTooLarge => write!(f, "TTS worker response exceeded limit"),
-            Self::Read(_) => write!(f, "failed to read from TTS worker"),
-            Self::InvalidJson(_) => write!(f, "TTS worker returned invalid JSON"),
-            Self::UnexpectedStartupFrame => {
-                write!(f, "TTS worker returned unexpected startup frame")
-            }
-            Self::UnsupportedProtocol(version) => {
-                write!(f, "unsupported TTS worker protocol: {version}")
-            }
-            Self::InvalidConfiguration => {
-                write!(f, "TTS worker reported unexpected configuration")
-            }
-            Self::ChildStatus(_) => write!(f, "failed to inspect TTS worker process"),
-            Self::WorkerExited => write!(f, "TTS worker exited unexpectedly"),
-            Self::InvalidState => write!(f, "TTS worker is not ready for this operation"),
-            Self::CleanupFailed => write!(f, "TTS worker cleanup failed"),
-            Self::CleanupTimedOut => write!(f, "TTS worker cleanup timed out"),
-            Self::Write(_) => write!(f, "failed to write to TTS worker"),
-            Self::SynthesisTimeout => write!(f, "TTS synthesis timed out"),
-            Self::WorkerEof => write!(f, "TTS worker exited during synthesis"),
-            Self::WorkerReported => write!(f, "TTS worker reported a synthesis error"),
-            Self::UnexpectedResponse => write!(f, "TTS worker returned unexpected response"),
-            Self::MismatchedResponseId => write!(f, "TTS worker returned mismatched response ID"),
-            Self::InvalidAudioMetadata => write!(f, "TTS worker returned invalid audio metadata"),
-            Self::RequestTooLarge => write!(f, "TTS worker request exceeded limit"),
-        }
-    }
-}
-
-impl std::error::Error for WorkerError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Spawn(error)
-            | Self::Read(error)
-            | Self::ChildStatus(error)
-            | Self::Write(error) => Some(error),
-            Self::InvalidJson(error) => Some(error),
-            _ => None,
-        }
-    }
 }
