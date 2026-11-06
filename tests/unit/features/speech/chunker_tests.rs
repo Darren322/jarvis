@@ -167,6 +167,30 @@ fn decimals_and_versions_do_not_end_a_sentence() {
 }
 
 #[test]
+fn a_list_marker_stays_with_its_item_but_a_number_ending_a_sentence_does_not() {
+    let lead = letters(45, 'a');
+    assert_eq!(
+        whole(&format!(
+            "{lead}. 1. First step. 12. Second step. 3. Third."
+        )),
+        vec![
+            format!("{lead}."),
+            "1. First step.".to_owned(),
+            "12. Second step.".to_owned(),
+            "3. Third.".to_owned(),
+        ]
+    );
+    assert_eq!(
+        whole(&format!("{lead}. The answer is 42. Then we rest.")),
+        vec![
+            format!("{lead}."),
+            "The answer is 42.".to_owned(),
+            "Then we rest.".to_owned(),
+        ]
+    );
+}
+
+#[test]
 fn a_period_at_the_end_of_input_is_held_until_the_next_character_or_finish() {
     let lead = letters(40, 'a');
     let mut chunker = SpeechChunker::new();

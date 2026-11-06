@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use rodio::{
@@ -10,7 +13,8 @@ use rodio::{
         self,
         traits::{DeviceTrait, HostTrait},
     },
-    stream::{DeviceSinkBuilder, DeviceSinkError, MixerDeviceSink},
+    mixer::Mixer,
+    stream::{DeviceSinkBuilder, DeviceSinkError},
 };
 use thiserror::Error;
 
@@ -34,8 +38,14 @@ pub(crate) enum PlaybackError {
     DeviceFailed,
 }
 
+/// One persistent output stream plus the queue of the answer being played.
+///
+/// An answer's chunks share one rodio `Player`, so rodio's own source queue plays them
+/// back to back without gaps. The wake noise is queued once, when the queue is created.
 pub(super) struct AudioPlayer {
-    device: MixerDeviceSink,
+    mixer: Mixer,
+    /// Owns the output stream that drains `mixer`; dropping it stops all audio.
+    _output: Box<dyn Any + Send>,
     player: Option<Player>,
     device_failed: Arc<AtomicBool>,
 }
@@ -74,14 +84,29 @@ impl AudioPlayer {
         // rodio otherwise prints a notice to stderr, into the prompt, whenever the sink is dropped.
         sink.log_on_drop(false);
 
-        Ok(Self {
-            device: sink,
-            player: None,
-            device_failed,
-        })
+        let mixer = sink.mixer().clone();
+        Ok(Self::from_mixer(mixer, sink, device_failed))
     }
 
-    pub fn play(&mut self, samples: Vec<f32>) -> Result<(), PlaybackError> {
+    /// Plays through `mixer`; `output` is whatever keeps the mixer's stream alive.
+    pub fn from_mixer(
+        mixer: Mixer,
+        output: impl Any + Send,
+        device_failed: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            mixer,
+            _output: Box::new(output),
+            player: None,
+            device_failed,
+        }
+    }
+
+    /// Queues one chunk of speech behind whatever is already queued for this answer.
+    ///
+    /// The first chunk of an answer is preceded by the wake noise; later chunks follow
+    /// the previous one directly.
+    pub fn append(&mut self, samples: Vec<f32>) -> Result<(), PlaybackError> {
         if self.has_device_failed() {
             return Err(PlaybackError::DeviceFailed);
         }
@@ -89,17 +114,12 @@ impl AudioPlayer {
             return Err(PlaybackError::EmptySamples);
         }
 
-        self.stop();
-        let samples = prepend_wake_noise(samples);
-
-        let source = SamplesBuffer::new(
-            OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
-            OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate"),
-            samples,
-        );
-        let player = Player::connect_new(self.device.mixer());
-        player.append(source);
-        self.player = Some(player);
+        let player = self.player.get_or_insert_with(|| {
+            let player = Player::connect_new(&self.mixer);
+            player.append(samples_buffer(wake_noise()));
+            player
+        });
+        player.append(samples_buffer(samples));
 
         Ok(())
     }
@@ -124,8 +144,16 @@ impl AudioPlayer {
     }
 }
 
-fn prepend_wake_noise(speech_samples: Vec<f32>) -> Vec<f32> {
-    let mut samples = Vec::with_capacity(WAKE_NOISE_SAMPLE_COUNT + speech_samples.len());
+fn samples_buffer(samples: Vec<f32>) -> SamplesBuffer {
+    SamplesBuffer::new(
+        OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
+        OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate"),
+        samples,
+    )
+}
+
+fn wake_noise() -> Vec<f32> {
+    let mut samples = Vec::with_capacity(WAKE_NOISE_SAMPLE_COUNT);
     // A fixed non-cryptographic sequence is enough to produce unobtrusive audio noise.
     let mut state = 0x9E37_79B9_u32;
 
@@ -138,7 +166,6 @@ fn prepend_wake_noise(speech_samples: Vec<f32>) -> Vec<f32> {
         samples.push(f32::from(pcm16) / 32_768.0);
     }
 
-    samples.extend(speech_samples);
     samples
 }
 

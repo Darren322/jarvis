@@ -1,4 +1,4 @@
-use std::{future::Future, io, pin::Pin, time::Instant};
+use std::{future::Future, io, pin::Pin};
 
 use tokio::io::AsyncBufRead;
 
@@ -8,9 +8,7 @@ use crate::features::{
     conversation::ConversationSession,
     memory::MemoryService,
 };
-use crate::interfaces::cli::diagnostics::{
-    error_chain, print_notices, print_run_diagnostics, report_turn_warnings, safe_error_message,
-};
+use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
 
@@ -19,8 +17,8 @@ mod speech;
 mod turn;
 
 use idle::read_line_during_idle_work;
-use speech::{SpeechControl, SpeechWait, report_speech_cleanup, watch_speech};
-use turn::stream_turn;
+use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
+use turn::run_prompt;
 
 type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>;
 
@@ -113,75 +111,53 @@ where
                     idle_work_due = true;
                 }
                 Command::Prompt(prompt) => {
-                    let prompt_started = Instant::now();
-                    let turn = stream_turn(assistant, session, memory, presenter, &prompt).await?;
-
-                    let crate::features::conversation::ConversationTurn {
-                        run,
-                        context_warning,
-                        archive_error,
-                        memory_state,
-                        current_source_id,
-                    } = turn;
-                    if run.is_ok() {
-                        memory_control.focus_on_turn(current_source_id);
+                    let speaking = if speech_available {
+                        speech.as_mut()
+                    } else {
+                        None
+                    };
+                    let end = run_prompt(
+                        assistant, session, memory, presenter, &mut input, speaking, &prompt,
+                    )
+                    .await?;
+                    if end.succeeded {
+                        memory_control.focus_on_turn(end.current_source_id);
                     }
-                    match run {
-                        Ok(run) => {
-                            let answer = run.response.output();
-                            presenter.completed(answer)?;
-                            prompt_is_visible = false;
-                            report_turn_warnings(
-                                context_warning.as_deref(),
-                                archive_error.as_ref(),
-                                memory_state,
-                            );
-                            print_run_diagnostics(&run.report);
-                            if speech_available && let Some(speech) = speech.as_mut() {
-                                match watch_speech(
-                                    speech,
-                                    answer,
-                                    &mut input,
-                                    &mut speech_available,
-                                    presenter,
-                                    prompt_started,
-                                )
-                                .await
-                                {
-                                    SpeechWait::Completed => prompt_is_visible = true,
-                                    SpeechWait::Stopped { cleanup_ok } => {
-                                        if cleanup_ok {
-                                            println!("Speech stopped.");
-                                        }
-                                        if !cleanup_ok || speech.is_disabled() {
-                                            speech_available = false;
-                                        }
-                                        prompt_is_visible = true;
-                                    }
-                                    SpeechWait::Input { line, cleanup_ok } => {
-                                        if !cleanup_ok || speech.is_disabled() {
-                                            speech_available = false;
-                                        }
-                                        next_input = Some(line);
-                                        prompt_is_visible = true;
-                                    }
-                                    SpeechWait::InputError { error } => return Err(error.into()),
+                    prompt_is_visible = false;
+                    if let Some(SpokenOutcome { wait, first_audio }) = end.speech {
+                        eprintln!("{}", format_first_audio(first_audio));
+                        let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
+                        match wait {
+                            SpeechWait::Completed => {
+                                if speech_disabled {
+                                    speech_available = false;
+                                }
+                                prompt_is_visible = true;
+                            }
+                            SpeechWait::Stopped { cleanup_ok } => {
+                                if cleanup_ok {
+                                    println!("Speech stopped.");
+                                }
+                                if !cleanup_ok || speech_disabled {
+                                    speech_available = false;
+                                }
+                                prompt_is_visible = true;
+                            }
+                            SpeechWait::Input { line, cleanup_ok } => {
+                                if !cleanup_ok || speech_disabled {
+                                    speech_available = false;
+                                }
+                                next_input = Some(line);
+                                prompt_is_visible = true;
+                            }
+                            SpeechWait::Aborted { cleanup_ok } => {
+                                if !cleanup_ok || speech_disabled {
+                                    speech_available = false;
                                 }
                             }
-                            idle_work_due = true;
-                        }
-                        Err(error) => {
-                            presenter.failed(safe_error_message(&error.error))?;
-                            prompt_is_visible = false;
-                            report_turn_warnings(
-                                context_warning.as_deref(),
-                                archive_error.as_ref(),
-                                memory_state,
-                            );
-                            print_run_diagnostics(&error.report);
-                            idle_work_due = true;
                         }
                     }
+                    idle_work_due = true;
                 }
             },
         }

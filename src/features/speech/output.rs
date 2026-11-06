@@ -6,7 +6,11 @@ use std::{
 
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+    time::{Instant, timeout},
+};
 
 use crate::config::TtsConfig;
 
@@ -17,14 +21,15 @@ use super::{
 
 /// Worker failures in a row that disable speech for the session; a success resets the count.
 const MAX_CONSECUTIVE_SPEECH_FAILURES: u8 = 3;
+/// Limit for one chunk of text, checked per chunk; an answer has no limit of its own.
 const MAX_SPEECH_TEXT_BYTES: usize = 4 * 1024;
 const EXPECTED_SAMPLE_RATE: u32 = 44_100;
 const EXPECTED_CHANNELS: u16 = 1;
 const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
 const MAX_WAV_SAMPLES: usize = 5_292_000;
 const MAX_WAV_BYTES: u64 = 16 * 1024 * 1024;
+/// Slack after the queued audio should have ended before playback counts as hung.
 const PLAYBACK_GRACE: Duration = Duration::from_secs(2);
-const MAX_PLAYBACK_DURATION: Duration = Duration::from_millis(122_700);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 const PLAYER_INITIALIZATION_TIMEOUT: Duration = Duration::from_secs(60);
 const WAV_DECODE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,21 +40,41 @@ struct ValidatedWav {
     duration: Duration,
 }
 
-impl ValidatedWav {
-    fn playback_deadline(&self) -> Duration {
-        self.duration
-            .saturating_add(WAKE_NOISE_DURATION)
-            .saturating_add(PLAYBACK_GRACE)
-            .min(MAX_PLAYBACK_DURATION)
+/// When the audio queued for one answer should have finished playing.
+///
+/// The deadline is per answer, not per chunk: each queued chunk (and the wake noise
+/// before the first one) moves it back by that audio's duration, so a long answer is
+/// never cut off for being long. Playback only counts as hung once it is still going
+/// [`PLAYBACK_GRACE`] after everything queued should have ended.
+struct PlaybackClock {
+    queue_ends: Instant,
+}
+
+impl PlaybackClock {
+    fn new() -> Self {
+        Self {
+            queue_ends: Instant::now(),
+        }
+    }
+
+    /// Records audio appended to the player queue now.
+    fn queue(&mut self, audio: Duration) {
+        self.queue_ends = self.queue_ends.max(Instant::now()) + audio;
+    }
+
+    fn is_overdue(&self) -> bool {
+        Instant::now() >= self.queue_ends + PLAYBACK_GRACE
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SpeechStage {
+    /// Bringing the worker up.
     Starting,
     Synthesizing,
     Decoding,
-    Playing,
+    /// The worker is idle: waiting for the next chunk, or for queued audio to finish.
+    Queueing,
 }
 
 struct ActiveSpeech {
@@ -188,6 +213,11 @@ pub(crate) enum SpeechError {
     },
 }
 
+/// Whether the worker has anything to say: a chunk such as a lone `...` is skipped.
+fn has_speakable_text(text: &str) -> bool {
+    text.chars().any(char::is_alphanumeric)
+}
+
 fn display_path_suffix(path: &Option<PathBuf>) -> String {
     path.as_ref()
         .map(|path| format!(" at {}", path.display()))
@@ -241,14 +271,29 @@ impl SpeechOutput {
         Ok(())
     }
 
+    /// Speaks one answer, chunk by chunk, as the chunks arrive.
+    ///
+    /// The worker and the audio device are brought up immediately, while the model is
+    /// still working on its first words. Each chunk from `chunks` is synthesized on the
+    /// single worker, one at a time, and queued behind the previous chunk's audio, so
+    /// chunk N plays while chunk N+1 is synthesized. The wake noise plays once, before
+    /// the first chunk. `playback_started` fires once, when that first chunk is queued.
+    ///
+    /// The answer ends when `chunks` is closed and everything queued has played. A
+    /// failure at any point (worker, decode, device) ends the whole answer, stops the
+    /// audio already queued and is counted once, however many chunks were left.
+    ///
+    /// Timeouts are per chunk (worker start, synthesis, WAV decode) or per answer
+    /// (audio output start, playback, see [`PlaybackClock`]). Waiting for the next chunk
+    /// has no timeout of its own: the sender is the model run, which has its own deadline
+    /// and always closes the channel when it ends.
+    ///
+    /// Dropping this future mid-answer leaves state behind; call [`SpeechOutput::cancel`].
     pub(crate) async fn speak(
         &mut self,
-        text: &str,
-        playback_started: tokio::sync::oneshot::Sender<()>,
+        mut chunks: mpsc::Receiver<String>,
+        playback_started: oneshot::Sender<()>,
     ) -> Result<(), SpeechError> {
-        if text.len() > MAX_SPEECH_TEXT_BYTES {
-            return Err(SpeechError::TextTooLarge);
-        }
         self.ensure_accepting()?;
 
         self.ensure_player().await?;
@@ -261,32 +306,84 @@ impl SpeechOutput {
             return Err(SpeechError::PlaybackDeviceFailed);
         }
 
-        let operation_dir = match Builder::new()
-            .prefix("jarvis-speech-")
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-        {
-            Ok(operation_dir) => operation_dir,
-            Err(error) => {
-                self.health.record_failure();
-                return Err(SpeechError::CreateTemp(error));
-            }
-        };
-        let output_path = operation_dir.path().join("answer.wav");
-        let output_path_string = match output_path.to_str() {
-            Some(path) => path.to_owned(),
-            None => {
-                return Err(self.close_unowned_dir(operation_dir, SpeechError::InvalidTempPath));
-            }
-        };
-
         self.active = Some(ActiveSpeech {
             stage: SpeechStage::Starting,
-            operation_dir: Some(operation_dir),
+            operation_dir: None,
             decode_task: None,
         });
 
-        let operation_id = self.next_operation_id();
+        let result = self.speak_chunks(&mut chunks, playback_started).await;
+        if result.is_err() {
+            self.stop_playback();
+        }
+        result
+    }
+
+    async fn speak_chunks(
+        &mut self,
+        chunks: &mut mpsc::Receiver<String>,
+        playback_started: oneshot::Sender<()>,
+    ) -> Result<(), SpeechError> {
+        self.ensure_worker().await?;
+
+        let mut playback_started = Some(playback_started);
+        let mut clock = PlaybackClock::new();
+        loop {
+            self.check_playback(&clock)?;
+            // Cancel-safe: `recv` and `sleep` hold no state a drop could lose. The poll
+            // only runs while audio is queued, to notice a failing device or a hang.
+            let text = tokio::select! {
+                biased;
+                chunk = chunks.recv() => match chunk {
+                    Some(text) => text,
+                    None => break,
+                },
+                () = tokio::time::sleep(PLAYBACK_POLL_INTERVAL), if self.is_playing() => continue,
+            };
+            if !has_speakable_text(&text) {
+                continue;
+            }
+
+            let validated = self.synthesize(&text).await?;
+
+            let first_chunk = playback_started.take();
+            if first_chunk.is_some() {
+                clock.queue(WAKE_NOISE_DURATION);
+            }
+            clock.queue(validated.duration);
+            if let Err(error) = self
+                .player
+                .as_mut()
+                .expect("audio output initialized")
+                .append(validated.samples)
+            {
+                self.active = None;
+                self.count_failure_and_reset_player();
+                return Err(SpeechError::Playback(error));
+            }
+            if let Some(started) = first_chunk {
+                let _ = started.send(());
+            }
+        }
+
+        // All chunks are queued; wait for the audio to play out.
+        loop {
+            self.check_playback(&clock)?;
+            if !self.is_playing() {
+                self.player
+                    .as_mut()
+                    .expect("audio output initialized")
+                    .finish();
+                self.active = None;
+                self.health.record_success();
+                return Ok(());
+            }
+            tokio::time::sleep(PLAYBACK_POLL_INTERVAL).await;
+        }
+    }
+
+    /// Launches the worker if the last answer left none and waits until it is ready.
+    async fn ensure_worker(&mut self) -> Result<(), SpeechError> {
         if self.worker.is_none() {
             let voice_style = self.config.model_dir.join("voice.bin");
             match SupertonicWorker::launch(
@@ -314,10 +411,47 @@ impl SpeechOutput {
             return Err(self.fail_operation(SpeechError::WorkerStartup(error)).await);
         }
 
-        self.active
+        self.set_stage(SpeechStage::Queueing);
+        Ok(())
+    }
+
+    /// Synthesizes and decodes one chunk. On failure the answer is already settled:
+    /// counted, cleaned up and no longer active (unless cleanup itself is stuck).
+    async fn synthesize(&mut self, text: &str) -> Result<ValidatedWav, SpeechError> {
+        if text.len() > MAX_SPEECH_TEXT_BYTES {
+            // An input problem, not a speech failure: nothing was started for this chunk.
+            self.active = None;
+            return Err(SpeechError::TextTooLarge);
+        }
+
+        let operation_dir = match Builder::new()
+            .prefix("jarvis-speech-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+        {
+            Ok(operation_dir) => operation_dir,
+            Err(error) => {
+                self.active = None;
+                self.health.record_failure();
+                return Err(SpeechError::CreateTemp(error));
+            }
+        };
+        let output_path = operation_dir.path().join("chunk.wav");
+        let output_path_string = match output_path.to_str() {
+            Some(path) => path.to_owned(),
+            None => {
+                self.active = None;
+                return Err(self.close_unowned_dir(operation_dir, SpeechError::InvalidTempPath));
+            }
+        };
+
+        let operation_id = self.next_operation_id();
+        let active = self
+            .active
             .as_mut()
-            .expect("active operation directory was retained")
-            .stage = SpeechStage::Synthesizing;
+            .expect("active answer was set before synthesis");
+        active.operation_dir = Some(operation_dir);
+        active.stage = SpeechStage::Synthesizing;
 
         if let Err(error) = self
             .worker
@@ -329,15 +463,12 @@ impl SpeechOutput {
             return Err(self.fail_operation(SpeechError::Synthesis(error)).await);
         }
 
-        self.active
-            .as_mut()
-            .expect("active operation directory was retained")
-            .stage = SpeechStage::Decoding;
+        self.set_stage(SpeechStage::Decoding);
         let decode_path = output_path.clone();
         let decode_task = tokio::task::spawn_blocking(move || Self::decode_wav(&decode_path));
         self.active
             .as_mut()
-            .expect("active operation directory was retained")
+            .expect("active answer was retained")
             .decode_task = Some(decode_task);
 
         let decoded = timeout(WAV_DECODE_TIMEOUT, self.await_decode()).await;
@@ -373,71 +504,57 @@ impl SpeechOutput {
             self.health.disable();
             return Err(cleanup);
         }
+        self.set_stage(SpeechStage::Queueing);
+        Ok(validated)
+    }
 
-        let playback_deadline = validated.playback_deadline();
-        if let Err(error) = self
-            .player
-            .as_mut()
-            .expect("audio output initialized")
-            .play(validated.samples)
-        {
-            self.active = None;
-            self.count_failure_and_reset_player();
-            return Err(SpeechError::Playback(error));
-        }
+    /// Ends the answer with an error if the device failed or queued audio is overdue.
+    fn check_playback(&mut self, clock: &PlaybackClock) -> Result<(), SpeechError> {
+        let player = self.player.as_ref().expect("audio output initialized");
+        let failure = if player.has_device_failed() {
+            SpeechError::PlaybackDeviceFailed
+        } else if player.is_playing() && clock.is_overdue() {
+            SpeechError::PlaybackTimedOut
+        } else {
+            return Ok(());
+        };
+        self.active = None;
+        self.count_failure_and_reset_player();
+        Err(failure)
+    }
+
+    fn is_playing(&self) -> bool {
+        self.player.as_ref().is_some_and(AudioPlayer::is_playing)
+    }
+
+    fn set_stage(&mut self, stage: SpeechStage) {
         self.active
             .as_mut()
-            .expect("active operation remains during playback")
-            .stage = SpeechStage::Playing;
-        let _ = playback_started.send(());
+            .expect("active answer was retained")
+            .stage = stage;
+    }
 
-        let playback_deadline = tokio::time::Instant::now() + playback_deadline;
-        loop {
-            let player = self.player.as_ref().expect("audio output initialized");
-            if player.has_device_failed() {
-                self.player
-                    .as_mut()
-                    .expect("audio output initialized")
-                    .stop();
-                self.active = None;
-                self.count_failure_and_reset_player();
-                return Err(SpeechError::PlaybackDeviceFailed);
-            }
-            if !player.is_playing() {
-                self.player
-                    .as_mut()
-                    .expect("audio output initialized")
-                    .finish();
-                self.active = None;
-                self.health.record_success();
-                return Ok(());
-            }
-
-            if tokio::time::Instant::now() >= playback_deadline {
-                self.player
-                    .as_mut()
-                    .expect("audio output initialized")
-                    .stop();
-                self.active = None;
-                self.count_failure_and_reset_player();
-                return Err(SpeechError::PlaybackTimedOut);
-            }
-
-            tokio::time::sleep(PLAYBACK_POLL_INTERVAL).await;
+    /// Drops the answer's audio queue, including chunks not yet played, and keeps the
+    /// output device open.
+    fn stop_playback(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.stop();
         }
     }
 
     /// Cleans up work left behind after the `speak` future is dropped.
+    ///
+    /// A cancel is not a failure and is never counted. It drops the chunks queued in
+    /// the player, so nothing more is heard. Work in the worker (starting up or
+    /// synthesizing) ends the worker, which the next answer replaces; an idle worker is kept.
     pub(crate) async fn cancel(&mut self) -> Result<(), SpeechError> {
+        self.stop_playback();
         match self.active.as_ref().map(|active| active.stage) {
             Some(SpeechStage::Starting | SpeechStage::Synthesizing) => {
                 self.cancel_worker_operation().await
             }
             Some(SpeechStage::Decoding) => self.cancel_decode().await,
-            Some(SpeechStage::Playing) => {
-                if let Some(player) = self.player.as_mut() {
-                    player.stop();
-                }
+            Some(SpeechStage::Queueing) => {
                 self.active = None;
                 Ok(())
             }

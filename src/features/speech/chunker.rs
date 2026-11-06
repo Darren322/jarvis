@@ -3,14 +3,11 @@
 //! Pure and synchronous: no I/O, no timers. All lengths are counted in `char`s
 //! (Unicode scalar values), never bytes.
 //!
-//! Expected order for R3: chunk the raw streamed text first, then run any
-//! speech-text cleanup (Markdown stripping and similar) on each finished chunk.
-//! Cleanup needs whole spans (a `**bold**` pair or a code fence can straddle
-//! deltas), while chunking needs only punctuation and whitespace, so cleaning
-//! per chunk keeps both simple. Cleanup can empty a chunk (for example a chunk
-//! that was only a code fence); R3 must skip chunks that are empty after
-//! cleanup. The repository has no text cleanup yet; only length and emptiness
-//! checks exist in `SpeechOutput::speak` and the Python worker.
+//! The speech pipeline chunks the raw streamed text first. Any speech-text
+//! cleanup (Markdown stripping and similar) would run on each finished chunk,
+//! because it needs whole spans (a `**bold**` pair or a code fence can straddle
+//! deltas) while chunking needs only punctuation and whitespace. The repository
+//! has no such cleanup yet; `SpeechOutput` only skips chunks with nothing to say.
 
 /// Characters of text, before the punctuation mark, that the first chunk needs
 /// before it may end at a sentence end or clause break.
@@ -30,8 +27,8 @@ const ABBREVIATIONS: [&str; 8] = ["dr.", "mr.", "mrs.", "ms.", "e.g.", "i.e.", "
 /// text beyond [`MAX_CHUNK_CHARS`] is split at the last whitespace at or before
 /// that length (or exactly there). A mark ends a chunk only when whitespace
 /// follows it, so the trailing mark is held back until the next character
-/// arrives or [`SpeechChunker::finish`] is called. `Dr.`-style abbreviations
-/// and decimals such as `3.5` never end a sentence.
+/// arrives or [`SpeechChunker::finish`] is called. `Dr.`-style abbreviations,
+/// decimals such as `3.5` and list markers such as `1.` never end a sentence.
 ///
 /// Feeding the same text in any delta split yields the same chunks.
 #[derive(Debug, Default)]
@@ -103,7 +100,9 @@ impl SpeechChunker {
                 continue;
             }
             let end = byte + mark.len_utf8();
-            if mark == '.' && is_abbreviation(&self.pending[..end]) {
+            if mark == '.'
+                && (is_abbreviation(&self.pending[..end]) || is_list_marker(&self.pending[..end]))
+            {
                 continue;
             }
             return Some(end);
@@ -127,6 +126,15 @@ impl SpeechChunker {
                 .map_or(limit_byte, |(byte, _)| byte),
         )
     }
+}
+
+/// Whether `text_ending_in_period` is only a number and its period, such as the
+/// `1.` that starts a numbered list item. The pending text starts at the chunk
+/// start, so a number inside a sentence (`it costs 5.`) never matches.
+fn is_list_marker(text_ending_in_period: &str) -> bool {
+    text_ending_in_period
+        .strip_suffix('.')
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether the last whitespace-delimited word of `text_ending_in_period` is a

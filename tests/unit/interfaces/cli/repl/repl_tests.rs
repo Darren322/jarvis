@@ -11,7 +11,7 @@ use rig_core::{
 };
 use tokio::{
     io::{AsyncWriteExt, BufReader},
-    sync::{Semaphore, oneshot},
+    sync::{Semaphore, mpsc, oneshot},
 };
 
 use crate::{
@@ -100,22 +100,26 @@ impl SpeechControl for FailingSpeech {
 
     async fn speak(
         &mut self,
-        text: &str,
+        mut chunks: mpsc::Receiver<String>,
         playback_started: oneshot::Sender<()>,
     ) -> Result<(), Self::Error> {
-        self.calls.push(text.to_owned());
-        self.started
-            .take()
-            .expect("speech should start once")
-            .send(())
-            .expect("test should still be waiting for speech");
         let mut playback_started = Some(playback_started);
-        if self.queue_on_start {
-            playback_started
-                .take()
-                .expect("playback notification should be owned once")
-                .send(())
-                .expect("App should still be waiting for playback");
+        while let Some(chunk) = chunks.recv().await {
+            self.calls.push(chunk);
+            // Speech runs alongside the text stream, so the first chunk is what tells
+            // the test that speech has begun.
+            if let Some(started) = self.started.take() {
+                started
+                    .send(())
+                    .expect("test should still be waiting for speech");
+            }
+            if self.queue_on_start
+                && let Some(playback_started) = playback_started.take()
+            {
+                playback_started
+                    .send(())
+                    .expect("App should still be waiting for playback");
+            }
         }
         (&mut self.release)
             .await

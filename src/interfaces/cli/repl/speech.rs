@@ -1,24 +1,35 @@
 use std::{
-    io,
+    future::Future,
+    io, mem,
+    pin::Pin,
     time::{Duration, Instant},
 };
 
-use tokio::{io::AsyncBufRead, sync::oneshot};
+use thiserror::Error;
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
+};
 
-use crate::features::speech::{SpeechError, SpeechOutput};
-use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio};
-use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
-use crate::interfaces::cli::presentation::AssistantPresenter;
+use crate::features::speech::{SpeechChunker, SpeechError, SpeechOutput};
+use crate::interfaces::cli::diagnostics::error_chain;
+use crate::interfaces::cli::input::InputLine;
 
-use super::InputFuture;
+/// Finished chunks that may wait for the speech side while it synthesizes and plays.
+///
+/// The text side never waits for room (see [`ChunkFeed`]). A full answer is at most
+/// 1,024 tokens, so this covers any ordinary answer, including a long story told in
+/// short sentences; only a degenerate run of very short sentences can overflow it.
+pub(super) const SPEECH_CHUNK_QUEUE: usize = 64;
 
 pub(crate) trait SpeechControl {
     type Error: std::error::Error + 'static;
 
     fn is_disabled(&self) -> bool;
+    /// Speaks one answer from `chunks`, which closes when the text is complete.
     async fn speak(
         &mut self,
-        text: &str,
+        chunks: mpsc::Receiver<String>,
         playback_started: oneshot::Sender<()>,
     ) -> Result<(), Self::Error>;
     async fn cancel(&mut self) -> Result<(), Self::Error>;
@@ -34,10 +45,10 @@ impl SpeechControl for SpeechOutput {
 
     async fn speak(
         &mut self,
-        text: &str,
+        chunks: mpsc::Receiver<String>,
         playback_started: oneshot::Sender<()>,
     ) -> Result<(), Self::Error> {
-        SpeechOutput::speak(self, text, playback_started).await
+        SpeechOutput::speak(self, chunks, playback_started).await
     }
 
     async fn cancel(&mut self) -> Result<(), Self::Error> {
@@ -49,145 +60,202 @@ impl SpeechControl for SpeechOutput {
     }
 }
 
+/// The speech queue was full, so the rest of the answer is not spoken.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error(
+    "speech fell more than {SPEECH_CHUNK_QUEUE} chunks behind the text; the rest of this answer is not spoken"
+)]
+pub(super) struct SpeechQueueFull;
+
+/// Splits the streamed answer into chunks and queues them for the speech side.
+///
+/// It never waits for queue room: the model stream and the terminal must not stall
+/// behind speech, and the model run has a wall-clock deadline that a stall would eat.
+/// The queue is bounded instead of backpressured: when it is full, the chunk is lost,
+/// feeding stops, and the speech side finishes what it already has.
+pub(super) struct ChunkFeed {
+    chunker: SpeechChunker,
+    /// `None` once the text is complete, speech has gone away or the queue overflowed.
+    sender: Option<mpsc::Sender<String>>,
+}
+
+impl ChunkFeed {
+    pub(super) fn new(sender: mpsc::Sender<String>) -> Self {
+        Self {
+            chunker: SpeechChunker::new(),
+            sender: Some(sender),
+        }
+    }
+
+    /// Hands streamed text to speech. An overflow is reported once; speech then
+    /// finishes what it already has.
+    pub(super) fn feed_text(&mut self, delta: &str) {
+        if let Err(error) = self.push(delta) {
+            eprintln!("Warning: local speech: {error}");
+        }
+    }
+
+    /// Tells speech the text is complete.
+    pub(super) fn finish_text(&mut self) {
+        if let Err(error) = self.finish() {
+            eprintln!("Warning: local speech: {error}");
+        }
+    }
+
+    /// Adds streamed text and queues every chunk it completes.
+    pub(super) fn push(&mut self, delta: &str) -> Result<(), SpeechQueueFull> {
+        for chunk in self.chunker.push(delta) {
+            self.queue(chunk)?;
+        }
+        Ok(())
+    }
+
+    /// Queues the unfinished rest of the text and closes the queue: the text is complete.
+    pub(super) fn finish(&mut self) -> Result<(), SpeechQueueFull> {
+        let rest = mem::take(&mut self.chunker).finish();
+        let result = match rest {
+            Some(chunk) => self.queue(chunk),
+            None => Ok(()),
+        };
+        self.sender = None;
+        result
+    }
+
+    fn queue(&mut self, chunk: String) -> Result<(), SpeechQueueFull> {
+        let Some(sender) = self.sender.as_ref() else {
+            return Ok(());
+        };
+        match sender.try_send(chunk) {
+            Ok(()) => Ok(()),
+            // The speech future ended; its result is reported through its own branch.
+            Err(TrySendError::Closed(_)) => {
+                self.sender = None;
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => {
+                self.sender = None;
+                Err(SpeechQueueFull)
+            }
+        }
+    }
+}
+
+type SpeakFuture<'a, E> = Pin<Box<dyn Future<Output = Result<(), E>> + 'a>>;
+
+/// The speech side of one answer, started before the model's first token.
+///
+/// It holds the `speak` future instead of the speech backend, so the caller keeps
+/// `&mut S` and can run `cancel` once this value is dropped.
+pub(super) struct SpokenAnswer<'a, E> {
+    pub(super) speaking: SpeakFuture<'a, E>,
+    pub(super) feed: ChunkFeed,
+    /// `None` once the playback-started signal was observed or its sender dropped.
+    pub(super) started: Option<oneshot::Receiver<()>>,
+    pub(super) first_audio: Option<Duration>,
+}
+
+impl<'a, E> SpokenAnswer<'a, E> {
+    pub(super) fn start<S>(speech: &'a mut S) -> Self
+    where
+        S: SpeechControl<Error = E>,
+    {
+        let (chunks, chunk_receiver) = mpsc::channel(SPEECH_CHUNK_QUEUE);
+        let (started_sender, started) = oneshot::channel();
+        Self {
+            speaking: Box::pin(speech.speak(chunk_receiver, started_sender)),
+            feed: ChunkFeed::new(chunks),
+            started: Some(started),
+            first_audio: None,
+        }
+    }
+
+    /// Records the time to first audio when playback starts.
+    pub(super) fn note_playback_started(&mut self, signalled: bool, prompt_started: Instant) {
+        self.started = None;
+        if signalled {
+            self.first_audio = Some(prompt_started.elapsed());
+        }
+    }
+}
+
+/// Resolves when the speech side signals that playback started, and is pending when
+/// there is nothing left to observe. `true` means the signal was sent rather than dropped.
+pub(super) async fn playback_signal(started: &mut Option<oneshot::Receiver<()>>) -> bool {
+    match started {
+        Some(started) => started.await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
+/// Why the speech side of an answer ended.
+pub(super) enum SpeechExit<E> {
+    /// The speech future completed on its own.
+    Finished(Result<(), E>),
+    Stopped,
+    /// A new prompt (or end of input) arrived while speech was active.
+    Input(InputLine),
+    /// Writing to the terminal or reading input failed.
+    Io(io::Error),
+    /// The model run failed, so the rest of the answer is not spoken.
+    ModelFailed,
+}
+
 pub(super) enum SpeechWait {
     Completed,
-    Stopped { cleanup_ok: bool },
-    Input { line: InputLine, cleanup_ok: bool },
-    InputError { error: io::Error },
+    Stopped {
+        cleanup_ok: bool,
+    },
+    Input {
+        line: InputLine,
+        cleanup_ok: bool,
+    },
+    /// The answer failed mid-stream; speech was cancelled without a notice.
+    Aborted {
+        cleanup_ok: bool,
+    },
 }
 
-/// Watches one spoken answer and prints how long playback took to start,
-/// counted from `prompt_started`.
-pub(super) async fn watch_speech<R, S, P>(
-    speech: &mut S,
-    text: &str,
-    input: &mut InputReader<R>,
-    speech_available: &mut bool,
-    presenter: &mut P,
-    prompt_started: Instant,
-) -> SpeechWait
-where
-    R: AsyncBufRead + Unpin,
-    S: SpeechControl,
-    P: AssistantPresenter,
-{
-    let (wait, first_audio) = watch_playback(
-        speech,
-        text,
-        input,
-        speech_available,
-        presenter,
-        prompt_started,
-    )
-    .await;
-    eprintln!("{}", format_first_audio(first_audio));
-    wait
+/// How an answer's speech ended and when its first audio started, counted from the
+/// prompt being accepted. The playback-started signal is the only observation of first
+/// audio, so a run where it never fired reports `None` rather than a guess.
+pub(super) struct SpokenOutcome {
+    pub(super) wait: SpeechWait,
+    pub(super) first_audio: Option<Duration>,
 }
 
-/// The playback-started signal is the only observation of first audio, so a
-/// run where it never fires reports `None` rather than a guess.
-async fn watch_playback<R, S, P>(
+/// Ends the answer's speech. The `speak` future must already be dropped.
+///
+/// Anything but a completed future needs `cancel`; a cancel is never a failure. A
+/// terminal or input failure is returned after the cancel.
+pub(super) async fn settle_speech<S: SpeechControl>(
     speech: &mut S,
-    text: &str,
-    input: &mut InputReader<R>,
-    speech_available: &mut bool,
-    presenter: &mut P,
-    prompt_started: Instant,
-) -> (SpeechWait, Option<Duration>)
-where
-    R: AsyncBufRead + Unpin,
-    S: SpeechControl,
-    P: AssistantPresenter,
-{
-    let mut first_audio = None;
-    if let Err(error) = presenter.prompt() {
-        let _ = speech.cancel().await;
-        return (SpeechWait::InputError { error }, first_audio);
-    }
-    let (playback_started_tx, mut playback_started_rx) = oneshot::channel();
-    let mut speech_future = Box::pin(speech.speak(text, playback_started_tx));
-    let mut input_future: InputFuture<'_> = Box::pin(read_input_line(input));
-    let mut playback_started = true;
-
-    loop {
-        enum Event<E> {
-            Speech(Result<(), E>),
-            Input(io::Result<InputLine>),
-            PlaybackStarted,
+    exit: SpeechExit<S::Error>,
+) -> io::Result<SpeechWait> {
+    Ok(match exit {
+        SpeechExit::Finished(result) => {
+            if let Err(error) = result {
+                eprintln!("Warning: local speech failed: {}", error_chain(&error));
+            }
+            SpeechWait::Completed
         }
-
-        let event = tokio::select! {
-            biased;
-            line = input_future.as_mut() => Event::Input(line),
-            _ = &mut playback_started_rx, if playback_started => {
-                Event::PlaybackStarted
-            }
-            result = &mut speech_future => Event::Speech(result),
-        };
-
-        match event {
-            Event::PlaybackStarted => {
-                playback_started = false;
-                first_audio = Some(prompt_started.elapsed());
-            }
-            Event::Speech(result) => {
-                drop(speech_future);
-                if let Err(error) = result {
-                    eprintln!("Warning: local speech failed: {}", error_chain(&error));
-                    if speech.is_disabled() {
-                        *speech_available = false;
-                    }
-                }
-                return (SpeechWait::Completed, first_audio);
-            }
-            Event::Input(Ok(InputLine::Rejected(reason))) => {
-                presenter.input_received();
-                eprintln!("Input rejected: {}", reason.message());
-                drop(input_future);
-                input_future = Box::pin(read_input_line(&mut *input));
-                if let Err(error) = presenter.prompt() {
-                    drop(speech_future);
-                    report_speech_cleanup(speech.cancel().await);
-                    return (SpeechWait::InputError { error }, first_audio);
-                }
-            }
-            Event::Input(Ok(InputLine::Prompt(prompt))) => {
-                presenter.input_received();
-                if prompt.trim() == "/stop" {
-                    println!("Stopping speech.");
-                    drop(speech_future);
-                    let cleanup_ok = report_speech_cleanup(speech.cancel().await);
-                    return (SpeechWait::Stopped { cleanup_ok }, first_audio);
-                }
-                drop(speech_future);
-                let cleanup_ok = report_speech_cleanup(speech.cancel().await);
-                return (
-                    SpeechWait::Input {
-                        line: InputLine::Prompt(prompt),
-                        cleanup_ok,
-                    },
-                    first_audio,
-                );
-            }
-            Event::Input(Ok(InputLine::Eof)) => {
-                presenter.input_received();
-                drop(speech_future);
-                let cleanup_ok = report_speech_cleanup(speech.cancel().await);
-                return (
-                    SpeechWait::Input {
-                        line: InputLine::Eof,
-                        cleanup_ok,
-                    },
-                    first_audio,
-                );
-            }
-            Event::Input(Err(error)) => {
-                drop(speech_future);
-                report_speech_cleanup(speech.cancel().await);
-                return (SpeechWait::InputError { error }, first_audio);
-            }
+        SpeechExit::Stopped => {
+            println!("Stopping speech.");
+            let cleanup_ok = report_speech_cleanup(speech.cancel().await);
+            SpeechWait::Stopped { cleanup_ok }
         }
-    }
+        SpeechExit::Input(line) => {
+            let cleanup_ok = report_speech_cleanup(speech.cancel().await);
+            SpeechWait::Input { line, cleanup_ok }
+        }
+        SpeechExit::Io(error) => {
+            report_speech_cleanup(speech.cancel().await);
+            return Err(error);
+        }
+        SpeechExit::ModelFailed => {
+            let cleanup_ok = report_speech_cleanup(speech.cancel().await);
+            SpeechWait::Aborted { cleanup_ok }
+        }
+    })
 }
 
 pub(super) fn report_speech_cleanup<E: std::error::Error + 'static>(result: Result<(), E>) -> bool {

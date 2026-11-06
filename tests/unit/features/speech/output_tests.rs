@@ -1,5 +1,14 @@
 use super::*;
-use std::io::Write;
+use rodio::mixer::{self, MixerSource};
+use std::{
+    future::Future,
+    io::Write,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+};
 
 fn write_test_wav(path: &Path, sample_rate: u32) {
     let spec = hound::WavSpec {
@@ -28,19 +37,50 @@ fn decodes_bounded_mono_pcm16_wav() {
     assert_eq!(decoded.samples[1], 0.0);
     assert!(decoded.samples[2] > 0.999 && decoded.samples[2] < 1.0);
     assert!(decoded.duration < Duration::from_millis(1));
-    assert!(decoded.playback_deadline() > Duration::from_millis(2_700));
-    assert!(decoded.playback_deadline() < Duration::from_millis(2_701));
-    let empty = ValidatedWav {
-        samples: Vec::new(),
-        duration: Duration::ZERO,
-    };
-    assert_eq!(empty.playback_deadline(), Duration::from_millis(2_700));
-    let maximum = ValidatedWav {
-        samples: Vec::new(),
-        duration: Duration::from_secs(120),
-    };
-    assert_eq!(MAX_PLAYBACK_DURATION, Duration::from_millis(122_700));
-    assert_eq!(maximum.playback_deadline(), Duration::from_millis(122_700));
+}
+
+#[tokio::test(start_paused = true)]
+async fn playback_is_overdue_two_seconds_after_the_queued_audio_should_have_ended() {
+    let mut clock = PlaybackClock::new();
+    clock.queue(WAKE_NOISE_DURATION);
+    clock.queue(Duration::from_secs(10));
+    let queued = WAKE_NOISE_DURATION + Duration::from_secs(10);
+
+    tokio::time::advance(queued + PLAYBACK_GRACE - Duration::from_millis(1)).await;
+    assert!(!clock.is_overdue(), "last moment still within the grace");
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(clock.is_overdue(), "first moment past the grace");
+}
+
+#[tokio::test(start_paused = true)]
+async fn each_queued_chunk_extends_the_playback_deadline_so_long_answers_are_not_cut_off() {
+    let mut clock = PlaybackClock::new();
+    let chunk = Duration::from_secs(20);
+    let chunks = 10;
+
+    for _ in 0..chunks {
+        clock.queue(chunk);
+    }
+
+    // Far beyond the old 122.7 s cap on a single utterance.
+    tokio::time::advance(chunk * chunks + PLAYBACK_GRACE - Duration::from_millis(1)).await;
+    assert!(!clock.is_overdue());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(clock.is_overdue());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_chunk_queued_after_a_pause_counts_from_when_it_was_queued() {
+    let mut clock = PlaybackClock::new();
+    clock.queue(Duration::from_secs(1));
+    tokio::time::advance(Duration::from_secs(30)).await;
+
+    clock.queue(Duration::from_secs(5));
+
+    tokio::time::advance(Duration::from_secs(5) + PLAYBACK_GRACE - Duration::from_millis(1)).await;
+    assert!(!clock.is_overdue());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert!(clock.is_overdue());
 }
 
 #[test]
@@ -97,26 +137,6 @@ fn rejects_wrong_format_and_wav_size_bounds() {
         SpeechOutput::decode_wav(&too_many_samples_path),
         Err(SpeechError::WavTooLong)
     ));
-}
-
-#[tokio::test]
-async fn oversized_text_skips_speech_without_disabling_session() {
-    let mut speech = SpeechOutput::new(TtsConfig {
-        python: PathBuf::from("/unused/python"),
-        worker_script: PathBuf::from("/unused/worker.py"),
-        model_dir: PathBuf::from("/unused/model"),
-        threads: 2,
-        audio_device: None,
-    });
-
-    let oversized_text = "x".repeat(MAX_SPEECH_TEXT_BYTES + 1);
-    let (playback_started, playback_started_rx) = tokio::sync::oneshot::channel();
-    assert!(matches!(
-        speech.speak(&oversized_text, playback_started).await,
-        Err(SpeechError::TextTooLarge)
-    ));
-    assert!(playback_started_rx.await.is_err());
-    assert!(!speech.is_disabled());
 }
 
 #[tokio::test(start_paused = true)]
@@ -281,10 +301,11 @@ async fn a_disabled_session_refuses_the_fourth_answer_without_touching_audio() {
         }
         fail_one_answer(&mut speech).await;
     }
-    let (playback_started, _playback_started_rx) = tokio::sync::oneshot::channel();
+    let (_chunks_sender, chunks) = mpsc::channel(1);
+    let (playback_started, _playback_started_rx) = oneshot::channel();
 
     assert!(matches!(
-        speech.speak("fourth answer", playback_started).await,
+        speech.speak(chunks, playback_started).await,
         Err(SpeechError::Disabled(DisabledReason::ConsecutiveFailures))
     ));
     speech.health.record_failure();
@@ -404,4 +425,453 @@ fn a_synthesis_timeout_is_reachable_through_the_error_source_chain() {
     assert_eq!(error.to_string(), "speech synthesis failed");
     let cause = std::error::Error::source(&error).expect("synthesis error keeps its cause");
     assert_eq!(cause.to_string(), "tts synthesis timed out");
+}
+
+// ---- Streaming answers, through a real child process standing in for the worker ----
+
+/// Samples in the fixture WAV every fake synthesis returns (0.1 s).
+const FIXTURE_SAMPLES: usize = 4_410;
+/// Level of the fixture samples; the wake noise never exceeds 75 / 32,768.
+const FIXTURE_LEVEL: f32 = 0.5;
+const TEST_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Counts what the output device would have played: lead-in noise and speech samples.
+struct Pump {
+    stop: Arc<AtomicBool>,
+    noise: Arc<AtomicUsize>,
+    speech: Arc<AtomicUsize>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Pump {
+    /// Drains the mixer about 100 times faster than real time, so a played-out answer
+    /// finishes in milliseconds.
+    fn start(mut source: MixerSource) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let noise = Arc::new(AtomicUsize::new(0));
+        let speech = Arc::new(AtomicUsize::new(0));
+        let (thread_stop, thread_noise, thread_speech) =
+            (Arc::clone(&stop), Arc::clone(&noise), Arc::clone(&speech));
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                for _ in 0..4_410 {
+                    match source.next() {
+                        Some(sample) if sample.abs() >= FIXTURE_LEVEL / 2.0 => {
+                            thread_speech.fetch_add(1, Ordering::AcqRel);
+                        }
+                        Some(sample) if sample != 0.0 => {
+                            thread_noise.fetch_add(1, Ordering::AcqRel);
+                        }
+                        _ => {}
+                    }
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        Self {
+            stop,
+            noise,
+            speech,
+            thread: Some(thread),
+        }
+    }
+
+    fn noise_samples(&self) -> usize {
+        self.noise.load(Ordering::Acquire)
+    }
+
+    fn speech_samples(&self) -> usize {
+        self.speech.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct Harness {
+    speech: SpeechOutput,
+    directory: tempfile::TempDir,
+    source: Option<MixerSource>,
+}
+
+/// A speech output whose worker is a shell script and whose audio device is a mixer
+/// nobody drains until a test starts a [`Pump`].
+///
+/// `fail_second_request_once` makes the first worker answer its second request with an
+/// error; a replacement worker behaves.
+fn harness(fail_second_request_once: bool) -> Harness {
+    let directory = tempfile::tempdir().expect("create fixture directory");
+    let wav = directory.path().join("fixture.wav");
+    let spec = hound::WavSpec {
+        channels: EXPECTED_CHANNELS,
+        sample_rate: EXPECTED_SAMPLE_RATE,
+        bits_per_sample: EXPECTED_BITS_PER_SAMPLE,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(&wav, spec).expect("create WAV fixture");
+    for _ in 0..FIXTURE_SAMPLES {
+        writer
+            .write_sample((FIXTURE_LEVEL * 32_768.0) as i16)
+            .expect("write WAV fixture");
+    }
+    writer.finalize().expect("finish WAV fixture");
+
+    let log = directory.path().join("requests.log");
+    let failed_marker = directory.path().join("failed-once");
+    let failure_rule = if fail_second_request_once {
+        format!(
+            r#"if [ "$n" -eq 2 ] && [ ! -e '{marker}' ]; then : > '{marker}'; printf '{{"type":"error","protocol":1,"id":"%s","error":"injected"}}\n' "$id"; continue; fi"#,
+            marker = failed_marker.display()
+        )
+    } else {
+        String::new()
+    };
+    let script = format!(
+        r#"printf '{{"type":"ready","protocol":1,"pid":%s,"engine":"supertonic-3","precision":"int8","voice":"M5","language":"en","provider":"cpu","threads":2,"sample_rate":44100,"num_speakers":1}}\n' "$$"
+n=0
+while IFS= read -r line; do
+  n=$((n+1))
+  printf '%s\n' "$line" >> '{log}'
+  id=$(printf '%s' "$line" | sed 's/.*"id":"\([^"]*\)".*/\1/')
+  out=$(printf '%s' "$line" | sed 's/.*"output_path":"\([^"]*\)".*/\1/')
+  {failure_rule}
+  cp '{wav}' "$out"
+  printf '{{"type":"completed","protocol":1,"id":"%s","sample_rate":44100,"num_samples":{FIXTURE_SAMPLES},"wav_bytes":{wav_bytes}}}\n' "$id"
+done
+"#,
+        log = log.display(),
+        wav = wav.display(),
+        wav_bytes = 44 + FIXTURE_SAMPLES * 2,
+    );
+    let worker_script = directory.path().join("worker.sh");
+    std::fs::write(&worker_script, script).expect("write fake worker");
+
+    let mut speech = SpeechOutput::new(TtsConfig {
+        python: PathBuf::from("/bin/sh"),
+        worker_script,
+        model_dir: PathBuf::from("/unused/model"),
+        threads: 2,
+        audio_device: None,
+    });
+    let (mixer, source) = mixer::mixer(
+        EXPECTED_CHANNELS.try_into().expect("nonzero channel count"),
+        EXPECTED_SAMPLE_RATE
+            .try_into()
+            .expect("nonzero sample rate"),
+    );
+    speech.player = Some(AudioPlayer::from_mixer(
+        mixer,
+        (),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    Harness {
+        speech,
+        directory,
+        source: Some(source),
+    }
+}
+
+impl Harness {
+    fn start_pump(&mut self) -> Pump {
+        Pump::start(self.source.take().expect("pump started once"))
+    }
+
+    /// The text of every request the fake worker has received, in order.
+    fn requests(&self) -> Vec<String> {
+        let log = self.directory.path().join("requests.log");
+        let Ok(log) = std::fs::read_to_string(log) else {
+            return Vec::new();
+        };
+        log.lines()
+            .map(|line| {
+                let request: serde_json::Value =
+                    serde_json::from_str(line).expect("worker log line is JSON");
+                request["text"]
+                    .as_str()
+                    .expect("request has text")
+                    .to_owned()
+            })
+            .collect()
+    }
+}
+
+async fn within_deadline<T>(future: impl Future<Output = T>) -> T {
+    timeout(TEST_DEADLINE, future)
+        .await
+        .expect("the speech pipeline stalled")
+}
+
+#[tokio::test]
+async fn a_chunk_is_synthesized_and_queued_while_the_text_stream_is_still_open() {
+    let mut harness = harness(false);
+    let pump = harness.start_pump();
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, started) = oneshot::channel();
+    chunks_sender
+        .send("The first chunk.".to_owned())
+        .await
+        .expect("queue first chunk");
+    let mut speaking = Box::pin(harness.speech.speak(chunks, playback_started));
+
+    // The sender stays open, so the answer cannot finish: the only way playback can
+    // start is by synthesizing the first chunk before the text is complete.
+    tokio::select! {
+        result = &mut speaking => panic!("answer ended with the text still open: {result:?}"),
+        signal = within_deadline(started) => signal.expect("playback should start"),
+    }
+
+    chunks_sender
+        .send("The second chunk.".to_owned())
+        .await
+        .expect("queue second chunk");
+    drop(chunks_sender);
+    within_deadline(speaking)
+        .await
+        .expect("the answer should play out");
+    assert_eq!(
+        harness.requests(),
+        ["The first chunk.", "The second chunk."]
+    );
+    assert_eq!(pump.speech_samples(), 2 * FIXTURE_SAMPLES);
+    assert_eq!(harness.speech.health, SpeechHealth::Ready);
+    assert!(harness.speech.active.is_none());
+}
+
+#[tokio::test]
+async fn the_lead_in_plays_once_per_answer_not_once_per_chunk() {
+    let mut harness = harness(false);
+    let pump = harness.start_pump();
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, _started) = oneshot::channel();
+    for chunk in ["One chunk.", "Two chunks.", "Three chunks."] {
+        chunks_sender
+            .send(chunk.to_owned())
+            .await
+            .expect("queue chunk");
+    }
+    drop(chunks_sender);
+
+    within_deadline(harness.speech.speak(chunks, playback_started))
+        .await
+        .expect("the answer should play out");
+
+    assert_eq!(pump.speech_samples(), 3 * FIXTURE_SAMPLES);
+    let lead_in_samples = 44_100 * 700 / 1_000;
+    // One in about 150 noise samples is exactly zero and is not counted.
+    assert!(pump.noise_samples() > lead_in_samples * 9 / 10);
+    assert!(pump.noise_samples() <= lead_in_samples);
+}
+
+#[tokio::test]
+async fn the_playback_signal_fires_on_the_first_spoken_chunk_and_skips_chunks_with_no_words() {
+    let mut harness = harness(false);
+    let _pump = harness.start_pump();
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, mut started) = oneshot::channel();
+    // A lone "..." has nothing to say; "1." and "—" differ in whether they contain a
+    // letter or digit.
+    for chunk in ["...", "—", "1.", "Real words."] {
+        chunks_sender
+            .send(chunk.to_owned())
+            .await
+            .expect("queue chunk");
+    }
+    let mut speaking = Box::pin(harness.speech.speak(chunks, playback_started));
+
+    // Wait for the first chunk that is actually spoken, with the text still open.
+    tokio::select! {
+        result = &mut speaking => panic!("answer ended with the text still open: {result:?}"),
+        signal = within_deadline(&mut started) => signal.expect("playback should start"),
+    }
+    drop(chunks_sender);
+    within_deadline(speaking)
+        .await
+        .expect("the answer should play out");
+
+    assert_eq!(harness.requests(), ["1.", "Real words."]);
+}
+
+#[tokio::test]
+async fn an_answer_with_no_spoken_chunks_ends_cleanly_without_a_playback_signal() {
+    let mut harness = harness(false);
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, started) = oneshot::channel();
+    chunks_sender
+        .send("...".to_owned())
+        .await
+        .expect("queue chunk");
+    drop(chunks_sender);
+
+    within_deadline(harness.speech.speak(chunks, playback_started))
+        .await
+        .expect("an answer with nothing to say is not a failure");
+
+    assert!(started.await.is_err(), "no chunk was played");
+    assert!(harness.requests().is_empty());
+    assert_eq!(harness.speech.health, SpeechHealth::Ready);
+    assert!(harness.speech.active.is_none());
+}
+
+#[tokio::test]
+async fn a_chunk_may_be_4096_bytes_but_not_4097() {
+    assert_eq!(MAX_SPEECH_TEXT_BYTES, 4_096);
+    // (bytes in the chunk, whether it is accepted)
+    for (bytes, accepted) in [
+        (MAX_SPEECH_TEXT_BYTES, true),
+        (MAX_SPEECH_TEXT_BYTES + 1, false),
+    ] {
+        let mut harness = harness(false);
+        let _pump = harness.start_pump();
+        let (chunks_sender, chunks) = mpsc::channel(8);
+        let (playback_started, _started) = oneshot::channel();
+        chunks_sender
+            .send("a".repeat(bytes))
+            .await
+            .expect("queue chunk");
+        drop(chunks_sender);
+
+        let result = within_deadline(harness.speech.speak(chunks, playback_started)).await;
+
+        if accepted {
+            result.expect("the largest chunk is spoken");
+            assert_eq!(harness.requests().len(), 1);
+        } else {
+            assert!(matches!(result, Err(SpeechError::TextTooLarge)), "{bytes}");
+            assert!(harness.requests().is_empty());
+        }
+        // Too much text is not a speech failure and never disables or counts.
+        assert_eq!(harness.speech.health, SpeechHealth::Ready, "{bytes}");
+        assert!(harness.speech.active.is_none(), "{bytes}");
+        assert!(!harness.speech.is_playing(), "{bytes}");
+    }
+}
+
+#[tokio::test]
+async fn stopping_mid_answer_drops_queued_chunks_and_the_next_answer_is_spoken() {
+    let mut harness = harness(false);
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, started) = oneshot::channel();
+    for chunk in ["First chunk.", "Second chunk.", "Third chunk."] {
+        chunks_sender
+            .send(chunk.to_owned())
+            .await
+            .expect("queue chunk");
+    }
+    {
+        // Nothing drains the mixer, so the first chunk never finishes playing.
+        let mut speaking = Box::pin(harness.speech.speak(chunks, playback_started));
+        tokio::select! {
+            result = &mut speaking => panic!("answer ended while playing: {result:?}"),
+            signal = within_deadline(started) => signal.expect("playback should start"),
+        }
+        // The user stops: the REPL drops the future, then calls `cancel`.
+    }
+    assert!(
+        harness.speech.is_playing(),
+        "audio is queued before the stop"
+    );
+
+    harness
+        .speech
+        .cancel()
+        .await
+        .expect("cancel settles cleanly");
+
+    assert!(!harness.speech.is_playing(), "queued audio is dropped");
+    assert!(harness.speech.active.is_none());
+    assert_eq!(
+        harness.speech.health,
+        SpeechHealth::Ready,
+        "a cancel is not a failure"
+    );
+    drop(chunks_sender);
+
+    // The next answer starts fresh and plays only its own chunk.
+    let pump = harness.start_pump();
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, _started) = oneshot::channel();
+    chunks_sender
+        .send("Fresh answer.".to_owned())
+        .await
+        .expect("queue chunk");
+    drop(chunks_sender);
+    within_deadline(harness.speech.speak(chunks, playback_started))
+        .await
+        .expect("the next answer is spoken");
+
+    assert_eq!(
+        harness.requests().last().map(String::as_str),
+        Some("Fresh answer.")
+    );
+    assert_eq!(
+        pump.speech_samples(),
+        FIXTURE_SAMPLES,
+        "chunks of the stopped answer never play"
+    );
+}
+
+#[tokio::test]
+async fn a_failure_on_the_second_chunk_ends_the_answer_counts_once_and_the_next_answer_is_accepted()
+{
+    let mut harness = harness(true);
+    let _pump = harness.start_pump();
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, _started) = oneshot::channel();
+    for chunk in ["First chunk.", "Second chunk.", "Third chunk."] {
+        chunks_sender
+            .send(chunk.to_owned())
+            .await
+            .expect("queue chunk");
+    }
+
+    let result = within_deadline(harness.speech.speak(chunks, playback_started)).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(SpeechError::Synthesis(WorkerError::WorkerReported))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        harness.requests(),
+        ["First chunk.", "Second chunk."],
+        "the third chunk is not attempted after the failure"
+    );
+    assert_eq!(
+        harness.speech.health,
+        SpeechHealth::Recovering {
+            consecutive_failures: 1
+        },
+        "one failed answer is one failure, not one per remaining chunk"
+    );
+    assert!(harness.speech.worker.is_none(), "failed worker is replaced");
+    assert!(harness.speech.active.is_none());
+    assert!(
+        !harness.speech.is_playing(),
+        "the rest of the answer is dropped"
+    );
+    assert!(harness.speech.ensure_accepting().is_ok());
+
+    // The next answer gets a fresh worker and is spoken in full.
+    drop(chunks_sender);
+    let (chunks_sender, chunks) = mpsc::channel(8);
+    let (playback_started, _started) = oneshot::channel();
+    for chunk in ["Next answer one.", "Next answer two."] {
+        chunks_sender
+            .send(chunk.to_owned())
+            .await
+            .expect("queue chunk");
+    }
+    drop(chunks_sender);
+    within_deadline(harness.speech.speak(chunks, playback_started))
+        .await
+        .expect("the next answer is spoken");
+    assert_eq!(harness.speech.health, SpeechHealth::Ready);
 }
