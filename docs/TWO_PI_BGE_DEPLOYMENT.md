@@ -519,7 +519,7 @@ User=raspdarren-ai
 Group=raspdarren-ai
 WorkingDirectory=/home/raspdarren-ai/llama.cpp
 Environment=HOME=/home/raspdarren-ai
-ExecStart=/home/raspdarren-ai/llama.cpp/build/bin/llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off
+ExecStart=/home/raspdarren-ai/llama.cpp/build/bin/llama-server --offline -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off --swa-full
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

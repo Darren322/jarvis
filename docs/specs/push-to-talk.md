@@ -55,7 +55,7 @@ A timeout means Jarvis stopped waiting. It does not prove the server stopped wor
 ## Environment facts (verified 2026-11-06)
 
 - **8 GB Pi** `darrenrasp@jarvis`: checkout `/home/darrenrasp/jarvis`, Debian 13 aarch64. Wayland (labwc) under lightdm. 5" DSI touchscreen at 800×480. Chromium installed. `arecord` present, `sqlite3` absent. Capture devices: card 2 Jieli (speaker with a mic input) and card 3 USB PnP mic.
-- **Gemma (the brain)**, as Darren runs it: `llama-server -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off`. `-t 4` uses all 4 cores, so speech-to-text competes for CPU (T2 measures this). `-c 2048` is a small context shared by history, recall and the transcript.
+- **Gemma (the brain)**, as Darren runs it: `llama-server -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off --swa-full`. `--swa-full` (added 2026-11-07, R7 of real-time speech) keeps the whole sliding-window cache so the conversation prefix can be reused between turns. `-t 4` uses all 4 cores, so speech-to-text competes for CPU (T2 measures this). `-c 2048` is a small context shared by history, recall and the transcript.
 - **16 GB Pi** `raspdarren-ai@jarvis-ai`: reachable only through the 8 GB Pi (`ssh -J darrenrasp@jarvis raspdarren-ai@jarvis-ai`). The credentials are in the Mac's `.env`.
 
 ## Tickets
