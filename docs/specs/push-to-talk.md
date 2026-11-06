@@ -7,14 +7,15 @@ Settled with Darren in a grilling session on 2026-11-06. This file is the source
 | Ticket | State | Notes |
 | --- | --- | --- |
 | T0 16 GB Pi services | done | Installed 2026-11-06: `jarvis-gemma` and `jarvis-embeddings` systemd units, enabled; `/health` 200 from the 8 GB Pi after install and after restart (re-checked by Claude); BGE alias served. Wi-Fi power save off on both Pis. Remaining: Darren reboots the 16 GB Pi once to prove boot start |
-| T1 8 GB Pi cleanup + acceptance | not started | Next. Needs Darren's OK per change, then his by-ear acceptance |
+| T1 8 GB Pi cleanup + acceptance | in review | Cleanup done and re-checked 2026-11-06. By ear: speech plays, `/stop` works; a long answer failed and speech then stayed off until restart (now real-time-speech R1). Recall and `/forget` not yet checked |
 | T2 Speech-to-text spike | not started | Unblocked by T0. Needs Darren to speak the clips |
 | T3 Speech-to-text server | not started | Blocked on T2 (engine choice) |
 | T4 Speech-to-text client | not started | Blocked on T2 (wire format) |
 | T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests; 107 unit tests and clippy pass. Not yet run against the real Pi mic (T6 acceptance). Awaiting Darren's commit |
+| B1 Long answers fail speech | done | Moved into [real-time-speech](real-time-speech.md) R1 and R3 on 2026-11-06 |
 | T6 `/listen` command | not started | Blocked on T4, T5 |
 
-**Resume here:** Darren reboots the 16 GB Pi and commits T0/T5; then T1 (OK per change) and T2 (Darren speaks the clips). T3 → T4 → T6 follow.
+**Resume here:** paused at T2 while [real-time-speech](real-time-speech.md) runs (decided 2026-11-06). Still open: Darren reboots the 16 GB Pi, checks recall and `/forget` (T1), and commits T0/T5.
 
 ## Goal
 

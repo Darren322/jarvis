@@ -4,7 +4,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 
 ## Current work
 
-- Active spec: [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md). Read its **Status** table first; it says what to resume.
+- Active spec: [docs/specs/real-time-speech.md](docs/specs/real-time-speech.md). Then [push-to-talk](docs/specs/push-to-talk.md), paused at T2. Read each **Status** table first; it says what to resume.
 - At the end of every session, update that Status table (and the roadmap if a step finished) so the next session starts from current facts.
 
 ## Engineering practice
@@ -26,6 +26,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 
 - For plans and material design choices, use the `grilling` skill to settle open decisions before acting. Settled decisions and explicit authorizations persist; don't ask again.
 - Default learning workflow is hands-on Rust: explain one concept, offer one small patch with its rationale, then wait. Follow the requested scope; don't implement a whole phase when asked for a small change or guided learning, and don't start a phase just because it is documented.
+- **Branches.** All work happens on `dev`. `main` holds only stable releases that Darren cuts; never commit to it, merge into it or reset it. Agent worktrees must start from `dev`: check `git log --oneline -1` first and `git reset --hard dev` inside the worktree if it started elsewhere.
 - Preserve user changes. Don't commit, push, stage, or rewrite unrelated files unless asked. When asked to commit, make one commit per coherent step with a conventional prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `build`, `chore`) and a body that says what changed and why.
 - When delegating to sub-agents, give each explicit, non-overlapping file ownership, then integrate and review their work.
 - Near a usage limit, write a factual handoff under `notes/`: completed work vs. proposals, changed files, decisions, verification evidence, source revision, and the exact next small action.

@@ -6,3 +6,6 @@
 __pycache__/
 *.py[cod]
 notes/
+
+# Claude Code agent worktrees
+.claude/worktrees/
