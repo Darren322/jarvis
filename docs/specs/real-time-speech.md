@@ -6,13 +6,13 @@ Settled with Darren on 2026-11-06, after the T1 acceptance check of [push-to-tal
 
 | Ticket | State | Notes |
 | --- | --- | --- |
-| R0 Measure latency | in progress | Agent adding time to first text and measuring Gemma TTFT and Supertonic RTF on the Pis |
-| R1 Speech recovery | in progress | Agent replacing the `disabled` bool with a state enum; thiserror sources; rodio print |
-| R2 Chunker | in progress | Agent building the incremental chunker test-first |
-| R3 Streaming pipeline | not started | Blocked on R1, R2 |
-| R4 Voice decision | not started | Blocked on R0 |
+| R0 Measure latency | done | Integrated 2026-11-06 (uncommitted): `first_text=` on the Model stage line and `Speech diagnostics: time_to_first_audio=`. Baseline in `notes/SPEECH_LATENCY.md`: Gemma first token 0.25 s cached / 0.5 s short / 6.7 s for 429 uncached tokens; Supertonic RTF 0.70–0.86, about 2 s fixed per request. Also: the CLI now prints the full error cause chain (Claude) |
+| R1 Speech recovery | done | Accepted after 2 review rounds; integrated into dev 2026-11-06 (uncommitted). `SpeechHealth` Ready/Recovering/Disabled; per-answer failures recover (the player is dropped and re-opened); only unclean state (a worker that won't terminate, failed cleanup) disables; `/stop` never counts; 3 consecutive failures disable; thiserror sources; stray debug print removed. 135 unit tests, clippy and the Python worker test pass. Follow-up: CLI prints the source chain (after R0). Not yet run on the Pi |
+| R2 Chunker | done | Accepted and integrated into dev 2026-11-06 (uncommitted): `SpeechChunker` push/finish, 40-char first chunk, 300-char force split, abbreviations/decimals; 19 tests; 126 unit tests and clippy pass. R3 notes: clean each chunk after chunking, skip chunks with no letters (e.g. a lone `...`), and handle list markers like `1.` |
+| R3 Streaming pipeline | not started | Unblocked (R1, R2 done). Fire the playback signal on the first chunk; play the lead-in once per answer |
+| R4 Voice decision | not started | Unblocked: RTF 0.70–0.86 exceeds the 0.5 bar, so compare Piper. Needs Darren's go (installs Piper on the 8 GB Pi) |
 
-**Resume here:** R0, R1 and R2 can run in parallel; R3 follows R1 and R2.
+**Resume here:** start R3 with Supertonic. Darren decides whether R4 (Piper comparison) runs in parallel. Darren commits R0 and the CLI cause chain.
 
 ## Goal
 

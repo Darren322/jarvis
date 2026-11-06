@@ -42,6 +42,10 @@ pub(crate) struct ModelStage {
     /// `ModelTurnFinished`. This includes Rig request preparation and model
     /// dispatch, so it is not provider-only latency.
     pub(crate) elapsed: Option<Duration>,
+    /// Host-side time from this turn's completion-call hook to its first
+    /// streamed text delta. `None` when no text streamed in this turn (for
+    /// example a tool-call or reasoning-only turn); never zero or an estimate.
+    pub(crate) first_text: Option<Duration>,
     pub(crate) usage: CallUsage,
 }
 

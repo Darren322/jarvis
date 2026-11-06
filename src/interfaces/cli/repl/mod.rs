@@ -1,4 +1,4 @@
-use std::{future::Future, io, pin::Pin};
+use std::{future::Future, io, pin::Pin, time::Instant};
 
 use tokio::io::AsyncBufRead;
 
@@ -9,7 +9,7 @@ use crate::features::{
     memory::MemoryService,
 };
 use crate::interfaces::cli::diagnostics::{
-    print_notices, print_run_diagnostics, report_turn_warnings, safe_error_message,
+    error_chain, print_notices, print_run_diagnostics, report_turn_warnings, safe_error_message,
 };
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
@@ -41,7 +41,10 @@ where
     if let Some(speech) = speech.as_mut()
         && let Err(error) = speech.shutdown().await
     {
-        eprintln!("Warning: local speech shutdown did not complete: {error}");
+        eprintln!(
+            "Warning: local speech shutdown did not complete: {}",
+            error_chain(&error)
+        );
     }
     result
 }
@@ -110,6 +113,7 @@ where
                     idle_work_due = true;
                 }
                 Command::Prompt(prompt) => {
+                    let prompt_started = Instant::now();
                     let turn = stream_turn(assistant, session, memory, presenter, &prompt).await?;
 
                     let crate::features::conversation::ConversationTurn {
@@ -140,6 +144,7 @@ where
                                     &mut input,
                                     &mut speech_available,
                                     presenter,
+                                    prompt_started,
                                 )
                                 .await
                                 {

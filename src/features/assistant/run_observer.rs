@@ -6,7 +6,8 @@ use rig_agent::agent::{
     ToolResultEvent,
     hook::{
         AgentHook, CompletionCall, CompletionCallAction, HookContext, ModelTurnAction,
-        ModelTurnFinished, ToolCall, ToolCallAction, ToolResultAction,
+        ModelTurnFinished, ObservationAction, TextDelta, ToolCall, ToolCallAction,
+        ToolResultAction,
     },
 };
 use std::{
@@ -24,6 +25,8 @@ pub(crate) struct RunObserver {
 #[derive(Default)]
 struct ObservedRun {
     model_starts: HashMap<usize, Instant>,
+    /// First streamed text delta per model turn, measured from that turn's start.
+    first_texts: HashMap<usize, Duration>,
     tool_starts: HashMap<String, ToolStart>,
     model_stages: Vec<ModelStage>,
     tool_stages: Vec<ToolStage>,
@@ -52,6 +55,18 @@ impl RunObserver {
 }
 
 impl ObservedRun {
+    /// Records the first text delta of a turn; later deltas and turns whose
+    /// start was not observed are ignored so the value is never a guess.
+    fn record_text_delta(&mut self, turn: usize, now: Instant) {
+        if self.first_texts.contains_key(&turn) {
+            return;
+        }
+        if let Some(started_at) = self.model_starts.get(&turn) {
+            self.first_texts
+                .insert(turn, now.saturating_duration_since(*started_at));
+        }
+    }
+
     fn start_tool(
         &mut self,
         turn: usize,
@@ -102,6 +117,7 @@ impl ObservedRun {
                 turn,
                 completed: false,
                 elapsed: None,
+                first_text: self.first_texts.remove(&turn),
                 usage: CallUsage::Unavailable,
             });
         }
@@ -153,10 +169,12 @@ impl AgentHook for RunObserver {
                 .model_starts
                 .remove(&event.turn)
                 .map(|started_at| started_at.elapsed());
+            let first_text = observed.first_texts.remove(&event.turn);
             observed.model_stages.push(ModelStage {
                 turn: event.turn,
                 completed: true,
                 elapsed,
+                first_text,
                 usage,
             });
         }
@@ -166,6 +184,14 @@ impl AgentHook for RunObserver {
         // Returning `Continue` keeps this observer passive so later policy
         // hooks can still accept or reject the turn.
         ModelTurnAction::Continue
+    }
+
+    async fn on_text_delta(&self, ctx: &HookContext, _event: TextDelta<'_>) -> ObservationAction {
+        if let Ok(mut observed) = self.observed.lock() {
+            observed.record_text_delta(ctx.turn(), Instant::now());
+        }
+
+        ObservationAction::Continue
     }
 
     async fn on_tool_call(&self, ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {

@@ -16,7 +16,7 @@ use rig_core::{completion::Document, message::Message};
 use tokio::sync::mpsc;
 
 pub(crate) use error::AssistantError;
-pub(crate) use run_report::{AssistantRun, AssistantRunError, CallUsage, RunReport};
+pub(crate) use run_report::{AssistantRun, AssistantRunError, CallUsage, ModelStage, RunReport};
 
 use policy_hook::JarvisPolicyHook;
 use run_observer::RunObserver;

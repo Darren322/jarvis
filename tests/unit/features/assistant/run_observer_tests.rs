@@ -191,6 +191,49 @@ async fn observer_records_a_reasoning_only_stream_turn_once_at_the_common_hook()
     );
 }
 
+/// Runs one scripted streaming turn through the observer and returns its report.
+async fn observe_stream_turn(events: Vec<MockStreamEvent>) -> RunReport {
+    let model = MockCompletionModel::from_stream_turns([events]);
+    let observer = RunObserver::default();
+    let mut stream = AgentBuilder::new(model)
+        .build()
+        .runner("observe this turn")
+        .add_hook(observer.clone())
+        .max_turns(1)
+        .stream()
+        .await;
+    while let Some(item) = stream.next().await {
+        item.expect("scripted stream should finish");
+    }
+    observer.finish(RunOutcome::Success, Duration::from_secs(1))
+}
+
+#[tokio::test]
+async fn observer_reports_time_to_first_text_when_a_delta_streamed() {
+    let report = observe_stream_turn(vec![
+        MockStreamEvent::text("Hello"),
+        MockStreamEvent::text(" there"),
+        MockStreamEvent::final_response(Usage::new()),
+    ])
+    .await;
+
+    let stage = &report.model_stages[0];
+    let first_text = stage.first_text.expect("a streamed delta was observed");
+    let elapsed = stage.elapsed.expect("the turn completed");
+    assert!(first_text <= elapsed);
+}
+
+#[tokio::test]
+async fn observer_marks_time_to_first_text_unavailable_when_no_text_streamed() {
+    let report = observe_stream_turn(vec![
+        MockStreamEvent::reasoning("reasoning-only content"),
+        MockStreamEvent::final_response(Usage::new()),
+    ])
+    .await;
+
+    assert_eq!(report.model_stages[0].first_text, None);
+}
+
 #[tokio::test]
 async fn observer_correlates_overlapping_tool_results_and_keeps_all_rig_usage() {
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
@@ -378,6 +421,7 @@ fn finish_marks_in_flight_stages_incomplete_and_sorts_deterministically() {
             turn: 3,
             completed: true,
             elapsed: Some(Duration::from_millis(1)),
+            first_text: None,
             usage: CallUsage::Unavailable,
         });
         observed.start_tool(2, "tool-z".to_string(), "zeta".to_string(), started_at);

@@ -92,7 +92,7 @@ struct FailingSpeech {
 }
 
 impl SpeechControl for FailingSpeech {
-    type Error = &'static str;
+    type Error = std::io::Error;
 
     fn is_disabled(&self) -> bool {
         self.disabled.load(Ordering::SeqCst)
@@ -119,11 +119,11 @@ impl SpeechControl for FailingSpeech {
         }
         (&mut self.release)
             .await
-            .map_err(|_| "test release sender dropped")?;
+            .map_err(|_| std::io::Error::other("test release sender dropped"))?;
         drop(playback_started);
         self.disabled.store(true, Ordering::SeqCst);
         self.disabled_signal.add_permits(1);
-        Err("injected playback failure")
+        Err(std::io::Error::other("injected playback failure"))
     }
 
     async fn cancel(&mut self) -> Result<(), Self::Error> {
