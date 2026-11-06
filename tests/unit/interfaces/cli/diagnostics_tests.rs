@@ -34,11 +34,11 @@ fn model_stage_line_marks_time_to_first_text_unavailable_when_no_text_streamed()
 fn first_audio_line_distinguishes_a_measurement_from_unavailable() {
     assert_eq!(
         format_first_audio(Some(Duration::from_millis(3400))),
-        "Speech diagnostics: time_to_first_audio=3.4s"
+        "Speech diagnostics (previous answer): time_to_first_audio=3.4s"
     );
     assert_eq!(
         format_first_audio(None),
-        "Speech diagnostics: time_to_first_audio=unavailable"
+        "Speech diagnostics (previous answer): time_to_first_audio=unavailable"
     );
 }
 

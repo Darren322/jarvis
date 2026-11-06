@@ -1,10 +1,15 @@
 use std::io::{self, Write};
 
+const PROMPT: &str = "You> ";
+
 pub(crate) trait AssistantPresenter {
     fn delta(&mut self, text: &str) -> io::Result<()>;
     fn completed(&mut self, canonical_answer: &str) -> io::Result<()>;
     fn failed(&mut self, safe_message: &str) -> io::Result<()>;
     fn prompt(&mut self) -> io::Result<()>;
+    /// Shows one out-of-band line (a diagnostic) on its own line. If the prompt
+    /// is open it is redrawn afterwards, so the screen still ends on a prompt.
+    fn notice(&mut self, line: &str) -> io::Result<()>;
     fn input_received(&mut self);
 }
 
@@ -30,6 +35,10 @@ where
     }
 
     fn prompt(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn notice(&mut self, _line: &str) -> io::Result<()> {
         Ok(())
     }
 
@@ -112,10 +121,24 @@ impl<W: Write> AssistantPresenter for TerminalPresenter<W> {
             self.output.write_all(b"\n")?;
             self.response_line_open = false;
         }
-        self.output.write_all(b"You> ")?;
+        self.output.write_all(PROMPT.as_bytes())?;
         self.output.flush()?;
         self.prompt_open = true;
         Ok(())
+    }
+
+    fn notice(&mut self, line: &str) -> io::Result<()> {
+        if self.prompt_open || self.response_line_open {
+            self.output.write_all(b"\n")?;
+            self.response_line_open = false;
+        }
+        self.output.write_all(line.as_bytes())?;
+        self.output.write_all(b"\n")?;
+        if self.prompt_open {
+            // The terminal owns any half-typed input; only the prompt is redrawn.
+            self.output.write_all(PROMPT.as_bytes())?;
+        }
+        self.output.flush()
     }
 
     fn input_received(&mut self) {

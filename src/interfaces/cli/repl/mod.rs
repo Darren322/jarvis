@@ -125,7 +125,7 @@ where
                     }
                     prompt_is_visible = false;
                     if let Some(SpokenOutcome { wait, first_audio }) = end.speech {
-                        eprintln!("{}", format_first_audio(first_audio));
+                        presenter.notice(&format_first_audio(first_audio))?;
                         let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
                         match wait {
                             SpeechWait::Completed => {

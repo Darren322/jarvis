@@ -93,10 +93,14 @@ fn format_model_stage(stage: &ModelStage) -> String {
 
 /// `first_audio` is the time from the prompt being accepted to the speech
 /// backend's playback-started signal; `None` when playback never started.
+/// The line is printed after the answer's speech ends, often once the next
+/// prompt is showing, so it names the answer it belongs to.
 pub(super) fn format_first_audio(first_audio: Option<Duration>) -> String {
     match first_audio {
-        Some(first_audio) => format!("Speech diagnostics: time_to_first_audio={first_audio:?}"),
-        None => "Speech diagnostics: time_to_first_audio=unavailable".to_string(),
+        Some(first_audio) => {
+            format!("Speech diagnostics (previous answer): time_to_first_audio={first_audio:?}")
+        }
+        None => "Speech diagnostics (previous answer): time_to_first_audio=unavailable".to_string(),
     }
 }
 

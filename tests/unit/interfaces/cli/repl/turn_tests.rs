@@ -50,6 +50,11 @@ impl AssistantPresenter for LoggingPresenter {
         Ok(())
     }
 
+    fn notice(&mut self, line: &str) -> io::Result<()> {
+        self.log.borrow_mut().push(format!("notice:{line}"));
+        Ok(())
+    }
+
     fn input_received(&mut self) {}
 }
 
