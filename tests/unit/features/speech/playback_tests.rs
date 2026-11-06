@@ -2,19 +2,32 @@ use super::*;
 use rodio::mixer::{self, MixerSource};
 use std::time::Duration;
 
-#[test]
-fn wake_noise_is_pcm16_range_noise_lasting_exactly_700ms() {
-    let samples = wake_noise();
+/// The stand-in output device's rate, which is also Supertonic's.
+const OUTPUT_SAMPLE_RATE: u32 = 44_100;
+/// Wake-noise samples at [`OUTPUT_SAMPLE_RATE`].
+const OUTPUT_WAKE_NOISE_SAMPLES: usize = 30_870;
 
+#[test]
+fn wake_noise_is_pcm16_range_noise_lasting_exactly_700ms_at_the_speech_rate() {
     assert_eq!(WAKE_NOISE_DURATION, Duration::from_millis(700));
-    assert_eq!(WAKE_NOISE_SAMPLE_COUNT, 30_870);
-    assert_eq!(samples.len(), WAKE_NOISE_SAMPLE_COUNT);
-    assert!(samples.iter().all(|sample| {
-        let pcm16 = *sample * 32_768.0;
-        (-75.0..=75.0).contains(&pcm16) && pcm16.fract() == 0.0
-    }));
-    assert!(samples.iter().any(|sample| *sample != 0.0));
-    assert!(samples.windows(2).any(|pair| pair[0] != pair[1]));
+    for (hz, expected_samples) in [
+        (16_000, 11_200),
+        (22_050, 15_435),
+        (OUTPUT_SAMPLE_RATE, OUTPUT_WAKE_NOISE_SAMPLES),
+        (48_000, 33_600),
+    ] {
+        let rate = SampleRate::new(hz).expect("accepted rate");
+        let samples = wake_noise(rate);
+
+        assert_eq!(wake_noise_sample_count(rate), expected_samples, "{hz} Hz");
+        assert_eq!(samples.len(), expected_samples, "{hz} Hz");
+        assert!(samples.iter().all(|sample| {
+            let pcm16 = *sample * 32_768.0;
+            (-75.0..=75.0).contains(&pcm16) && pcm16.fract() == 0.0
+        }));
+        assert!(samples.iter().any(|sample| *sample != 0.0));
+        assert!(samples.windows(2).any(|pair| pair[0] != pair[1]));
+    }
 }
 
 fn output_rate() -> SampleRate {
@@ -72,9 +85,9 @@ fn chunks_queue_back_to_back_after_one_wake_noise() {
     assert!(lead_in.iter().all(|sample| sample.abs() < 0.01));
     let noise_samples = lead_in.iter().filter(|sample| **sample != 0.0).count();
     // One in about 150 noise samples is exactly zero.
-    assert!(noise_samples > WAKE_NOISE_SAMPLE_COUNT * 9 / 10);
+    assert!(noise_samples > OUTPUT_WAKE_NOISE_SAMPLES * 9 / 10);
     assert!(
-        noise_samples <= WAKE_NOISE_SAMPLE_COUNT,
+        noise_samples <= OUTPUT_WAKE_NOISE_SAMPLES,
         "one lead-in, not one per chunk"
     );
 }
@@ -93,8 +106,8 @@ fn the_next_answer_gets_its_own_wake_noise() {
         .expect("queue second answer");
     let second = play_out(&player, &mut source);
 
-    assert!(first.len() >= WAKE_NOISE_SAMPLE_COUNT + 10);
-    assert!(second.len() >= WAKE_NOISE_SAMPLE_COUNT + 10);
+    assert!(first.len() >= OUTPUT_WAKE_NOISE_SAMPLES + 10);
+    assert!(second.len() >= OUTPUT_WAKE_NOISE_SAMPLES + 10);
 }
 
 #[test]
@@ -135,6 +148,29 @@ fn a_22_khz_chunk_is_resampled_to_the_output_rate_not_played_fast() {
     assert!(
         speech_samples.abs_diff(expected) <= expected / 20,
         "{speech_samples} output samples for {chunk_samples} input samples, expected about {expected}"
+    );
+}
+
+#[test]
+fn the_start_of_a_22_khz_answer_plays_at_full_length_after_the_wake_noise() {
+    // rodio resamples in blocks sized by a buffer's total length, so a block that starts
+    // inside the wake noise runs into the first speech samples and converts them at the
+    // noise's rate. Piper's first syllable was heard squeezed ("…nit 734").
+    let piper_rate = SampleRate::new(22_050).expect("Piper's rate is accepted");
+    let opening_samples = 4_410; // 0.2 s at 22.05 kHz
+    let mut chunk = vec![0.5; opening_samples];
+    chunk.extend(vec![0.3; 22_050]);
+    let (mut player, mut source) = test_player();
+
+    player.append(chunk, piper_rate).expect("queue chunk");
+    let heard = play_out(&player, &mut source);
+
+    // At a 44.1 kHz output, the 0.2 s opening fills twice its own samples.
+    let opening_heard = heard.iter().filter(|sample| sample.abs() > 0.45).count();
+    let expected = opening_samples * 2;
+    assert!(
+        opening_heard.abs_diff(expected) <= expected / 50,
+        "the opening filled {opening_heard} output samples, expected about {expected}"
     );
 }
 

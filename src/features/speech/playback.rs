@@ -21,10 +21,7 @@ use thiserror::Error;
 use super::sample_rate::SampleRate;
 
 const OUTPUT_CHANNELS: u16 = 1;
-/// The wake noise is generated at this rate. Speech keeps the rate its worker declared.
-const OUTPUT_SAMPLE_RATE: u32 = 44_100;
 pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration::from_millis(700);
-const WAKE_NOISE_SAMPLE_COUNT: usize = (OUTPUT_SAMPLE_RATE as usize * 7) / 10;
 const WAKE_NOISE_PCM16_LIMIT: i16 = 75;
 
 #[derive(Debug, Error)]
@@ -110,6 +107,11 @@ impl AudioPlayer {
     /// The first chunk of an answer is preceded by the wake noise; later chunks follow
     /// the previous one directly. `sample_rate` is the rate `samples` were synthesized at:
     /// rodio resamples each chunk to the output device.
+    ///
+    /// The wake noise is generated at the first chunk's rate, so an answer never changes
+    /// rate. rodio 0.22 resamples in blocks sized by a buffer's total length, not what is
+    /// left of it, so a block that starts inside the noise runs into the first speech
+    /// samples and would convert them at the noise's rate, squeezing the first syllable.
     pub fn append(
         &mut self,
         samples: Vec<f32>,
@@ -124,8 +126,10 @@ impl AudioPlayer {
 
         let player = self.player.get_or_insert_with(|| {
             let player = Player::connect_new(&self.mixer);
-            let wake_rate = OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate");
-            player.append(samples_buffer(wake_noise(), wake_rate));
+            player.append(samples_buffer(
+                wake_noise(sample_rate),
+                sample_rate.for_rodio(),
+            ));
             player
         });
         player.append(samples_buffer(samples, sample_rate.for_rodio()));
@@ -161,12 +165,20 @@ fn samples_buffer(samples: Vec<f32>, sample_rate: rodio::SampleRate) -> SamplesB
     )
 }
 
-fn wake_noise() -> Vec<f32> {
-    let mut samples = Vec::with_capacity(WAKE_NOISE_SAMPLE_COUNT);
+/// Samples in [`WAKE_NOISE_DURATION`] at `sample_rate`.
+fn wake_noise_sample_count(sample_rate: SampleRate) -> usize {
+    let millis = u32::try_from(WAKE_NOISE_DURATION.as_millis()).expect("700 ms fits in u32");
+    // At most 48,000 * 700 / 1,000 = 33,600, so neither step overflows a u32.
+    usize::try_from(sample_rate.hz() * millis / 1_000).expect("usize is at least 32 bits")
+}
+
+fn wake_noise(sample_rate: SampleRate) -> Vec<f32> {
+    let count = wake_noise_sample_count(sample_rate);
+    let mut samples = Vec::with_capacity(count);
     // A fixed non-cryptographic sequence is enough to produce unobtrusive audio noise.
     let mut state = 0x9E37_79B9_u32;
 
-    for _ in 0..WAKE_NOISE_SAMPLE_COUNT {
+    for _ in 0..count {
         state ^= state << 13;
         state ^= state >> 17;
         state ^= state << 5;
