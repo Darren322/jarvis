@@ -6,16 +6,16 @@ Settled with Darren in a grilling session on 2026-11-06. This file is the source
 
 | Ticket | State | Notes |
 | --- | --- | --- |
-| T0 16 GB Pi services | done | Installed 2026-11-06: `jarvis-gemma` and `jarvis-embeddings` systemd units, enabled; `/health` 200 from the 8 GB Pi after install and after restart (re-checked by Claude); BGE alias served. Wi-Fi power save off on both Pis. Remaining: Darren reboots the 16 GB Pi once to prove boot start |
+| T0 16 GB Pi services | done | Installed 2026-11-06: `jarvis-gemma` and `jarvis-embeddings` systemd units, enabled; `/health` 200 from the 8 GB Pi after install and after restart (re-checked by Claude); BGE alias served. Wi-Fi power save off on both Pis. Reboot on 2026-11-07 (Hailo runtime install) proved boot start; Gemma /health 200 about 3 min after boot. `NetworkManager-wait-online` failed at boot (harmless so far; unknown whether it predates this) |
 | T1 8 GB Pi cleanup + acceptance | in review | Cleanup done and re-checked 2026-11-06. By ear: speech plays, `/stop` works; long answers fixed by real-time speech (closed 2026-11-07). 2026-11-07: recall works, and `/memories <text>` and `/forget <id>` worked on the Pi. Remaining: `/memory status` shows the embedder ready |
-| T2 Speech-to-text spike | not started | Unblocked by T0. Needs Darren to speak the clips |
-| T3 Speech-to-text server | not started | Blocked on T2 (engine choice) |
-| T4 Speech-to-text client | not started | Blocked on T2 (wire format) |
+| T2 Speech-to-text spike | done | 2026-11-07: engine chosen. Whisper-Medium on the 16 GB Pi's Hailo-10H (HailoRT 5.5.0 built from source). 32 word errors of 108 against 34 to 39 for the other Hailo models and 37 for CPU. See D2, D13, `notes/STT_SPIKE.md` and `notes/HAILO_STT_RESEARCH.md` |
+| T3 Speech-to-text server on the Hailo-10H | not started | Unblocked. Open question: where the server source lives in the repo (Darren to decide), and the cpp-httplib version |
+| T4 Speech-to-text client | not started | Unblocked. The wire format is settled; Wiremock covers it, so it can run in parallel with T3 |
 | T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests. Committed as `cb21752`. Not yet run against the real Pi mic (T6 acceptance) |
 | B1 Long answers fail speech | done | Moved into [real-time-speech](real-time-speech.md) R1 and R3 on 2026-11-06 |
 | T6 `/listen` command | not started | Blocked on T4, T5 |
 
-**Resume here:** [real-time speech](real-time-speech.md) closed on 2026-11-07, so this spec resumes at **T2** (speech-to-text spike: Darren records about 5 clips on the Pi). Still open: Darren reboots the 16 GB Pi once (T0), and `/memory status` shows the embedder ready (T1). Read `notes/HANDOFF_2026-11-07.md` first.
+**Resume here:** T2 closed on 2026-11-07. Next is **T3** (start by settling where the server source lives and the cpp-httplib version with Darren) and **T4** (parallel, Wiremock only). Still open: Darren records `clip6-long` (a real 15 s clip), and `/memory status` shows the embedder ready (T1). Cleanup still open (D7): delete the spike clips in `/tmp/stt-spike` on the 8 GB Pi, in `/tmp` on the 16 GB Pi, and in the session scratchpad. The temporary CPU `whisper-server` on `:8082` was stopped on 2026-11-07 (`~/whisper.cpp` is kept). Warning: do not run `apt full-upgrade` or install a new kernel on the 16 GB Pi until T3 adds DKMS. Read `notes/HANDOFF_2026-11-07.md` first.
 
 ## Goal
 
@@ -26,9 +26,9 @@ Darren types `/listen`, speaks, presses Enter, and Jarvis answers the transcript
 | # | Decision |
 | --- | --- |
 | D1 | Thin vertical slice; the terminal stays the interface. |
-| D2 | A measurement spike (T2) picks the speech-to-text engine from real Pi numbers: whisper.cpp first, then Moonshine and `parakeet-rs` if they build for aarch64. |
+| D2 | **Outcome of the T2 spike (2026-11-07, Darren).** Speech-to-text runs on the 16 GB Pi's Hailo-10H (AI HAT+ 2) with Whisper-Medium, not on the CPU. Darren chose accuracy over speed. Over 7 clips (108 words) Medium made 32 word errors, Small 34, CPU whisper.cpp (small.en, prompt, `--audio-ctx 768`) 37 and Base 39. On the 43 words of short clips: Medium 11, Small 16, CPU 9. Medium takes 1.3 to 3.6 s on short clips and 11.4 s on a 15 s clip. Hailo does not slow Gemma, Gemma does not slow Hailo, and host CPU use is under 3 ms per request. Evidence: `notes/STT_SPIKE.md` and `notes/HAILO_STT_RESEARCH.md`. |
 | D3 | Trigger: `/listen` starts recording; Enter stops it. Hard cap of 15 s. No new terminal dependency. |
-| D4 | Speech-to-text runs on the 16 GB Pi as an HTTP server (AGENTS.md: inference never runs in-process). Jarvis is a client in `src/clients/` behind the `local_endpoint` guard. |
+| D4 | Speech-to-text runs on the 16 GB Pi as an HTTP server (AGENTS.md: inference never runs in-process). Jarvis is a client in `src/clients/` behind the `local_endpoint` guard. The model runs on the Hailo-10H, so it does not compete with Gemma for CPU. |
 | D5 | The terminal prints states only: `Idle`, `Listening`, `Transcribing`, `Thinking`, `Speaking`. Audio level for the animation is deferred to the animation spec. |
 | D6 | The transcript is printed and sent straight down the normal request path. Empty or unusable audio produces a "didn't catch that" notice and no model request. |
 | D7 | Audio is never stored. It stays in memory, goes only to the 16 GB Pi over the LAN, and is dropped after transcription. The transcript is archived like a typed turn, so there is no schema change. Spike clips are throwaway files outside `data/`. |
@@ -36,7 +36,9 @@ Darren types `/listen`, speaks, presses Enter, and Jarvis answers the transcript
 | D9 | The microphone is the USB PnP mic, ALSA card 3 (`Device_1`), selected by a new `JARVIS_CAPTURE_DEVICE` setting. `JARVIS_AUDIO_DEVICE` stays the Jieli speaker. |
 | D10 | Ops on either Pi is done by agents over SSH. Read-only checks need no approval; **every change needs Darren's OK first**. |
 | D11 | Sub-agents (Sonnet) implement tickets with explicit, non-overlapping file ownership. Claude reviews and explains how each piece works. Darren reviews and commits. At the end Claude walks Darren through whether the spec was implemented correctly. |
-| D12 | **Reuse before writing** (library survey, 2026-11-06, checked against locked rig-core 0.42.0 `src/providers/openai/transcription.rs`). T4 uses Rig's `TranscriptionModel` through the same `openai::CompletionsClient` recipe as `local_llm.rs`, which POSTs multipart to `{base}/audio/transcriptions`. There is no custom HTTP client and no new crate or feature, since Rig's reqwest already has `multipart`. The WAV wrapper uses `hound`, which is already a dependency. Capture stays `arecord`. Config stays hand-written (`envy`/`figment` would save under 15 lines). |
+| D12 | **Reuse before writing** (library survey, 2026-11-06, checked against locked rig-core 0.42.0 `src/providers/openai/transcription.rs`). T4 is unchanged by the engine choice. It uses Rig's `TranscriptionModel` through the same `openai::CompletionsClient` recipe as `local_llm.rs`, which POSTs multipart to `{base}/audio/transcriptions` and reads `{"text": ...}`. There is no custom HTTP client and no new crate or feature, since Rig's reqwest already has `multipart`. The WAV wrapper uses `hound`, which is already a dependency. Capture stays `arecord`. Config stays hand-written (`envy`/`figment` would save under 15 lines). The server is our own C++ wrapper around HailoRT's `Speech2Text` using cpp-httplib (T3), not whisper-server. It ignores `prompt` and `model`. |
+| D13 | **HailoRT 5.5.0 built by hand** (2026-11-07). Runtime, driver and firmware are built from Hailo's public GitHub source and installed by hand on the 16 GB Pi. The apt 5.1.1 packages are removed and pinned to -1 in `/etc/apt/preferences.d/hailo-block`. Why: 5.1.1 offers only Whisper-Base, and its HEF dropped speech in clips over 10 s; the 5.4.0 and later HEFs fixed that. The Developer Zone needs a login. The driver is installed without DKMS for now, so a kernel update leaves the HAT without a driver until T3 adds DKMS. |
+| D14 | **No prompt, no post-correction for now.** Hailo's `Speech2Text` API (through 5.5.0) has no initial-prompt option, so the "Jarvis" vocabulary prompt is not possible. Medium misheard "Jarvis" as "Davies" and "Her job is". No post-correction is added for now. |
 
 ## Limits
 
@@ -46,7 +48,7 @@ Each limit is a named constant with tests at its boundaries (last accepted value
 | --- | --- | --- |
 | `MAX_RECORDING` | 15 s = 480,000 bytes of PCM | Recording stops at the cap even without Enter. |
 | `MIN_RECORDING` | 0.3 s = 9,600 bytes of PCM | Shorter audio gives "didn't catch that" and is not sent. |
-| `TRANSCRIPTION_TIMEOUT` | 20 s | Wait for one transcription request. T2 may revise this from measurements. |
+| `TRANSCRIPTION_TIMEOUT` | 20 s | Wait for one transcription request. Kept after T2: Medium measured 11.4 s on a 15 s clip. The Hailo model works in 10 s windows; Medium handled 12 s and 15 s clips without dropping speech. |
 | `TRANSCRIPTION_HEALTH_TIMEOUT` | 3 s | Matches the other clients. |
 | Transcript length | 2,048 bytes | The same cap as typed input (`MAX_INPUT_BYTES` in `interfaces/cli/input.rs`). |
 
@@ -57,6 +59,16 @@ A timeout means Jarvis stopped waiting. It does not prove the server stopped wor
 - **8 GB Pi** `darrenrasp@jarvis`: checkout `/home/darrenrasp/jarvis`, Debian 13 aarch64. Wayland (labwc) under lightdm. 5" DSI touchscreen at 800×480. Chromium installed. `arecord` present, `sqlite3` absent. Capture devices: card 2 Jieli (speaker with a mic input) and card 3 USB PnP mic.
 - **Gemma (the brain)**, as Darren runs it: `llama-server -hf unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL --spec-type draft-mtp --spec-draft-n-max 3 -t 4 -c 2048 -b 512 -ub 128 --jinja --host 0.0.0.0 --port 8080 --temp 0 --reasoning off --swa-full`. `--swa-full` (added 2026-11-07, R7 of real-time speech) keeps the whole sliding-window cache so the conversation prefix can be reused between turns. `-t 4` uses all 4 cores, so speech-to-text competes for CPU (T2 measures this). `-c 2048` is a small context shared by history, recall and the transcript.
 - **16 GB Pi** `raspdarren-ai@jarvis-ai`: reachable only through the 8 GB Pi (`ssh -J darrenrasp@jarvis raspdarren-ai@jarvis-ai`). The credentials are in the Mac's `.env`.
+- **16 GB Pi Hailo state (2026-11-07):**
+  - HailoRT 5.5.0 built from source and installed in `/usr`; the manifest is `~/hailo-src/install_manifest-5.5.0.txt`.
+  - Driver: `/lib/modules/6.18.50+rpt-rpi-2712/updates/hailo1x_pci.ko`. No DKMS.
+  - Firmware: `/lib/firmware/hailo/hailo10h/`.
+  - Device `/dev/h1x-0`, with the udev rule in `/etc/udev/rules.d/51-hailo-udev.rules` (`SUBSYSTEM=="hailo1x", MODE="0666"`).
+  - apt pin: `/etc/apt/preferences.d/hailo-block` (the 5.1.1 packages are removed and pinned to -1).
+  - HEF: `~/hailo-models/Whisper-Medium.hef`, sha256 `64423764f8138995eb51ef64478ead2ddebeffdf3eec50fe68b8abca0f1613de`.
+  - Backups: `~/hailo-backup/`.
+  - Rollback: see the bold **Rollback** line just before "Phase 4" in `notes/HAILO_STT_RESEARCH.md` (about line 549).
+  - **Do not run `apt full-upgrade` or install a new kernel until T3 adds DKMS.**
 
 ## Tickets
 
@@ -85,17 +97,30 @@ Each ticket lists the files it owns. An agent touches nothing else without askin
 - Output: `notes/STT_SPIKE.md` with the table, the chosen engine, its HTTP API (endpoint, request and response format), and any timeout revision. No code in `src/`.
 - Needs T0. Darren in the loop.
 
-### T3: speech-to-text server (ops + docs)
-- With Darren's OK: install the chosen engine as a systemd service on the 16 GB Pi, LAN-only.
-- Owns: `docs/TWO_PI_STT_DEPLOYMENT.md`.
-- Needs T2.
+### T3: Speech-to-text server on the Hailo-10H (C++ + ops)
+- A C++ server built on the 16 GB Pi against the installed HailoRT 5.5.0, plus cpp-httplib (header-only). Pin an exact cpp-httplib version; that dependency needs Darren's approval of the version.
+- It loads Whisper-Medium once at start (about 6 s). `GET /v1/health` returns 200 only after the model has loaded.
+- The model file path is a setting in the systemd unit (an environment variable or argument), not compiled in, so switching between Whisper-Medium and Whisper-Small (`~/hailo-models/Whisper-Small.hef`) needs only a config change and a restart. Darren may compare them in daily use: Small is about 2.5 times faster, Medium more accurate on short commands.
+- `POST /v1/audio/transcriptions` takes multipart with a required `file`: WAV, 16 kHz, mono, S16_LE. It accepts and ignores `model`, `prompt` and `temperature`, and accepts `language` only as `en`. It returns `{"text": "..."}`.
+- It joins the segment texts. It drops segments that start at or after the audio's end (Medium invented "you" at 14.88 to 16.88 s on a 15 s clip). It turns output made only of "..." or blank-audio markers into empty text, so Jarvis's "didn't catch that" path (D6) triggers.
+- It rejects bad input with 4xx: missing file, wrong WAV format, audio over 15 s plus a small margin, a body over a byte limit.
+- It serves one request at a time.
+- It has a request read timeout. whisper-server hung on a POST with no body; test that this server does not.
+- It binds LAN-only, runs as a non-root user, and is a systemd unit `jarvis-stt` (restart on failure, enabled at boot, ordered after the driver loads).
+- DKMS for `hailo1x_pci` 5.5.0, built from the drivers repo's `dkms.conf.in` (`make clean` first), replacing the hand-copied module. Verify with `dkms status`, and confirm that a reboot still brings up `/dev/h1x-0`.
+- Owns: `docs/TWO_PI_STT_DEPLOYMENT.md`. **OPEN QUESTION (Darren):** where the server source lives in the repo.
+- Done when:
+  - curl from the 8 GB Pi returns the transcript for the 6 clips and a real 15 s clip (`clip6-long`, which Darren still has to record).
+  - A reboot of the 16 GB Pi brings `jarvis-stt` back with `/v1/health` 200.
+  - Gemma and BGE are unaffected.
+- Needs Darren's OK for every Pi change (D10).
 
 ### T4: speech-to-text client (Rust)
 - A thin `src/clients/speech_to_text.rs` built on Rig's `TranscriptionModel` (D12), reusing the `LocalLlm::new` client recipe: client-level timeout, `retry(never())`, `no_proxy`, `LocalEndpointResolver`, no redirects. Wrap PCM as WAV with `hound`, trim the returned text, and map `TranscriptionError` into a thiserror enum. Rig has no per-request timeout, so the timeout lives on the client.
 - `src/config/speech_to_text.rs`: base URL, model or alias, `JARVIS_CAPTURE_DEVICE`. Paths are resolved to absolute here.
 - Tests: `tests/unit/clients/speech_to_text_tests.rs` (Wiremock: wire format, timeout, non-2xx, oversize transcript) and config tests.
 - Owns those files plus the `mod` lines in `src/clients/mod.rs` and `src/config/mod.rs`.
-- Needs T2's API.
+- Unblocked: the wire format is settled and unchanged (D12). It does not depend on T3 and can run in parallel with it.
 
 ### T5: capture (Rust)
 - `src/features/listening/`: start `arecord` with the configured device (16 kHz mono S16_LE), stop on request or at `MAX_RECORDING`, return in-memory audio, reject below `MIN_RECORDING`. Kill and reap the child on drop, so it is safe inside `select!`. Blocking work goes in `spawn_blocking` or a tokio process.

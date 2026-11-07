@@ -16,6 +16,21 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
   - Implementing: `rust-skills` (rules index in `~/.claude/skills/rust-skills/`), `tdd` / `test-driven-development`, `incremental-implementation`, and `source-driven-development` for library APIs.
   - Reviewing: `code-review-and-quality`, plus `doubt-driven-development` for risky or irreversible steps.
   - Interfaces: `api-and-interface-design` / `codebase-design`.
+- **Planning flow (new specs).** `/grilling` on the epic → user stories → `/to-spec` → `/to-tickets` → `/implement-spec`. Darren reviews and commits every ticket.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown under `docs/specs/<feature>/`: `spec.md` (the epic and its user stories), plus one file per ticket in `issues/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), written as each ticket's `Status:` line. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.
 
 ## Sources of truth
 
