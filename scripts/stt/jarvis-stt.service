@@ -1,0 +1,29 @@
+# Template, not installed by the repo. See docs/TWO_PI_STT_DEPLOYMENT.md for the install steps.
+# Paths and user match the 16 GB Pi (raspdarren-ai); edit them for another machine.
+[Unit]
+Description=Jarvis speech-to-text (Hailo-10H Whisper, port 8082)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=raspdarren-ai
+Group=raspdarren-ai
+# HailoRT writes its hailort.log into the working directory.
+WorkingDirectory=/home/raspdarren-ai/jarvis-stt
+Environment=JARVIS_STT_HEF=/home/raspdarren-ai/hailo-models/Whisper-Medium.hef
+Environment=JARVIS_STT_HOST=0.0.0.0
+Environment=JARVIS_STT_PORT=8082
+# The driver loads when udev finds the card; wait up to 60 s for the device node before loading the model.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do [ -e /dev/h1x-0 ] && exit 0; sleep 1; done; echo "/dev/h1x-0 did not appear" >&2; exit 1'
+ExecStart=/home/raspdarren-ai/jarvis-stt/build/jarvis-stt
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

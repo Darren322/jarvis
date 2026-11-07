@@ -9,13 +9,13 @@ Settled with Darren in a grilling session on 2026-11-06. This file is the source
 | T0 16 GB Pi services | done | Installed 2026-11-06: `jarvis-gemma` and `jarvis-embeddings` systemd units, enabled; `/health` 200 from the 8 GB Pi after install and after restart (re-checked by Claude); BGE alias served. Wi-Fi power save off on both Pis. Reboot on 2026-11-07 (Hailo runtime install) proved boot start; Gemma /health 200 about 3 min after boot. `NetworkManager-wait-online` failed at boot (harmless so far; unknown whether it predates this) |
 | T1 8 GB Pi cleanup + acceptance | in review | Cleanup done and re-checked 2026-11-06. By ear: speech plays, `/stop` works; long answers fixed by real-time speech (closed 2026-11-07). 2026-11-07: recall works, and `/memories <text>` and `/forget <id>` worked on the Pi. Remaining: `/memory status` shows the embedder ready |
 | T2 Speech-to-text spike | done | 2026-11-07: engine chosen. Whisper-Medium on the 16 GB Pi's Hailo-10H (HailoRT 5.5.0 built from source). 32 word errors of 108 against 34 to 39 for the other Hailo models and 37 for CPU. See D2, D13, `notes/STT_SPIKE.md` and `notes/HAILO_STT_RESEARCH.md` |
-| T3 Speech-to-text server on the Hailo-10H | not started | Unblocked. Open question: where the server source lives in the repo (Darren to decide), and the cpp-httplib version |
-| T4 Speech-to-text client | not started | Unblocked. The wire format is settled; Wiremock covers it, so it can run in parallel with T3 |
+| T3 Speech-to-text server on the Hailo-10H | done | 2026-11-07: C++ server in `scripts/stt/` (cpp-httplib v0.65.0, Whisper-Medium) runs as systemd service `jarvis-stt` on the 16 GB Pi, port 8082, enabled at boot. `scripts/stt/acceptance.sh` passed 25 of 25 from the 8 GB Pi before and after a reboot. DKMS installed for `hailo1x_pci` 5.5.0. Record: `docs/TWO_PI_STT_DEPLOYMENT.md` |
+| T4 Speech-to-text client | done | Wiremock-tested, 223 tests passing, committed in `ab3d18b`. Not yet run against the real server from Jarvis (T6 does that) |
 | T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests. Committed as `cb21752`. Not yet run against the real Pi mic (T6 acceptance) |
 | B1 Long answers fail speech | done | Moved into [real-time-speech](real-time-speech.md) R1 and R3 on 2026-11-06 |
-| T6 `/listen` command | not started | Blocked on T4, T5 |
+| T6 `/listen` command | not started | Unblocked: T4, T5 and T3 are all done |
 
-**Resume here:** T2 closed on 2026-11-07. Next is **T3** (start by settling where the server source lives and the cpp-httplib version with Darren) and **T4** (parallel, Wiremock only). Still open: Darren records `clip6-long` (a real 15 s clip), and `/memory status` shows the embedder ready (T1). Cleanup still open (D7): delete the spike clips in `/tmp/stt-spike` on the 8 GB Pi, in `/tmp` on the 16 GB Pi, and in the session scratchpad. The temporary CPU `whisper-server` on `:8082` was stopped on 2026-11-07 (`~/whisper.cpp` is kept). Warning: do not run `apt full-upgrade` or install a new kernel on the 16 GB Pi until T3 adds DKMS. Read `notes/HANDOFF_2026-11-07.md` first.
+**Resume here:** T3 and T4 closed on 2026-11-07. Next is **T6**, the `/listen` command, which wires T5 capture and the T4 client into the CLI. When T6 is accepted, set `JARVIS_STT_BASE_URL=http://jarvis-ai:8082/v1`, `JARVIS_STT_MODEL=whisper-medium` (the server ignores it) and `JARVIS_CAPTURE_DEVICE` (card 3, `plughw:CARD=Device_1`, per D9) in the 8 GB Pi's `.env`; that needs Darren's OK. Still open: `/memory status` shows the embedder ready (T1). Cleanup still open (D7): delete the spike clips in `/tmp/stt-spike` on the 8 GB Pi, in `/tmp` on the 16 GB Pi, and in the session scratchpad. `/tmp/acceptance*.out` on the 8 GB Pi and `~/jarvis-stt/term-test.out` on the 16 GB Pi hold transcripts and belong in the same cleanup. For Darren to decide: `NetworkManager-wait-online.service` fails at boot (60 s timeout) and delays every service ordered after `network-online.target` by about a minute. It is outside this spec, and it is unknown whether it predates the Hailo work. Read `notes/HANDOFF_2026-11-07.md` first.
 
 ## Goal
 
@@ -61,14 +61,15 @@ A timeout means Jarvis stopped waiting. It does not prove the server stopped wor
 - **16 GB Pi** `raspdarren-ai@jarvis-ai`: reachable only through the 8 GB Pi (`ssh -J darrenrasp@jarvis raspdarren-ai@jarvis-ai`). The credentials are in the Mac's `.env`.
 - **16 GB Pi Hailo state (2026-11-07):**
   - HailoRT 5.5.0 built from source and installed in `/usr`; the manifest is `~/hailo-src/install_manifest-5.5.0.txt`.
-  - Driver: `/lib/modules/6.18.50+rpt-rpi-2712/updates/hailo1x_pci.ko`. No DKMS.
+  - Driver: `/lib/modules/6.18.50+rpt-rpi-2712/updates/dkms/hailo1x_pci.ko.xz`.
   - Firmware: `/lib/firmware/hailo/hailo10h/`.
   - Device `/dev/h1x-0`, with the udev rule in `/etc/udev/rules.d/51-hailo-udev.rules` (`SUBSYSTEM=="hailo1x", MODE="0666"`).
   - apt pin: `/etc/apt/preferences.d/hailo-block` (the 5.1.1 packages are removed and pinned to -1).
   - HEF: `~/hailo-models/Whisper-Medium.hef`, sha256 `64423764f8138995eb51ef64478ead2ddebeffdf3eec50fe68b8abca0f1613de`.
   - Backups: `~/hailo-backup/`.
   - Rollback: see the bold **Rollback** line just before "Phase 4" in `notes/HAILO_STT_RESEARCH.md` (about line 549).
-  - **Do not run `apt full-upgrade` or install a new kernel until T3 adds DKMS.**
+  - Driver installed through DKMS (2026-11-07), so a new kernel triggers a rebuild. A real kernel upgrade has not been tested yet; check `dkms status` and `/dev/h1x-0` after the first one. The apt pin stays.
+  - Service `jarvis-stt`: port 8082, unit at `/etc/systemd/system/jarvis-stt.service`, source in `scripts/stt/`.
 
 ## Tickets
 
@@ -99,7 +100,7 @@ Each ticket lists the files it owns. An agent touches nothing else without askin
 
 ### T3: Speech-to-text server on the Hailo-10H (C++ + ops)
 - A C++ server built on the 16 GB Pi against the installed HailoRT 5.5.0, plus cpp-httplib (header-only). Pin an exact cpp-httplib version; that dependency needs Darren's approval of the version.
-- It loads Whisper-Medium once at start (about 6 s). `GET /v1/health` returns 200 only after the model has loaded.
+- It loads Whisper-Medium once at start (about 6 s). Health is served on both `/health` and `/v1/health` (the T4 client probes `/health` at the root); both return 200 only after the model has loaded.
 - The model file path is a setting in the systemd unit (an environment variable or argument), not compiled in, so switching between Whisper-Medium and Whisper-Small (`~/hailo-models/Whisper-Small.hef`) needs only a config change and a restart. Darren may compare them in daily use: Small is about 2.5 times faster, Medium more accurate on short commands.
 - `POST /v1/audio/transcriptions` takes multipart with a required `file`: WAV, 16 kHz, mono, S16_LE. It accepts and ignores `model`, `prompt` and `temperature`, and accepts `language` only as `en`. It returns `{"text": "..."}`.
 - It joins the segment texts. It drops segments that start at or after the audio's end (Medium invented "you" at 14.88 to 16.88 s on a 15 s clip). It turns output made only of "..." or blank-audio markers into empty text, so Jarvis's "didn't catch that" path (D6) triggers.
@@ -108,12 +109,13 @@ Each ticket lists the files it owns. An agent touches nothing else without askin
 - It has a request read timeout. whisper-server hung on a POST with no body; test that this server does not.
 - It binds LAN-only, runs as a non-root user, and is a systemd unit `jarvis-stt` (restart on failure, enabled at boot, ordered after the driver loads).
 - DKMS for `hailo1x_pci` 5.5.0, built from the drivers repo's `dkms.conf.in` (`make clean` first), replacing the hand-copied module. Verify with `dkms status`, and confirm that a reboot still brings up `/dev/h1x-0`.
-- Owns: `docs/TWO_PI_STT_DEPLOYMENT.md`. **OPEN QUESTION (Darren):** where the server source lives in the repo.
+- Owns: `docs/TWO_PI_STT_DEPLOYMENT.md`. Source: `scripts/stt/` (settled with Darren, 2026-11-07).
 - Done when:
-  - curl from the 8 GB Pi returns the transcript for the 6 clips and a real 15 s clip (`clip6-long`, which Darren still has to record).
+  - curl from the 8 GB Pi returns the transcript for the 6 clips and Darren's real 15 s clip (`clip6-long`).
   - A reboot of the 16 GB Pi brings `jarvis-stt` back with `/v1/health` 200.
   - Gemma and BGE are unaffected.
 - Needs Darren's OK for every Pi change (D10).
+- Done 2026-11-07; record in `docs/TWO_PI_STT_DEPLOYMENT.md`.
 
 ### T4: speech-to-text client (Rust)
 - A thin `src/clients/speech_to_text.rs` built on Rig's `TranscriptionModel` (D12), reusing the `LocalLlm::new` client recipe: client-level timeout, `retry(never())`, `no_proxy`, `LocalEndpointResolver`, no redirects. Wrap PCM as WAV with `hound`, trim the returned text, and map `TranscriptionError` into a thiserror enum. Rig has no per-request timeout, so the timeout lives on the client.
