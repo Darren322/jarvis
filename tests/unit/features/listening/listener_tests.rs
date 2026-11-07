@@ -11,6 +11,11 @@ use wiremock::{
 use super::*;
 use crate::config::SpeechToTextConfig;
 
+/// For tests that do not look at the "recording started" signal.
+fn unobserved() -> oneshot::Sender<()> {
+    oneshot::channel().0
+}
+
 /// A recorder that runs `body` as a shell script. The directory must outlive it.
 fn fake_recorder(body: &str) -> (TempDir, Recorder) {
     let dir = tempfile::tempdir().expect("temporary directory should open");
@@ -58,7 +63,9 @@ async fn a_finished_recording_is_transcribed_after_announcing_the_stage() {
     let (_dir, recorder) = fake_recorder(&short_script(20_000));
     let (sender, mut announced) = oneshot::channel();
 
-    let heard = listener(recorder, &server).listen(pending(), sender).await;
+    let heard = listener(recorder, &server)
+        .listen(pending(), unobserved(), sender)
+        .await;
 
     assert_eq!(
         heard.expect("listening succeeds"),
@@ -75,7 +82,9 @@ async fn too_little_audio_is_not_sent_and_does_not_announce_transcribing() {
     let (_dir, recorder) = fake_recorder(&short_script(100));
     let (sender, mut announced) = oneshot::channel();
 
-    let heard = listener(recorder, &server).listen(pending(), sender).await;
+    let heard = listener(recorder, &server)
+        .listen(pending(), unobserved(), sender)
+        .await;
 
     assert_eq!(heard.expect("listening succeeds"), Heard::DidntCatch);
     assert_eq!(
@@ -92,7 +101,9 @@ async fn a_transcript_with_no_words_is_didnt_catch_that() {
     let (_dir, recorder) = fake_recorder(&short_script(20_000));
     let (sender, _announced) = oneshot::channel();
 
-    let heard = listener(recorder, &server).listen(pending(), sender).await;
+    let heard = listener(recorder, &server)
+        .listen(pending(), unobserved(), sender)
+        .await;
 
     assert_eq!(heard.expect("listening succeeds"), Heard::DidntCatch);
 }
@@ -106,7 +117,7 @@ async fn a_stop_that_is_already_signalled_ends_the_recording() {
     // Without the stop, the recorder's own 16 s deadline would be the only exit.
     let heard = tokio::time::timeout(
         Duration::from_secs(10),
-        listener(recorder, &server).listen(std::future::ready(()), sender),
+        listener(recorder, &server).listen(std::future::ready(()), unobserved(), sender),
     )
     .await
     .expect("the stop signal must end the recording");
@@ -121,7 +132,7 @@ async fn a_recorder_that_cannot_start_is_a_capture_error() {
     let (sender, _announced) = oneshot::channel();
 
     let error = listener(recorder, &server)
-        .listen(pending(), sender)
+        .listen(pending(), unobserved(), sender)
         .await
         .expect_err("the recorder is missing");
 
@@ -138,7 +149,7 @@ async fn a_server_failure_is_a_transcription_error() {
     let (sender, _announced) = oneshot::channel();
 
     let error = listener(recorder, &server)
-        .listen(pending(), sender)
+        .listen(pending(), unobserved(), sender)
         .await
         .expect_err("the server fails");
 

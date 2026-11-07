@@ -5,6 +5,12 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::sync::oneshot;
+
+/// For tests that do not look at the "recording started" signal.
+fn unobserved() -> oneshot::Sender<()> {
+    oneshot::channel().0
+}
 
 struct Fixture(PathBuf);
 
@@ -91,7 +97,9 @@ async fn recording_lengths_are_accepted_or_clamped_at_the_limits() {
         // The script sleeps after emitting, so only the cap can end it.
         let recorder = fixture.recorder(&emit_then(emitted, "exec sleep 30"));
         // The cap cases end before `stop`; under-cap cases need it to finish.
-        let result = recorder.record(stop_after_emitted(&fixture)).await;
+        let result = recorder
+            .record(stop_after_emitted(&fixture), unobserved())
+            .await;
         match expected {
             Ok(len) => {
                 let recording = result.unwrap_or_else(|e| panic!("{emitted}: {e}"));
@@ -120,7 +128,10 @@ async fn stopping_early_returns_what_was_read_and_ends_the_recorder() {
         pid_file.display(),
         emit_then(20_000, "exec sleep 30")
     ));
-    let recording = recorder.record(stop_after_emitted(&fixture)).await.unwrap();
+    let recording = recorder
+        .record(stop_after_emitted(&fixture), unobserved())
+        .await
+        .unwrap();
     assert_eq!(recording.pcm.len(), 20_000);
     assert!(!process_is_alive(&read_pid(&pid_file).await));
 }
@@ -134,7 +145,7 @@ async fn the_recorder_receives_the_device_and_raw_s16_16khz_mono_arguments() {
         args_file.display(),
         emit_then(MIN_RECORDING_BYTES, "")
     ));
-    recorder.record(pending()).await.unwrap();
+    recorder.record(pending(), unobserved()).await.unwrap();
     assert_eq!(
         fs::read_to_string(args_file).unwrap().trim(),
         "-q -D test-device -f S16_LE -r 16000 -c 1 -t raw"
@@ -145,7 +156,7 @@ async fn the_recorder_receives_the_device_and_raw_s16_16khz_mono_arguments() {
 async fn a_missing_program_is_a_spawn_error() {
     let recorder = Recorder::new("dev", "/nonexistent/jarvis-arecord");
     assert!(matches!(
-        recorder.record(pending()).await,
+        recorder.record(pending(), unobserved()).await,
         Err(CaptureError::Spawn(_))
     ));
 }
@@ -154,7 +165,7 @@ async fn a_missing_program_is_a_spawn_error() {
 async fn a_recorder_failing_on_its_own_reports_its_exit_status() {
     let fixture = Fixture::new("fail");
     let recorder = fixture.recorder(&emit_then(MIN_RECORDING_BYTES, "exit 3"));
-    let result = recorder.record(pending()).await;
+    let result = recorder.record(pending(), unobserved()).await;
     assert!(
         matches!(&result, Err(CaptureError::Failed(status)) if status.code() == Some(3)),
         "{result:?}"
@@ -168,7 +179,7 @@ async fn dropping_a_recording_in_progress_kills_the_recorder() {
     let recorder = fixture.recorder(&format!("echo $$ > {}\nexec sleep 30", pid_file.display()));
     // Drop the recording future only once the child is known to be running.
     let pid = tokio::select! {
-        _ = recorder.record(pending()) => panic!("record should still be waiting"),
+        _ = recorder.record(pending(), unobserved()) => panic!("record should still be waiting"),
         pid = read_pid(&pid_file) => pid,
     };
     for _ in 0..100 {
@@ -193,9 +204,12 @@ async fn the_wall_clock_deadline_ends_a_stalled_recording_with_what_was_read() {
             ..fixture.recorder(&emit_then(emitted, "exec sleep 30"))
         };
         // The outer timeout fails the test, instead of hanging, if the deadline is missing.
-        let result = tokio::time::timeout(Duration::from_secs(10), recorder.record(pending()))
-            .await
-            .expect("record must give up at its deadline");
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            recorder.record(pending(), unobserved()),
+        )
+        .await
+        .expect("record must give up at its deadline");
         match expected {
             Ok(len) => assert_eq!(result.unwrap().pcm.len(), len),
             Err(bytes) => assert!(
@@ -209,4 +223,40 @@ async fn the_wall_clock_deadline_ends_a_stalled_recording_with_what_was_read() {
 #[test]
 fn the_wall_clock_deadline_is_the_cap_plus_one_second_of_grace() {
     assert_eq!(MAX_RECORDING_WAIT, Duration::from_secs(16));
+}
+
+#[tokio::test]
+async fn the_first_audio_announces_that_recording_started() {
+    let fixture = Fixture::new("started");
+    let recorder = fixture.recorder(&emit_then(MIN_RECORDING_BYTES, "exec sleep 30"));
+    let (sender, started) = oneshot::channel();
+
+    // Stopping only once the announcement arrived proves it is sent while still recording.
+    let stop = async {
+        started.await.expect("the first audio should be announced");
+    };
+    let result = tokio::time::timeout(Duration::from_secs(10), recorder.record(stop, sender))
+        .await
+        .expect("record must stop once the first audio was announced");
+
+    // Stopped after one read chunk, so too short, but not empty.
+    assert!(
+        matches!(result, Err(CaptureError::TooShort { bytes }) if bytes > 0),
+        "{result:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_recorder_that_sends_no_audio_never_announces_recording_started() {
+    let fixture = Fixture::new("silent");
+    let recorder = fixture.recorder("exec sleep 30");
+    let (sender, mut started) = oneshot::channel();
+
+    let result = recorder.record(std::future::ready(()), sender).await;
+
+    assert!(matches!(result, Err(CaptureError::TooShort { bytes: 0 })));
+    assert_eq!(
+        started.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
 }

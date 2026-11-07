@@ -98,7 +98,28 @@ pub(crate) fn parse(input: String) -> Command {
         }
     }
 
+    if is_unknown_command(trimmed) {
+        return Command::Usage(UNKNOWN_COMMAND);
+    }
+
     Command::Prompt(input)
+}
+
+/// Shown for a mistyped command such as `/iste`, so it is not sent to the model as a prompt.
+const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for commands.";
+
+/// Whether the line starts like a command: `/` then letters, digits, `-` or `_`, up to the
+/// first space. A path such as `/etc/hosts` has a second `/`, so it stays a prompt; a bare
+/// `/etc` or `/` followed by a word is treated as a mistyped command.
+fn is_unknown_command(trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix('/') else {
+        return false;
+    };
+    let name = rest.split(char::is_whitespace).next().unwrap_or_default();
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 /// "forget that", optionally followed by punctuation and/or "please".

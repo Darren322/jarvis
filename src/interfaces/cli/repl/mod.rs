@@ -75,13 +75,14 @@ where
     let mut next_input = None;
     let mut idle_work_due = true;
     let mut memory_control = MemoryControl::default();
-    // A spoken line was handed over and the state is still `Transcribing`.
-    let mut transcript_awaiting_handling = false;
+    // A line was handed over (a transcript, or a line typed over speech) and the state is
+    // not yet `Idle`; whatever handles the line moves it on.
+    let mut state_awaiting_idle = false;
 
     loop {
         if !prompt_is_visible && next_input.is_none() {
-            if mem::take(&mut transcript_awaiting_handling) {
-                // The spoken line was a command that reports no state of its own.
+            if mem::take(&mut state_awaiting_idle) {
+                // The handed-over line was a command that reports no state of its own.
                 presenter.state(AssistantState::Idle)?;
             }
             presenter.prompt()?;
@@ -107,17 +108,20 @@ where
                 Command::Exit => return Ok(()),
                 Command::Stop => println!("Stopped."),
                 Command::Listen => {
-                    transcript_awaiting_handling = false;
                     match listener {
                         None => presenter.notice(NOT_CONFIGURED)?,
-                        Some(listener) => match listen(listener, &mut input, presenter).await? {
-                            ListenEnd::Done => {}
-                            ListenEnd::Heard(line) => {
-                                transcript_awaiting_handling = true;
-                                next_input = Some(line);
+                        Some(listener) => {
+                            // `listen` reports its own states, starting with `Listening`.
+                            state_awaiting_idle = false;
+                            match listen(listener, &mut input, presenter).await? {
+                                ListenEnd::Done => {}
+                                ListenEnd::Heard(line) => {
+                                    state_awaiting_idle = true;
+                                    next_input = Some(line);
+                                }
+                                ListenEnd::Interrupted(line) => next_input = Some(line),
                             }
-                            ListenEnd::Interrupted(line) => next_input = Some(line),
-                        },
+                        }
                     }
                     idle_work_due = true;
                 }
@@ -142,7 +146,7 @@ where
                 }
                 Command::Prompt(prompt) => {
                     // `run_prompt` reports its own states, starting with `Thinking`.
-                    transcript_awaiting_handling = false;
+                    state_awaiting_idle = false;
                     let speaking = if speech_available {
                         speech.as_mut()
                     } else {
@@ -179,6 +183,7 @@ where
                                 if !cleanup_ok || speech_disabled {
                                     speech_available = false;
                                 }
+                                state_awaiting_idle = true;
                                 next_input = Some(line);
                                 prompt_is_visible = true;
                             }

@@ -2,6 +2,8 @@ use crate::storage::MemoryId;
 
 use super::{COMMANDS, Command, MemoryCommand, help_text, parse};
 
+const UNKNOWN: &str = "Unknown command. Type /help for commands.";
+
 fn memory(command: MemoryCommand) -> Command {
     Command::Memory(command)
 }
@@ -13,7 +15,7 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("/exit", Command::Exit),
         ("/stop", Command::Stop),
         (" /listen ", Command::Listen),
-        ("/listen now", Command::Prompt("/listen now".into())),
+        ("/listen now", Command::Usage(UNKNOWN)),
         ("  /reset  ", Command::Reset),
         ("/help", Command::Help),
         ("/memories", memory(MemoryCommand::List(None))),
@@ -33,7 +35,16 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("forget my preferred editor", memory(MemoryCommand::ForgetDetail("my preferred editor".into()))),
         // Only a leading "forget" is a command.
         ("I forget that the model is local", Command::Prompt("I forget that the model is local".into())),
-        ("/exits", Command::Prompt("/exits".into())),
+        // A mistyped command is never sent to the model; a path or a lone slash still is.
+        ("/exits", Command::Usage(UNKNOWN)),
+        ("/iste", Command::Usage(UNKNOWN)),
+        ("  /speak  ", Command::Usage(UNKNOWN)),
+        ("/memory-x", Command::Usage(UNKNOWN)),
+        ("/etc/hosts is a file", Command::Prompt("/etc/hosts is a file".into())),
+        ("/", Command::Prompt("/".into())),
+        ("/ 2 plus 2", Command::Prompt("/ 2 plus 2".into())),
+        ("//comment", Command::Prompt("//comment".into())),
+        ("what does /listen do", Command::Prompt("what does /listen do".into())),
     ];
     for (input, expected) in cases {
         assert_eq!(parse(input.to_owned()), expected, "{input}");

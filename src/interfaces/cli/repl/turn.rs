@@ -240,7 +240,15 @@ where
     {
         presenter.prompt()?;
     }
-    presenter.state(AssistantState::Idle)?;
+    // A line typed over the speech is handled next and reports the state it moves to; an
+    // `[idle]` here would only flash between the two. The loop reports `Idle` if that
+    // line turns out to be a command that reports no state of its own.
+    if !matches!(
+        spoken.as_ref().map(|spoken| &spoken.wait),
+        Some(SpeechWait::Input { .. })
+    ) {
+        presenter.state(AssistantState::Idle)?;
+    }
 
     Ok(PromptEnd {
         succeeded: end.succeeded,

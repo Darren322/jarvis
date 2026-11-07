@@ -10,7 +10,7 @@ use std::{
 };
 
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, process::Command, time::Instant};
+use tokio::{io::AsyncReadExt, process::Command, sync::oneshot, time::Instant};
 
 mod listener;
 
@@ -78,6 +78,10 @@ impl Recorder {
         }
     }
 
+    /// `recording_started` is sent when the first audio arrives, the earliest moment
+    /// that speaking is certain to be captured; it is dropped unsent when no audio
+    /// ever arrives.
+    ///
     /// Records until `stop` completes, the recorder exits,
     /// `MAX_RECORDING_BYTES` have been read (the excess is never returned), or
     /// `MAX_RECORDING_WAIT` elapses. The deadline is handled like an early
@@ -91,6 +95,7 @@ impl Recorder {
     pub(crate) async fn record(
         &self,
         stop: impl Future<Output = ()>,
+        recording_started: oneshot::Sender<()>,
     ) -> Result<Recording, CaptureError> {
         let mut child = Command::new(&self.program)
             .args(["-q", "-D", &self.device])
@@ -109,6 +114,7 @@ impl Recorder {
         let mut pcm: Vec<u8> = Vec::new();
         let mut chunk = [0u8; READ_CHUNK_BYTES];
         let mut recorder_ended = false;
+        let mut recording_started = Some(recording_started);
         let deadline = tokio::time::sleep_until(Instant::now() + self.max_wait);
         tokio::pin!(stop, deadline);
         while pcm.len() < MAX_RECORDING_BYTES {
@@ -123,7 +129,13 @@ impl Recorder {
                     recorder_ended = true;
                     break;
                 }
-                Ok(count) => pcm.extend_from_slice(&chunk[..count]),
+                Ok(count) => {
+                    pcm.extend_from_slice(&chunk[..count]);
+                    // A receiver that is gone just means nobody is showing the stage.
+                    if let Some(started) = recording_started.take() {
+                        let _ = started.send(());
+                    }
+                }
                 Err(error) => {
                     let _ = child.kill().await;
                     return Err(CaptureError::Read(error));

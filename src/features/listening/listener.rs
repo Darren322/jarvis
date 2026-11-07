@@ -46,9 +46,10 @@ impl Listener {
     }
 
     /// Records until `stop` completes (or the recorder's own limits end it), then
-    /// transcribes. `transcribing` is sent once recording is done and the request
-    /// is about to start, so the caller can show that stage; it is dropped unsent
-    /// when there is nothing to transcribe.
+    /// transcribes. `recording_started` is sent when the first audio arrives, so
+    /// the caller can tell the user to speak. `transcribing` is sent once recording
+    /// is done and the request is about to start, so the caller can show that stage;
+    /// it is dropped unsent when there is nothing to transcribe.
     ///
     /// Safe to drop at any `.await`: dropping during recording kills the recorder,
     /// and dropping during transcription only stops waiting for the server, which may
@@ -56,9 +57,10 @@ impl Listener {
     pub(crate) async fn listen(
         &self,
         stop: impl Future<Output = ()>,
+        recording_started: oneshot::Sender<()>,
         transcribing: oneshot::Sender<()>,
     ) -> Result<Heard, ListenError> {
-        let recording = match self.recorder.record(stop).await {
+        let recording = match self.recorder.record(stop, recording_started).await {
             Ok(recording) => recording,
             Err(CaptureError::TooShort { .. }) => return Ok(Heard::DidntCatch),
             Err(error) => return Err(error.into()),

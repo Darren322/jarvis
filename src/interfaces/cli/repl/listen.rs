@@ -50,18 +50,22 @@ where
     R: AsyncBufRead + Unpin,
     P: AssistantPresenter,
 {
-    presenter.state(AssistantState::Listening)?;
     let (stop_sender, stop_receiver) = oneshot::channel::<()>();
+    let (recording_sender, mut recording_receiver) = oneshot::channel::<()>();
     let (transcribing_sender, mut transcribing_receiver) = oneshot::channel::<()>();
     // The sender stays in the `Option` until Enter is pressed: a dropped sender would
     // also complete the stop future.
     let mut stop_sender = Some(stop_sender);
+    // `[listening]` waits for the first audio, so nobody starts speaking before the
+    // microphone is capturing.
+    let mut recording_pending = true;
     let mut transcribing_pending = true;
     let mut is_transcribing = false;
     let mut listening = Box::pin(listener.listen(
         async {
             let _ = stop_receiver.await;
         },
+        recording_sender,
         transcribing_sender,
     ));
 
@@ -92,6 +96,12 @@ where
                     return Ok(ListenEnd::Interrupted(other));
                 }
             },
+            sent = &mut recording_receiver, if recording_pending => {
+                recording_pending = false;
+                if sent.is_ok() {
+                    presenter.state(AssistantState::Listening)?;
+                }
+            }
             sent = &mut transcribing_receiver, if transcribing_pending => {
                 transcribing_pending = false;
                 if sent.is_ok() {

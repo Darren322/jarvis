@@ -566,6 +566,21 @@ impl Driver {
     }
 }
 
+impl Driver {
+    async fn wait_for_notice_containing(&mut self, text: &str) {
+        loop {
+            let found = self.screen.shown.borrow()[self.cursor..]
+                .iter()
+                .position(|shown| matches!(shown, Shown::Notice(line) if line.contains(text)));
+            if let Some(offset) = found {
+                self.cursor += offset + 1;
+                return;
+            }
+            self.screen.changed.notified().await;
+        }
+    }
+}
+
 struct Harness {
     assistant: Assistant,
     session: ConversationSession,
@@ -641,6 +656,10 @@ impl Harness {
             .len()
     }
 }
+
+/// A recorder that has captured a little audio and then waits to be stopped. `[listening]`
+/// is only shown once audio arrives, so a recorder that sends nothing never shows it.
+const AUDIBLE_UNTIL_STOPPED: &str = "head -c 4 /dev/zero\nexec sleep 30";
 
 /// A recording that ends by itself, so no timing depends on when Enter arrives.
 fn self_ending_script(bytes: usize) -> String {
@@ -778,11 +797,13 @@ async fn a_recording_that_ends_by_itself_is_transcribed_without_enter() {
 async fn stop_cancels_the_recording_and_nothing_is_sent() {
     let mut harness = harness()
         .await
-        .with_voice("exec sleep 30", transcript_reply("never asked"))
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
         .await;
 
     let shown = run_script(&mut harness, async |user| {
-        user.type_(b"/listen\n/stop\n").await;
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
         user.wait_for(AssistantState::Idle).await;
     })
     .await;
@@ -800,11 +821,13 @@ async fn stop_cancels_the_recording_and_nothing_is_sent() {
 async fn other_text_cancels_the_recording_and_is_handled_as_the_next_input() {
     let mut harness = harness()
         .await
-        .with_voice("exec sleep 30", transcript_reply("never asked"))
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
         .await;
 
     let shown = run_script(&mut harness, async |user| {
-        user.type_(b"/listen\nsomething else\n").await;
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"something else\n").await;
         user.wait_for(AssistantState::Thinking).await;
         user.wait_for(AssistantState::Idle).await;
     })
@@ -824,31 +847,79 @@ async fn other_text_cancels_the_recording_and_is_handled_as_the_next_input() {
 }
 
 #[tokio::test]
+async fn listening_is_shown_only_once_the_recorder_sends_audio() {
+    let mut harness = harness().await;
+    // The recorder sends nothing until the test creates the `.go` file.
+    harness = harness
+        .with_voice(
+            "while [ ! -e \"$0.go\" ]; do sleep 0.02; done\nhead -c 4 /dev/zero\nexec sleep 30",
+            transcript_reply("never asked"),
+        )
+        .await;
+    let go = harness.script_dir.path().join("fake-arecord.go");
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(b"/listen\n").await;
+        // The recorder is running but silent: the microphone is not capturing yet.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !user
+                .screen
+                .shown
+                .borrow()
+                .contains(&Shown::State(AssistantState::Listening))
+        );
+        fs::write(&go, "").expect("marker should write");
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Listening, AssistantState::Idle]
+    );
+}
+
+#[tokio::test]
 async fn end_of_input_while_listening_ends_the_loop() {
     let mut harness = harness()
         .await
-        .with_voice("exec sleep 30", transcript_reply("never asked"))
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
         .await;
-    let (mut writer, reader) = tokio::io::duplex(64);
-    writer.write_all(b"/listen\n").await.expect("fits");
-    drop(writer);
+    let (writer, reader) = tokio::io::duplex(64);
     let mut input = BufReader::new(reader);
-    let mut presenter = Screen::default();
+    let screen = Screen::default();
+    let mut presenter = screen.clone();
+    let mut driver = Driver {
+        writer,
+        screen: screen.clone(),
+        cursor: 0,
+    };
+    let user = async {
+        driver.type_(b"/listen\n").await;
+        driver.wait_for(AssistantState::Listening).await;
+        drop(driver);
+    };
 
-    run_input_loop(
-        &harness.assistant,
-        &mut harness.session,
-        None,
-        &mut None::<FailingSpeech>,
-        &mut input,
-        &mut presenter,
-        harness.listener.as_ref(),
-    )
-    .await
-    .expect("end of input ends the loop");
+    let mut speech = None::<FailingSpeech>;
+    let (result, ()) = tokio::join!(
+        run_input_loop(
+            &harness.assistant,
+            &mut harness.session,
+            None,
+            &mut speech,
+            &mut input,
+            &mut presenter,
+            harness.listener.as_ref(),
+        ),
+        user
+    );
+    result.expect("end of input ends the loop");
 
     assert_eq!(
-        states(&presenter.shown.borrow()),
+        states(&screen.shown.borrow()),
         [AssistantState::Listening, AssistantState::Idle]
     );
 }
@@ -1095,7 +1166,7 @@ async fn a_typed_prompt_reports_thinking_then_idle() {
 async fn listen_while_speech_is_playing_stops_the_speech_first() {
     let mut harness = harness()
         .await
-        .with_voice("exec sleep 30", transcript_reply("never asked"))
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
         .await;
     let (_release_sender, release) = oneshot::channel();
     let mut speech = Some(FailingSpeech {
@@ -1112,12 +1183,119 @@ async fn listen_while_speech_is_playing_stops_the_speech_first() {
     let shown = run_with(&mut harness, &mut speech, async |user| {
         user.type_(b"hello\n").await;
         user.wait_for(AssistantState::Speaking).await;
-        user.type_(b"/listen\n/stop\n").await;
+        user.type_(b"/listen\n").await;
         user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
         user.wait_for(AssistantState::Idle).await;
     })
     .await;
 
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Thinking,
+            AssistantState::Speaking,
+            AssistantState::Listening,
+            AssistantState::Idle
+        ]
+    );
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(speech.cancel_calls, 1);
+    assert_eq!(harness.stt_requests().await, 0);
+}
+
+fn speech_that_plays_until_released(release: oneshot::Receiver<()>) -> FailingSpeech {
+    FailingSpeech {
+        calls: Vec::new(),
+        started: None,
+        queue_on_start: true,
+        release,
+        disabled: Arc::new(AtomicBool::new(false)),
+        disabled_signal: Arc::new(Semaphore::new(0)),
+        cancel_calls: 0,
+        shutdown_calls: 0,
+    }
+}
+
+#[tokio::test]
+async fn listen_typed_while_the_answer_streams_starts_listening_and_is_never_a_prompt() {
+    let mut harness = harness()
+        .await
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
+        .await;
+    let (_release_sender, release) = oneshot::channel();
+    let mut speech = Some(speech_that_plays_until_released(release));
+
+    let shown = run_with(&mut harness, &mut speech, async |user| {
+        // `/listen` is already waiting when the answer starts to stream.
+        user.type_(b"hello\n/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    // The speech it interrupted is not followed by an `[idle]` the user did not cause.
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Thinking,
+            AssistantState::Listening,
+            AssistantState::Idle
+        ]
+    );
+    assert_user_message_reached_model(&harness, "hello");
+    assert_eq!(harness.stt_requests().await, 0);
+}
+
+#[tokio::test]
+async fn a_command_typed_over_speech_that_reports_no_state_still_ends_in_idle() {
+    let mut harness = harness().await;
+    let (_release_sender, release) = oneshot::channel();
+    let mut speech = Some(speech_that_plays_until_released(release));
+
+    let shown = run_with(&mut harness, &mut speech, async |user| {
+        user.type_(b"hello\n").await;
+        user.wait_for(AssistantState::Speaking).await;
+        user.type_(b"/help\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Thinking,
+            AssistantState::Speaking,
+            AssistantState::Idle
+        ]
+    );
+    assert_user_message_reached_model(&harness, "hello");
+}
+
+#[tokio::test]
+async fn listen_typed_right_after_speech_completes_starts_listening() {
+    let mut harness = harness()
+        .await
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
+        .await;
+    let (release_sender, release) = oneshot::channel();
+    let mut speech = Some(speech_that_plays_until_released(release));
+
+    let shown = run_with(&mut harness, &mut speech, async |user| {
+        user.type_(b"hello\n").await;
+        user.wait_for(AssistantState::Speaking).await;
+        release_sender.send(()).expect("speech is still waiting");
+        // The speech diagnostics are the loop's first act once speech has completed.
+        user.wait_for_notice_containing("time_to_first_audio").await;
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    // Speech had finished, so the answer's own `[idle]` is real and comes first.
     assert_eq!(
         states(&shown),
         [
@@ -1128,7 +1306,6 @@ async fn listen_while_speech_is_playing_stops_the_speech_first() {
             AssistantState::Idle
         ]
     );
-    let speech = speech.expect("speech stays owned by the caller");
-    assert_eq!(speech.cancel_calls, 1);
+    assert_user_message_reached_model(&harness, "hello");
     assert_eq!(harness.stt_requests().await, 0);
 }
