@@ -11,7 +11,7 @@ use tokio::{
 };
 
 use crate::{
-    features::{assistant::Assistant, conversation::ConversationSession},
+    features::{assistant::Assistant, conversation::ConversationSession, state::AssistantState},
     interfaces::cli::{input::InputReader, presentation::AssistantPresenter},
     tools::system_status_tool::SystemStatusTool,
 };
@@ -55,6 +55,11 @@ impl AssistantPresenter for LoggingPresenter {
         Ok(())
     }
 
+    fn state(&mut self, state: AssistantState) -> io::Result<()> {
+        self.log.borrow_mut().push(format!("state:{state:?}"));
+        Ok(())
+    }
+
     fn input_received(&mut self) {}
 }
 
@@ -62,6 +67,8 @@ enum Behaviour {
     /// Speaks every chunk and finishes when the text is complete.
     SpeaksUntilTextEnds,
     FailsOnFirstChunk,
+    /// Starts playback on the first chunk, then ends without waiting for the rest.
+    EndsAfterFirstChunk,
     /// Plays forever once the text is complete.
     NeverFinishes,
     /// Once the text is complete, the user types `line` and playback never finishes.
@@ -101,10 +108,17 @@ impl SpeechControl for ScriptedSpeech {
             if matches!(self.behaviour, Behaviour::FailsOnFirstChunk) {
                 return Err(io::Error::other("injected speech failure"));
             }
+            if matches!(self.behaviour, Behaviour::EndsAfterFirstChunk) {
+                // Let the caller see the playback signal before the speech result.
+                tokio::task::yield_now().await;
+                return Ok(());
+            }
         }
         self.log.borrow_mut().push("text complete".to_owned());
         match &mut self.behaviour {
-            Behaviour::SpeaksUntilTextEnds | Behaviour::FailsOnFirstChunk => Ok(()),
+            Behaviour::SpeaksUntilTextEnds
+            | Behaviour::FailsOnFirstChunk
+            | Behaviour::EndsAfterFirstChunk => Ok(()),
             Behaviour::NeverFinishes => std::future::pending().await,
             Behaviour::UserTypesAfterText { line, writer } => {
                 writer
@@ -223,6 +237,14 @@ fn events(run: &Run) -> Vec<String> {
     run.log.borrow().clone()
 }
 
+/// The state names in the order they were reported.
+fn states(events: &[String]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| event.strip_prefix("state:"))
+        .collect()
+}
+
 fn position(events: &[String], event: &str) -> usize {
     events
         .iter()
@@ -264,6 +286,55 @@ async fn the_first_chunk_reaches_speech_while_the_text_is_still_streaming() {
 }
 
 #[tokio::test]
+async fn a_spoken_answer_goes_from_thinking_to_speaking_when_audio_starts_then_idle() {
+    let run = run_with_input(
+        answer_turn(),
+        |log| Some(speech(log, Behaviour::SpeaksUntilTextEnds)),
+        "",
+    )
+    .await;
+
+    let events = events(&run);
+    assert_eq!(states(&events), ["Thinking", "Speaking", "Idle"]);
+    assert!(
+        position(&events, "state:Speaking") < position(&events, "completed"),
+        "speaking is reported when audio starts, not when the text ends: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn speech_that_never_starts_playback_is_never_reported_as_speaking() {
+    let run = run_with_input(
+        answer_turn(),
+        |log| {
+            Some(ScriptedSpeech {
+                signals_playback: false,
+                ..speech(log, Behaviour::SpeaksUntilTextEnds)
+            })
+        },
+        "",
+    )
+    .await;
+
+    assert_eq!(states(&events(&run)), ["Thinking", "Idle"]);
+}
+
+#[tokio::test]
+async fn speech_that_ends_while_the_text_streams_returns_to_thinking() {
+    let run = run_with_input(
+        answer_turn(),
+        |log| Some(speech(log, Behaviour::EndsAfterFirstChunk)),
+        "",
+    )
+    .await;
+
+    assert_eq!(
+        states(&events(&run)),
+        ["Thinking", "Speaking", "Thinking", "Idle"]
+    );
+}
+
+#[tokio::test]
 async fn time_to_first_audio_is_measured_when_playback_starts() {
     let run = run_with_input(
         answer_turn(),
@@ -300,9 +371,11 @@ async fn an_answer_without_speech_is_printed_and_reports_no_speech() {
     assert_eq!(
         events,
         [
+            "state:Thinking".to_owned(),
             format!("delta:{FIRST_SENTENCE} "),
             format!("delta:{SECOND_SENTENCE}"),
             "completed".to_owned(),
+            "state:Idle".to_owned(),
         ]
     );
     assert!(run.end.speech.is_none());
@@ -320,8 +393,8 @@ async fn a_speech_failure_mid_stream_does_not_stop_the_text_and_the_prompt_follo
 
     let events = events(&run);
     assert!(events.contains(&format!("delta:{SECOND_SENTENCE}")));
-    assert_eq!(events.last().map(String::as_str), Some("prompt"));
     assert!(position(&events, "completed") < position(&events, "prompt"));
+    assert!(position(&events, "prompt") < position(&events, "state:Idle"));
     assert!(matches!(wait(&run), SpeechWait::Completed));
     assert_eq!(run.speech.expect("speech").cancel_calls, 0);
 }
@@ -343,7 +416,8 @@ async fn stopping_while_the_text_streams_cancels_speech_but_the_answer_still_fin
         !events.iter().any(|event| event.starts_with("chunk:")),
         "nothing is spoken after the stop: {events:?}"
     );
-    assert_eq!(events.last().map(String::as_str), Some("prompt"));
+    assert!(position(&events, "completed") < position(&events, "prompt"));
+    assert_eq!(states(&events), ["Thinking", "Idle"]);
     assert!(matches!(
         wait(&run),
         SpeechWait::Stopped { cleanup_ok: true }

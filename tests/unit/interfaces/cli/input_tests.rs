@@ -36,6 +36,23 @@ async fn input_reader_handles_caps_framing_and_eof() {
     ));
 }
 
+#[test]
+fn text_that_was_not_typed_obeys_the_typed_input_rules() {
+    let exact = "a".repeat(MAX_INPUT_BYTES);
+    assert!(matches!(
+        InputLine::from_text(exact.clone()),
+        InputLine::Prompt(text) if text == exact
+    ));
+    assert!(matches!(
+        InputLine::from_text("a".repeat(MAX_INPUT_BYTES + 1)),
+        InputLine::Rejected(InputRejection::TooLong)
+    ));
+    assert!(matches!(
+        InputLine::from_text(" \t ".to_owned()),
+        InputLine::Rejected(InputRejection::Blank)
+    ));
+}
+
 #[tokio::test]
 async fn input_reader_rejects_locally_and_drains_overflow_before_next_line() {
     let mut bytes = vec![b'a'; MAX_INPUT_BYTES + 10];

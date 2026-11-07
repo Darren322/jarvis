@@ -3,16 +3,24 @@ use std::path::PathBuf;
 use rig_agent::AgentBuilder;
 use tokio::io::BufReader;
 
-use crate::clients::{local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings};
+use crate::clients::{
+    local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText,
+};
 use crate::config::{AppConfig, OptionalTtsConfig};
 use crate::features::{
     assistant::{Assistant, SYSTEM_PREAMBLE},
     conversation::ConversationSession,
+    listening::{Listener, Recorder},
     memory::MemoryService,
     speech::SpeechOutput,
 };
-use crate::interfaces::cli::{presentation::TerminalPresenter, repl::run_input_loop};
+use crate::interfaces::cli::{
+    diagnostics::error_chain, presentation::TerminalPresenter, repl::run_input_loop,
+};
 use crate::tools;
+
+/// The ALSA recording program; tests substitute a fake script.
+const CAPTURE_PROGRAM: &str = "arecord";
 
 // LEARNING: `App` is like a Java class's related fields; its `impl` block below
 // supplies methods, while Rust declares data and behavior in separate blocks.
@@ -22,6 +30,8 @@ pub struct App {
     embeddings: RemoteEmbeddings,
     archive_path: PathBuf,
     tts_config: OptionalTtsConfig,
+    /// `None` when the speech-to-text settings are absent: `/listen` says so.
+    listener: Option<Listener>,
 }
 
 impl App {
@@ -40,6 +50,13 @@ impl App {
         let agent =
             tools::register(AgentBuilder::new(local_llm.model()).preamble(SYSTEM_PREAMBLE)).build();
         let assistant = Assistant::new(agent);
+        let listener = match &config.speech_to_text {
+            Some(stt) => Some(Listener::new(
+                Recorder::new(&stt.capture_device, CAPTURE_PROGRAM),
+                SpeechToText::new(stt)?,
+            )),
+            None => None,
+        };
 
         // LEARNING: `Self` means `App` here. Field shorthand moves each local
         // into its same-named field; it does not make an extra copy.
@@ -49,11 +66,13 @@ impl App {
             embeddings,
             archive_path: config.archive_path.clone(),
             tts_config: config.tts.clone(),
+            listener,
         })
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.local_llm.health_check().await?;
+        self.warn_if_speech_to_text_is_down().await;
 
         let mut speech = match &self.tts_config {
             OptionalTtsConfig::Disabled => None,
@@ -93,7 +112,20 @@ impl App {
             &mut speech,
             &mut input,
             &mut presenter,
+            self.listener.as_ref(),
         )
         .await
+    }
+
+    /// The server may come up later, so a failed probe warns and leaves `/listen` on.
+    async fn warn_if_speech_to_text_is_down(&self) {
+        if let Some(listener) = &self.listener
+            && let Err(error) = listener.health_check().await
+        {
+            eprintln!(
+                "Warning: the speech-to-text server is not reachable; /listen will try again when used: {}",
+                error_chain(&error)
+            );
+        }
     }
 }

@@ -12,6 +12,8 @@ fn parses_each_command_and_its_nearest_non_command() {
     let cases: Vec<(&str, Command)> = vec![
         ("/exit", Command::Exit),
         ("/stop", Command::Stop),
+        (" /listen ", Command::Listen),
+        ("/listen now", Command::Prompt("/listen now".into())),
         ("  /reset  ", Command::Reset),
         ("/help", Command::Help),
         ("/memories", memory(MemoryCommand::List(None))),

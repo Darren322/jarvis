@@ -23,8 +23,6 @@ pub struct AppConfig {
     pub archive_path: PathBuf,
     pub tts: OptionalTtsConfig,
     /// `None` when no speech-to-text setting is present.
-    // T6 reads this to start `/listen`; remove this allow then.
-    #[allow(dead_code)]
     pub speech_to_text: Option<SpeechToTextConfig>,
 }
 

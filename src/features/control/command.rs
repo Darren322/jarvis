@@ -6,6 +6,9 @@ use crate::storage::MemoryId;
 pub(crate) enum Command {
     Exit,
     Stop,
+    /// Record from the microphone and send what was said. Whichever interface
+    /// owns the microphone runs it.
+    Listen,
     Reset,
     Help,
     Memory(MemoryCommand),
@@ -36,6 +39,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/memory status",   "show memory counts and embedder state"),
     ("/memory rebuild",  "re-embed every memory while idle"),
     ("/reset",           "clear the conversation context and start a new session"),
+    ("/listen",          "speak instead of typing; Enter sends what you said"),
     ("/stop",            "stop speaking"),
     ("/help",            "show this list"),
     ("/exit",            "quit"),
@@ -60,6 +64,7 @@ pub(crate) fn parse(input: String) -> Command {
     match trimmed {
         "/exit" => return Command::Exit,
         "/stop" => return Command::Stop,
+        "/listen" => return Command::Listen,
         "/reset" => return Command::Reset,
         "/help" => return Command::Help,
         "/memories" => return Command::Memory(MemoryCommand::List(None)),

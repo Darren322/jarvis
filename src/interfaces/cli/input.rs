@@ -11,6 +11,20 @@ pub(crate) enum InputLine {
     Rejected(InputRejection),
 }
 
+impl InputLine {
+    /// Applies the typed-input rules (length cap, not blank) to text that was not typed,
+    /// such as a transcript, so it is accepted or rejected exactly like a typed line.
+    pub(crate) fn from_text(text: String) -> Self {
+        if text.len() > MAX_INPUT_BYTES {
+            Self::Rejected(InputRejection::TooLong)
+        } else if text.trim().is_empty() {
+            Self::Rejected(InputRejection::Blank)
+        } else {
+            Self::Prompt(text)
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum InputRejection {
     TooLong,
@@ -127,10 +141,7 @@ fn decode_input(mut bytes: Vec<u8>, terminated: bool) -> io::Result<InputLine> {
         Ok(prompt) => prompt,
         Err(_) => return Ok(InputLine::Rejected(InputRejection::InvalidUtf8)),
     };
-    if prompt.trim().is_empty() {
-        return Ok(InputLine::Rejected(InputRejection::Blank));
-    }
-    Ok(InputLine::Prompt(prompt))
+    Ok(InputLine::from_text(prompt))
 }
 
 #[cfg(test)]

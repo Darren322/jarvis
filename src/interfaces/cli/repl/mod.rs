@@ -1,4 +1,4 @@
-use std::{future::Future, io, pin::Pin};
+use std::{future::Future, io, mem, pin::Pin};
 
 use tokio::io::AsyncBufRead;
 
@@ -6,17 +6,21 @@ use crate::features::{
     assistant::Assistant,
     control::{self, Command, MemoryControl},
     conversation::ConversationSession,
+    listening::Listener,
     memory::MemoryService,
+    state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
 
 mod idle;
+mod listen;
 mod speech;
 mod turn;
 
 use idle::read_line_during_idle_work;
+use listen::{ListenEnd, NOT_CONFIGURED, listen};
 use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
 use turn::run_prompt;
 
@@ -29,13 +33,17 @@ pub(crate) async fn run_input_loop<R, S, P>(
     speech: &mut Option<S>,
     input: &mut R,
     presenter: &mut P,
+    listener: Option<&Listener>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
     S: SpeechControl,
     P: AssistantPresenter,
 {
-    let result = run_input_loop_inner(assistant, session, memory, speech, input, presenter).await;
+    let result = run_input_loop_inner(
+        assistant, session, memory, speech, input, presenter, listener,
+    )
+    .await;
     if let Some(speech) = speech.as_mut()
         && let Err(error) = speech.shutdown().await
     {
@@ -54,6 +62,7 @@ async fn run_input_loop_inner<R, S, P>(
     speech: &mut Option<S>,
     input: &mut R,
     presenter: &mut P,
+    listener: Option<&Listener>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
@@ -66,9 +75,15 @@ where
     let mut next_input = None;
     let mut idle_work_due = true;
     let mut memory_control = MemoryControl::default();
+    // A spoken line was handed over and the state is still `Transcribing`.
+    let mut transcript_awaiting_handling = false;
 
     loop {
         if !prompt_is_visible && next_input.is_none() {
+            if mem::take(&mut transcript_awaiting_handling) {
+                // The spoken line was a command that reports no state of its own.
+                presenter.state(AssistantState::Idle)?;
+            }
             presenter.prompt()?;
         }
         let (line, memory_warning) = if let Some(line) = next_input.take() {
@@ -91,6 +106,21 @@ where
             InputLine::Prompt(raw) => match control::parse(raw) {
                 Command::Exit => return Ok(()),
                 Command::Stop => println!("Stopped."),
+                Command::Listen => {
+                    transcript_awaiting_handling = false;
+                    match listener {
+                        None => presenter.notice(NOT_CONFIGURED)?,
+                        Some(listener) => match listen(listener, &mut input, presenter).await? {
+                            ListenEnd::Done => {}
+                            ListenEnd::Heard(line) => {
+                                transcript_awaiting_handling = true;
+                                next_input = Some(line);
+                            }
+                            ListenEnd::Interrupted(line) => next_input = Some(line),
+                        },
+                    }
+                    idle_work_due = true;
+                }
                 Command::Help => println!("{}", control::help_text()),
                 Command::Usage(hint) => println!("{hint}"),
                 Command::Reset => {
@@ -111,6 +141,8 @@ where
                     idle_work_due = true;
                 }
                 Command::Prompt(prompt) => {
+                    // `run_prompt` reports its own states, starting with `Thinking`.
+                    transcript_awaiting_handling = false;
                     let speaking = if speech_available {
                         speech.as_mut()
                     } else {

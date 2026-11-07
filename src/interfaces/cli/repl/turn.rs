@@ -6,6 +6,7 @@ use crate::features::{
     assistant::{Assistant, AssistantTextDelta},
     conversation::{ConversationSession, ConversationTurn},
     memory::MemoryService,
+    state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{
     print_run_diagnostics, report_turn_warnings, safe_error_message,
@@ -90,6 +91,7 @@ where
     P: AssistantPresenter,
 {
     let prompt_started = Instant::now();
+    presenter.state(AssistantState::Thinking)?;
     let (sender, deltas) = mpsc::channel(TEXT_DELTA_QUEUE);
     let mut text = TextStream {
         response: Box::pin(session.respond_stream(assistant, memory, prompt, sender)),
@@ -126,6 +128,9 @@ where
             match event {
                 Event::PlaybackStarted(signalled) => {
                     answer.note_playback_started(signalled, prompt_started);
+                    if signalled && let Err(error) = presenter.state(AssistantState::Speaking) {
+                        break SpeechExit::Io(error);
+                    }
                 }
                 Event::Speech(result) => break SpeechExit::Finished(result),
                 Event::Input(Ok(InputLine::Rejected(reason))) => {
@@ -183,7 +188,19 @@ where
         let first_audio = answer.first_audio;
         drop(answer);
         match settle_speech(speech, exit).await {
-            Ok(wait) => spoken = Some(SpokenOutcome { wait, first_audio }),
+            Ok(wait) => {
+                spoken = Some(SpokenOutcome { wait, first_audio });
+                // Speech is over but the model is still writing.
+                if first_audio.is_some()
+                    && finished.is_none()
+                    && let Err(error) = presenter.state(AssistantState::Thinking)
+                {
+                    // Same as a terminal write failure: stop the run, keep the prompt on record.
+                    drop(text);
+                    let _ = session.record_interrupted(prompt).await;
+                    return Err(error);
+                }
+            }
             Err(error) => {
                 // Same as a terminal write failure: stop the run and keep the prompt on record.
                 if !text.is_done {
@@ -223,6 +240,7 @@ where
     {
         presenter.prompt()?;
     }
+    presenter.state(AssistantState::Idle)?;
 
     Ok(PromptEnd {
         succeeded: end.succeeded,

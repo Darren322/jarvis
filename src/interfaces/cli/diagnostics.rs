@@ -7,7 +7,7 @@ use crate::storage::MemorySaveState;
 /// Joins an error and every `source()` beneath it with `: `, so a warning
 /// names the underlying cause (e.g. `speech synthesis failed: tts synthesis
 /// timed out`) rather than only the outermost message.
-pub(super) fn error_chain(error: &(dyn Error + 'static)) -> String {
+pub(crate) fn error_chain(error: &(dyn Error + 'static)) -> String {
     std::iter::successors(Some(error), |&error| error.source())
         .map(ToString::to_string)
         .collect::<Vec<_>>()

@@ -12,11 +12,16 @@ use std::{
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, process::Command, time::Instant};
 
+mod listener;
+
+pub(crate) use listener::{Heard, ListenError, Listener};
+
 const SAMPLE_RATE_HZ: u32 = 16_000;
 const CHANNELS: u32 = 1;
 const BYTES_PER_SAMPLE: u32 = 2;
 const BYTES_PER_SECOND: u32 = SAMPLE_RATE_HZ * CHANNELS * BYTES_PER_SAMPLE;
-const MAX_RECORDING_SECONDS: u32 = 15;
+/// The longest recording in seconds; a front end can tell the user.
+pub(crate) const MAX_RECORDING_SECONDS: u32 = 15;
 const MIN_RECORDING_MILLISECONDS: u32 = 300;
 const MILLISECONDS_PER_SECOND: u32 = 1000;
 // The `as` casts below widen u32 values that are at most
@@ -50,11 +55,10 @@ pub(crate) enum CaptureError {
     TooShort { bytes: usize },
 }
 
-/// Mono S16_LE PCM held in memory. `pcm` always holds whole samples.
+/// Mono 16 kHz S16_LE PCM held in memory. `pcm` always holds whole samples.
 #[derive(Debug)]
 pub(crate) struct Recording {
     pub(crate) pcm: Vec<u8>,
-    pub(crate) sample_rate: u32,
 }
 
 /// Records from one ALSA device by running a recorder program.
@@ -141,10 +145,7 @@ impl Recorder {
         if pcm.len() < MIN_RECORDING_BYTES {
             return Err(CaptureError::TooShort { bytes: pcm.len() });
         }
-        Ok(Recording {
-            pcm,
-            sample_rate: SAMPLE_RATE_HZ,
-        })
+        Ok(Recording { pcm })
     }
 }
 

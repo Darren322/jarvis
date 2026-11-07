@@ -13,7 +13,7 @@ Settled with Darren in a grilling session on 2026-11-06. This file is the source
 | T4 Speech-to-text client | done | Wiremock-tested, 223 tests passing, committed in `ab3d18b`. Not yet run against the real server from Jarvis (T6 does that) |
 | T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests. Committed as `cb21752`. Not yet run against the real Pi mic (T6 acceptance) |
 | B1 Long answers fail speech | done | Moved into [real-time-speech](real-time-speech.md) R1 and R3 on 2026-11-06 |
-| T6 `/listen` command | not started | Unblocked: T4, T5 and T3 are all done |
+| T6 `/listen` command | in review | Implemented, uncommitted. Shared record-and-transcribe lives in `features/listening/listener.rs` (`Listener`); the CLI keeps the input race and display (`interfaces/cli/repl/listen.rs`). `AssistantState` (`features/state.rs`) is reported through `AssistantPresenter::state` for typed and spoken prompts. 251 tests pass (223 before). Not yet run on the Pi: needs the three `JARVIS_STT_*`/`JARVIS_CAPTURE_DEVICE` settings in the 8 GB Pi's `.env` (Darren's OK) and Darren speaking a question |
 
 **Resume here:** T3 and T4 closed on 2026-11-07. Next is **T6**, the `/listen` command, which wires T5 capture and the T4 client into the CLI. When T6 is accepted, set `JARVIS_STT_BASE_URL=http://jarvis-ai:8082/v1`, `JARVIS_STT_MODEL=whisper-medium` (the server ignores it) and `JARVIS_CAPTURE_DEVICE` (card 3, `plughw:CARD=Device_1`, per D9) in the 8 GB Pi's `.env`; that needs Darren's OK. Still open: `/memory status` shows the embedder ready (T1). Cleanup still open (D7): delete the spike clips in `/tmp/stt-spike` on the 8 GB Pi, in `/tmp` on the 16 GB Pi, and in the session scratchpad. `/tmp/acceptance*.out` on the 8 GB Pi and `~/jarvis-stt/term-test.out` on the 16 GB Pi hold transcripts and belong in the same cleanup. For Darren to decide: `NetworkManager-wait-online.service` fails at boot (60 s timeout) and delays every service ordered after `network-online.target` by about a minute. It is outside this spec, and it is unknown whether it predates the Hailo work. Read `notes/HANDOFF_2026-11-07.md` first.
 
@@ -140,5 +140,14 @@ Each ticket lists the files it owns. An agent touches nothing else without askin
 
 ## Out of scope (next specs)
 
-- **Jarvis animation:** an original audio-reactive design (not a copy of the film's interface). It is a local web page served by Jarvis, full-screen in Chromium on the 5" screen, and later the remote-control page. Needs approval for a web-server dependency (e.g. `axum`), LAN-only. Adds audio level to the state stream.
+- **Jarvis animation:** Darren wants actual 2D art and animation: an on-screen Jarvis character he can see speaking, not only an abstract audio-reactive shape (requirement of 2026-11-07). It is a local web page served by Jarvis, full-screen in Chromium on the 5" screen, and later the remote-control page. Needs approval for a web-server dependency (e.g. `axum`), LAN-only. Adds audio level to the state stream.
+  - **An original 2D Jarvis character.** The films' JARVIS has no face, so this is Darren's own design. It must not copy the films' interface or likeness.
+  - **Inputs it needs from Jarvis:**
+    - the assistant state stream from T6 (`Idle`, `Listening`, `Transcribing`, `Thinking`, `Speaking`), which picks the pose or animation
+    - the speech audio level, sampled about 30 times a second while speaking, so the mouth moves with loudness
+    - later, optionally, phoneme or viseme timing for real lip-sync. Whether Piper can provide phoneme timings is NOT verified; check it when that spec starts.
+    - a separate emotion field for expression or colour (Darren's example: red for anger), not mixed into the state enum
+  - **"Speaking" must follow actual audio playback,** start and end, not text streaming, so the mouth stays in sync.
+  - **Rendering:** a local web page served by Jarvis, full-screen in Chromium on the 8 GB Pi's 5" screen. A web-server crate needs Darren's approval.
+  - **Art:** frame sets per state and mouth shape, or a rigged character (for example Rive, which has state machines and a web runtime: not evaluated yet). The art itself comes from Darren or an artist.
 - Calendar read (8A), hold-to-talk or a GPIO button, wake words.

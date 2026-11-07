@@ -96,7 +96,6 @@ async fn recording_lengths_are_accepted_or_clamped_at_the_limits() {
             Ok(len) => {
                 let recording = result.unwrap_or_else(|e| panic!("{emitted}: {e}"));
                 assert_eq!(recording.pcm.len(), len, "emitted {emitted}");
-                assert_eq!(recording.sample_rate, 16_000);
             }
             Err(bytes) => assert!(
                 matches!(result, Err(CaptureError::TooShort { bytes: b }) if b == bytes),
