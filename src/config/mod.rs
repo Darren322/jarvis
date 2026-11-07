@@ -1,5 +1,6 @@
 mod embedding;
 mod local_llm;
+mod speech_to_text;
 mod tts;
 
 use std::{
@@ -9,6 +10,7 @@ use std::{
 
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
+pub use speech_to_text::SpeechToTextConfig;
 pub use tts::{OptionalTtsConfig, TtsConfig, TtsEngine};
 
 const DEFAULT_ARCHIVE_PATH: &str = "data/jarvis.sqlite3";
@@ -20,6 +22,10 @@ pub struct AppConfig {
     pub embedding: EmbeddingConfig,
     pub archive_path: PathBuf,
     pub tts: OptionalTtsConfig,
+    /// `None` when no speech-to-text setting is present.
+    // T6 reads this to start `/listen`; remove this allow then.
+    #[allow(dead_code)]
+    pub speech_to_text: Option<SpeechToTextConfig>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +38,8 @@ pub enum ConfigError {
     },
     #[error("could not resolve the current working directory")]
     CurrentDir(#[source] io::Error),
+    #[error("{name} is required because other speech-to-text settings are set")]
+    SpeechToTextIncomplete { name: &'static str },
 }
 
 impl AppConfig {
@@ -42,6 +50,7 @@ impl AppConfig {
         // represented in `tts` and leave text chat available.
         let local_llm = LocalLlmConfig::from_env()?;
         let embedding = EmbeddingConfig::from_env()?;
+        let speech_to_text = SpeechToTextConfig::from_env()?;
         let current_dir = env::current_dir().map_err(ConfigError::CurrentDir)?;
         let archive_path = resolve_from(
             &current_dir,
@@ -53,6 +62,7 @@ impl AppConfig {
             embedding,
             archive_path,
             tts: OptionalTtsConfig::from_env(&current_dir),
+            speech_to_text,
         })
     }
 }
