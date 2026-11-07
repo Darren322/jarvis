@@ -7,15 +7,15 @@ Settled with Darren in a grilling session on 2026-11-06. This file is the source
 | Ticket | State | Notes |
 | --- | --- | --- |
 | T0 16 GB Pi services | done | Installed 2026-11-06: `jarvis-gemma` and `jarvis-embeddings` systemd units, enabled; `/health` 200 from the 8 GB Pi after install and after restart (re-checked by Claude); BGE alias served. Wi-Fi power save off on both Pis. Remaining: Darren reboots the 16 GB Pi once to prove boot start |
-| T1 8 GB Pi cleanup + acceptance | in review | Cleanup done and re-checked 2026-11-06. By ear: speech plays, `/stop` works; a long answer failed and speech then stayed off until restart (now real-time-speech R1). Recall and `/forget` not yet checked |
+| T1 8 GB Pi cleanup + acceptance | in review | Cleanup done and re-checked 2026-11-06. By ear: speech plays, `/stop` works; long answers fixed by real-time speech (closed 2026-11-07). 2026-11-07: recall works, and `/memories <text>` and `/forget <id>` worked on the Pi. Remaining: `/memory status` shows the embedder ready |
 | T2 Speech-to-text spike | not started | Unblocked by T0. Needs Darren to speak the clips |
 | T3 Speech-to-text server | not started | Blocked on T2 (engine choice) |
 | T4 Speech-to-text client | not started | Blocked on T2 (wire format) |
-| T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests; 107 unit tests and clippy pass. Not yet run against the real Pi mic (T6 acceptance). Awaiting Darren's commit |
+| T5 Capture | done | Accepted 2026-11-06 after 1 review round: arecord child process, 15 s byte cap plus a 16 s wall-clock deadline, 0.3 s minimum, kill-on-drop. 9 tests. Committed as `cb21752`. Not yet run against the real Pi mic (T6 acceptance) |
 | B1 Long answers fail speech | done | Moved into [real-time-speech](real-time-speech.md) R1 and R3 on 2026-11-06 |
 | T6 `/listen` command | not started | Blocked on T4, T5 |
 
-**Resume here:** paused at T2 while [real-time-speech](real-time-speech.md) runs (decided 2026-11-06). Still open: Darren reboots the 16 GB Pi, checks recall and `/forget` (T1), and commits T0/T5.
+**Resume here:** [real-time speech](real-time-speech.md) closed on 2026-11-07, so this spec resumes at **T2** (speech-to-text spike: Darren records about 5 clips on the Pi). Still open: Darren reboots the 16 GB Pi once (T0), and `/memory status` shows the embedder ready (T1). Read `notes/HANDOFF_2026-11-07.md` first.
 
 ## Goal
 

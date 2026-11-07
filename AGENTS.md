@@ -4,7 +4,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 
 ## Current work
 
-- Active spec: [docs/specs/real-time-speech.md](docs/specs/real-time-speech.md). Then [push-to-talk](docs/specs/push-to-talk.md), paused at T2. Read each **Status** table first; it says what to resume.
+- Active spec: [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md), resuming at T2. [Real-time speech](docs/specs/real-time-speech.md) closed on 2026-11-07. Read the **Status** table first; it says what to resume.
 - At the end of every session, update that Status table (and the roadmap if a step finished) so the next session starts from current facts.
 
 ## Engineering practice
