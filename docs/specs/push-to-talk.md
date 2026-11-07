@@ -140,14 +140,5 @@ Each ticket lists the files it owns. An agent touches nothing else without askin
 
 ## Out of scope (next specs)
 
-- **Jarvis animation:** Darren wants actual 2D art and animation: an on-screen Jarvis character he can see speaking, not only an abstract audio-reactive shape (requirement of 2026-11-07). It is a local web page served by Jarvis, full-screen in Chromium on the 5" screen, and later the remote-control page. Needs approval for a web-server dependency (e.g. `axum`), LAN-only. Adds audio level to the state stream.
-  - **An original 2D Jarvis character.** The films' JARVIS has no face, so this is Darren's own design. It must not copy the films' interface or likeness.
-  - **Inputs it needs from Jarvis:**
-    - the assistant state stream from T6 (`Idle`, `Listening`, `Transcribing`, `Thinking`, `Speaking`), which picks the pose or animation
-    - the speech audio level, sampled about 30 times a second while speaking, so the mouth moves with loudness
-    - later, optionally, phoneme or viseme timing for real lip-sync. Whether Piper can provide phoneme timings is NOT verified; check it when that spec starts.
-    - a separate emotion field for expression or colour (Darren's example: red for anger), not mixed into the state enum
-  - **"Speaking" must follow actual audio playback,** start and end, not text streaming, so the mouth stays in sync.
-  - **Rendering:** a local web page served by Jarvis, full-screen in Chromium on the 8 GB Pi's 5" screen. A web-server crate needs Darren's approval.
-  - **Art:** frame sets per state and mouth shape, or a rigged character (for example Rive, which has state machines and a web runtime: not evaluated yet). The art itself comes from Darren or an artist.
+- **Jarvis animation:** now the epic [visual-jarvis](visual-jarvis/spec.md). The 2D character and the Chromium web page planned here were superseded by an original orb in a separate `jarvis-orb` program, with the state and audio level sent over a Unix socket.
 - Calendar read (8A), hold-to-talk or a GPIO button, wake words.

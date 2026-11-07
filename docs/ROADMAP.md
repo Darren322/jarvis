@@ -77,6 +77,7 @@ Follow-ups from the speech-to-text spike (2026-11-07):
   - Detection is local and no audio is stored (push-to-talk D7).
   - It reuses the T3/T4 transcription path; T5 and T6 stay as the push-to-talk path.
   - References: hailo-apps `v2a_demo` (openWakeWord, VAD) and `martincerven/hailo_learn` voice_assistant (Silero VAD, openWakeWord, Qwen on a second HAT).
+- **Jarvis animation.** The 2D character idea is superseded by the orb design in `specs/visual-jarvis/spec.md` (an original orb on the 5" touchscreen, driven over a Unix socket).
 - **The HAT will be shared with future vision work.** Use a shared VDevice or group ID, and test concurrent use; there is a forum report of a multi-model wedge on 5.3.0.
 
 ## Open decisions

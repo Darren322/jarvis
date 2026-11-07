@@ -169,6 +169,7 @@ Split or add structure when one of these triggers is hit, and not before:
   mod tests;
   ```
   No test code, helpers, or mocks in `src/`, and no visibility widened for tests.
+- Workspace member crates under `crates/` keep their tests in `crates/<name>/tests/`; `tests/unit/` mirrors the root crate's `src/` only.
 - **Integration tests** run the compiled binary and live in `tests/integration/`. Each is registered with a `[[test]]` entry in `Cargo.toml`. Never include unit tests in them.
 - **Test limits at their boundaries.** For every limit, test the last accepted value and the first rejected one (2,048 vs 2,049 input bytes, 1,500 vs 1,501 chunk bytes, 32 vs 33 recalled sources, 383/384/385 dimensions). Group cases into a table instead of writing near-identical functions.
 - **Test each rule once, in the layer that owns it.** The pure policy function covers every rule; hook tests cover only what the hook adds; HTTP tests cover only transport and wire format.
