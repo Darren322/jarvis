@@ -31,3 +31,6 @@ wiremock = "0.6.5"
 [[test]]
 name = "binary_integration"
 path = "tests/integration/cli/workflow_tests.rs"
+
+[workspace]
+members = ["crates/*"]
