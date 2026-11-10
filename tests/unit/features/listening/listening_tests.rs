@@ -260,3 +260,155 @@ async fn a_recorder_that_sends_no_audio_never_announces_recording_started() {
         Err(oneshot::error::TryRecvError::Closed)
     );
 }
+
+use tokio::sync::{broadcast, watch};
+
+/// Everything an observer has received so far, in order, and whether it lagged.
+fn drain(tap: &mut broadcast::Receiver<AudioChunk>) -> (Vec<u8>, bool) {
+    use broadcast::error::TryRecvError;
+    let (mut bytes, mut lagged) = (Vec::new(), false);
+    loop {
+        match tap.try_recv() {
+            Ok(chunk) => bytes.extend_from_slice(&chunk),
+            Err(TryRecvError::Lagged(_)) => lagged = true,
+            Err(TryRecvError::Empty | TryRecvError::Closed) => return (bytes, lagged),
+        }
+    }
+}
+
+/// A recorder that emits `bytes` of non-repeating data, then exits.
+fn emitting_random(fixture: &Fixture, bytes: usize) -> Recorder {
+    fixture.recorder(&format!("head -c {bytes} /dev/urandom"))
+}
+
+#[tokio::test]
+async fn every_observer_receives_every_chunk_in_order() {
+    let fixture = Fixture::new("tap-order");
+    let recorder = emitting_random(&fixture, 40_000);
+    let (mut first, mut second) = (recorder.tap(), recorder.tap());
+
+    let recording = recorder.record(pending(), unobserved()).await.unwrap();
+
+    for tap in [&mut first, &mut second] {
+        let (heard, lagged) = drain(tap);
+        assert!(!lagged);
+        assert_eq!(heard, recording.pcm);
+    }
+}
+
+#[tokio::test]
+async fn a_tap_subscribed_between_recordings_sees_the_next_recording() {
+    let fixture = Fixture::new("tap-later");
+    let recorder = emitting_random(&fixture, 20_000);
+    recorder.record(pending(), unobserved()).await.unwrap();
+    let mut late = recorder.tap();
+    assert!(
+        drain(&mut late).0.is_empty(),
+        "earlier audio is not replayed"
+    );
+
+    let recording = recorder.record(pending(), unobserved()).await.unwrap();
+
+    assert_eq!(drain(&mut late).0, recording.pcm);
+}
+
+#[tokio::test]
+async fn an_observer_that_never_reads_neither_blocks_nor_changes_the_recording() {
+    // More chunks than the tap holds: every read is at most READ_CHUNK_BYTES.
+    let bytes = (TAP_CAPACITY_CHUNKS + 1) * READ_CHUNK_BYTES;
+    assert!(bytes <= MAX_RECORDING_BYTES);
+    let script = format!("yes abcdefg | head -c {bytes}");
+
+    let baseline = Fixture::new("tap-baseline");
+    let expected = baseline
+        .recorder(&script)
+        .record(pending(), unobserved())
+        .await
+        .unwrap();
+
+    let fixture = Fixture::new("tap-full");
+    let recorder = fixture.recorder(&script);
+    let mut slow = recorder.tap();
+    let recording = tokio::time::timeout(
+        Duration::from_secs(10),
+        recorder.record(pending(), unobserved()),
+    )
+    .await
+    .expect("a full observer must not block the recording")
+    .unwrap();
+
+    assert_eq!(recording.pcm, expected.pcm);
+    // The slow observer lost the oldest chunks, then still gets the newest ones.
+    let (heard, lagged) = drain(&mut slow);
+    assert!(lagged);
+    assert!(!heard.is_empty() && heard.len() < bytes);
+    assert!(expected.pcm.ends_with(&heard));
+}
+
+#[tokio::test]
+async fn tapped_chunks_are_whole_samples_however_the_reads_split() {
+    // Odd-sized writes with a pause after each, so the reader usually sees each one
+    // alone: a 4097-byte write is read as 4096 + 1 bytes, a 3-byte write as 3. The
+    // pauses make an odd split very likely but cannot force one; the assertions
+    // hold however the reads split. 12 297 bytes is odd, so a lone byte ends the stream.
+    let fixture = Fixture::new("tap-odd");
+    let recorder = fixture.recorder(
+        "w() { head -c \"$1\" /dev/urandom; sleep 0.05; }\n\
+         w 4097; w 3; w 4097; w 3; w 4097",
+    );
+    let mut tap = recorder.tap();
+
+    let recording = recorder.record(pending(), unobserved()).await.unwrap();
+
+    let mut chunks = Vec::new();
+    while let Ok(chunk) = tap.try_recv() {
+        chunks.push(chunk);
+    }
+    assert!(!chunks.is_empty());
+    assert!(
+        chunks.iter().all(|chunk| chunk.len() % 2 == 0),
+        "odd chunk lengths: {:?}",
+        chunks.iter().map(|chunk| chunk.len()).collect::<Vec<_>>()
+    );
+    // Only the final lone byte is missing, and `Recording` drops it too.
+    assert_eq!(recording.pcm.len(), 12_296);
+    assert_eq!(chunks.concat(), recording.pcm);
+}
+
+#[tokio::test]
+async fn a_dropped_observer_does_not_end_or_change_the_recording() {
+    let fixture = Fixture::new("tap-closed");
+    let recorder = emitting_random(&fixture, 20_000);
+    let kept = recorder.tap();
+    drop(recorder.tap());
+    drop(kept);
+
+    let recording = recorder.record(pending(), unobserved()).await.unwrap();
+
+    assert_eq!(recording.pcm.len(), 20_000);
+}
+
+#[tokio::test]
+async fn the_mic_level_follows_the_audio_a_recording_taps() {
+    // 0x7F bytes make samples of 0x7F7F, which is just under full scale.
+    let fixture = Fixture::new("tap-level");
+    let recorder = fixture.recorder("head -c 20000 /dev/zero | tr '\\000' '\\177'");
+    let (levels, mut reader) = watch::channel(0.0);
+    let meter = tokio::spawn(run_level_meter(recorder.tap(), levels));
+
+    recorder.record(pending(), unobserved()).await.unwrap();
+
+    let loudest = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            reader.changed().await.unwrap();
+            let level = *reader.borrow();
+            if level > 0.0 {
+                return level;
+            }
+        }
+    })
+    .await
+    .expect("the meter should report the tapped audio");
+    assert!((0.99..=1.0).contains(&loudest), "{loudest}");
+    meter.abort();
+}

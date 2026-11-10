@@ -6,14 +6,26 @@
 use std::{
     io,
     process::{ExitStatus, Stdio},
+    sync::Arc,
     time::Duration,
 };
 
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, process::Command, sync::oneshot, time::Instant};
+use tokio::{
+    io::AsyncReadExt,
+    process::Command,
+    sync::{broadcast, oneshot},
+    time::Instant,
+};
 
+mod level;
 mod listener;
 
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "wired by visual-jarvis ticket 07")
+)]
+pub(crate) use level::run_level_meter;
 pub(crate) use listener::{Heard, ListenError, Listener};
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -38,6 +50,13 @@ const RECORDING_WAIT_GRACE: Duration = Duration::from_secs(1);
 const MAX_RECORDING_WAIT: Duration =
     Duration::from_secs(MAX_RECORDING_SECONDS as u64).saturating_add(RECORDING_WAIT_GRACE);
 const READ_CHUNK_BYTES: usize = 4096;
+/// Chunks an observer may fall behind before it loses the oldest: 64 reads, up to
+/// 8 s of audio.
+const TAP_CAPACITY_CHUNKS: usize = 64;
+
+/// A slice of the recorder's audio, shared by every observer: S16_LE PCM, always a
+/// whole number of samples (an even number of bytes), so it can be decoded alone.
+pub(crate) type AudioChunk = Arc<[u8]>;
 
 #[derive(Debug, Error)]
 pub(crate) enum CaptureError {
@@ -66,6 +85,8 @@ pub(crate) struct Recorder {
     device: String,
     program: String,
     max_wait: Duration,
+    /// Every chunk read, for observers; see `Recorder::tap`.
+    tap: broadcast::Sender<AudioChunk>,
 }
 
 impl Recorder {
@@ -75,7 +96,31 @@ impl Recorder {
             device: device.into(),
             program: program.into(),
             max_wait: MAX_RECORDING_WAIT,
+            tap: broadcast::channel(TAP_CAPACITY_CHUNKS).0,
         }
+    }
+
+    /// A new observer of the audio, such as a level meter or a voice-activity
+    /// detector. Each call is an independent observer, so any number can watch one
+    /// recording without `record` knowing about them.
+    ///
+    /// It sees every chunk of every later `record` call, in order, as the chunk is
+    /// read. Observers can never slow or end a recording: the tap is a bounded
+    /// broadcast, so one that falls `TAP_CAPACITY_CHUNKS` behind loses the oldest
+    /// chunks (its next `recv` reports `Lagged`), and a dropped one is just not
+    /// sent to. Chunks are sample-aligned: each holds a whole number of samples,
+    /// so one never starts or ends mid-sample, even when a read does (the half
+    /// sample joins the next chunk), and a lone byte at the end of a recording is
+    /// never sent. The last chunk may carry bytes past `MAX_RECORDING_BYTES` that
+    /// `Recording` discards. An observer that subscribes mid-recording starts at
+    /// the next sample boundary; one that lags loses whole chunks, so it stays
+    /// aligned.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired by visual-jarvis ticket 07")
+    )]
+    pub(crate) fn tap(&self) -> broadcast::Receiver<AudioChunk> {
+        self.tap.subscribe()
     }
 
     /// `recording_started` is sent when the first audio arrives, the earliest moment
@@ -112,6 +157,8 @@ impl Recorder {
         let mut stdout = child.stdout.take().ok_or(CaptureError::MissingStdout)?;
 
         let mut pcm: Vec<u8> = Vec::new();
+        // How much of `pcm` has been offered to the tap: always a whole number of samples.
+        let mut tapped = 0usize;
         let mut chunk = [0u8; READ_CHUNK_BYTES];
         let mut recorder_ended = false;
         let mut recording_started = Some(recording_started);
@@ -131,6 +178,17 @@ impl Recorder {
                 }
                 Ok(count) => {
                     pcm.extend_from_slice(&chunk[..count]);
+                    // Tap only whole samples: a read can end mid-sample, and the half
+                    // sample waits in `pcm` for the next read. `tapped` advances even
+                    // when nobody watches, so an observer that subscribes mid-recording
+                    // starts on a sample boundary and is never sent old audio. A final
+                    // lone byte is never tapped. `send` never waits; it fails only
+                    // without receivers, which is fine, and the copy is skipped then.
+                    let aligned = pcm.len() & !1;
+                    if aligned > tapped && self.tap.receiver_count() > 0 {
+                        let _ = self.tap.send(Arc::from(&pcm[tapped..aligned]));
+                    }
+                    tapped = aligned;
                     // A receiver that is gone just means nobody is showing the stage.
                     if let Some(started) = recording_started.take() {
                         let _ = started.send(());
