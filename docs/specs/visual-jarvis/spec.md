@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: tickets 01 (macroquad spike), 03 (workspace and `orb-protocol`), 04 (recorder audio tap) and 05 (speech playback level) can run in parallel; ticket 02 (VAD spike) needs Darren's voice.
+Resume here: 04 and 05 are done; 01 and 03 are in review (01 needs Darren's eye on full screen and cursor, 03 needs his OK for `serde_json` in `orb-protocol`). Next: 08 (`jarvis-orb` rendering). 02 (VAD spike) needs Darren's voice and blocks 06, 07, 09 and 10.
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 

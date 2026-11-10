@@ -4,8 +4,9 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 
 ## Current work
 
-- Active spec: [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md), resuming at T2. [Real-time speech](docs/specs/real-time-speech.md) closed on 2026-11-07. Read the **Status** table first; it says what to resume.
-- At the end of every session, update that Status table (and the roadmap if a step finished) so the next session starts from current facts.
+- Active spec: [docs/specs/visual-jarvis/spec.md](docs/specs/visual-jarvis/spec.md) (orb, tap-to-talk, VAD). Each ticket's `Status:` line in `issues/` is the progress record, and the spec's `Resume here:` line says what to do first.
+- [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md) closed on 2026-11-11; its "Resume here" lists the non-blocking leftovers. Latest handoff: the newest `notes/HANDOFF_*.md`.
+- At the end of every session, update the ticket `Status:` lines, the spec's `Resume here:` line and this section (and the roadmap if a step finished) so the next session starts from current facts.
 
 ## Engineering practice
 
@@ -42,8 +43,16 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root, created lazily. 
 - For plans and material design choices, use the `grilling` skill to settle open decisions before acting. Settled decisions and explicit authorizations persist; don't ask again.
 - Default learning workflow is hands-on Rust: explain one concept, offer one small patch with its rationale, then wait. Follow the requested scope; don't implement a whole phase when asked for a small change or guided learning, and don't start a phase just because it is documented.
 - **Branches.** All work happens on `dev`. `main` holds only stable releases that Darren cuts; never commit to it, merge into it or reset it. Agent worktrees must start from `dev`: check `git log --oneline -1` first and `git reset --hard dev` inside the worktree if it started elsewhere.
-- Preserve user changes. Don't commit, push, stage, or rewrite unrelated files unless asked. When asked to commit, make one commit per coherent step with a conventional prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `build`, `chore`) and a body that says what changed and why.
+- Preserve user changes. Don't commit, push, stage, or rewrite unrelated files unless asked. When asked to commit, make one commit per coherent step with a conventional prefix (`feat`, `fix`, `refactor`, `test`, `docs`, `build`, `chore`) and a body that says what changed and why. Commits are Darren's: use the repo's git identity as configured and add no `Co-Authored-By` or other assistant attribution line. Never push unless asked.
 - When delegating to sub-agents, give each explicit, non-overlapping file ownership, then integrate and review their work. Agents in worktrees build with `CARGO_TARGET_DIR=<main checkout>/target`, so dependency builds are shared rather than duplicated (about 2 GB per worktree otherwise). Remove each worktree once its changes are integrated. Run agents at `high` effort for very complicated features (concurrency, cancellation, streaming pipelines, multi-module wiring) and at default effort for simple, contained tickets.
+- **Delivering a ticket** (coordinator's loop; details in `docs/agents/issue-tracker.md`):
+  1. Take every frontier ticket (all blockers `done` or integrated) whose `Owns:` lists don't overlap, and run them in parallel. Set `Status: in-progress` and `Assignee:` in the main checkout; implementers don't edit ticket files.
+  2. Each brief carries the ticket text, the spec decisions it cites, the Engineering practice section, and these rules: stay inside `Owns:`; never commit; a failed command or a missing approval means stop and report, never force or work around it; report what was not verified.
+  3. Review before integrating: read the whole diff against the acceptance criteria, and re-run the Verification list yourself in the main checkout after `git apply`. An agent's "all green" is a claim, not evidence.
+  4. Integrate uncommitted into `dev`, tick the verified criteria, add a dated Comment with the evidence, set `Status: in-review`, and remove the worktree. Darren commits; then the ticket is `done`. A ticket blocked only on in-review tickets may start from the integrated working tree.
+  5. Who implements: Sonnet agents take contained tickets; the coordinator implements a ticket itself, in the main checkout, when it is hard (concurrency, cancellation, cross-module wiring) or when an agent is blocked or has failed a review round. The same review and Verification steps apply either way.
+  6. Batch what needs Darren (approvals, Pi changes, his voice or eyes) into one clear list instead of stopping at each one; keep working on everything that doesn't need him.
+- The repo is a Cargo workspace (root `jarvis` crate plus `crates/*`). Run the Verification commands with `--workspace` (and `cargo fmt --all --check`) so member crates are covered. Scratch crates outside `crates/` (such as `notes/*-spike/`) carry their own empty `[workspace]` table so the root workspace ignores them.
 - Near a usage limit, write a factual handoff under `notes/`: completed work vs. proposals, changed files, decisions, verification evidence, source revision, and the exact next small action.
 
 ## Layout
