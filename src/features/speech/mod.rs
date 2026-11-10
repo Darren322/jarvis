@@ -1,6 +1,7 @@
 mod chunker;
 mod output;
 mod playback;
+mod playback_level;
 mod sample_rate;
 mod tts_worker;
 

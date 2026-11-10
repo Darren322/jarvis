@@ -189,3 +189,89 @@ fn empty_chunks_and_failed_devices_are_rejected() {
         Err(PlaybackError::DeviceFailed)
     ));
 }
+
+/// Pulls `count` samples from the stand-in device.
+fn pull_samples(source: &mut MixerSource, count: usize) {
+    for _ in 0..count {
+        source.next();
+    }
+}
+
+#[test]
+fn the_level_follows_the_speech_the_mixer_plays_and_falls_to_zero_when_it_ends() {
+    let (mut player, mut source) = test_player();
+    let level = player.level();
+    player
+        .append(vec![0.5; 44_100], output_rate())
+        .expect("queue speech");
+
+    let mut heard_levels = Vec::new();
+    while player.is_playing() {
+        source.next();
+        if heard_levels.last() != Some(&level.level()) {
+            heard_levels.push(level.level());
+        }
+    }
+
+    let loudest = heard_levels.iter().copied().fold(0.0, f32::max);
+    assert!((loudest - 0.5).abs() < 1e-4, "speech reads {loudest}");
+    assert!(
+        heard_levels[..heard_levels.len() / 2]
+            .iter()
+            .all(|level| *level < 0.01),
+        "the wake noise before the speech is nearly silent"
+    );
+    player.finish();
+    assert_eq!(level.level(), 0.0);
+}
+
+#[test]
+fn stopping_sets_the_level_to_zero_and_the_dropped_audio_adds_nothing() {
+    let (mut player, mut source) = test_player();
+    let level = player.level();
+    player
+        .append(vec![0.5; 100_000], output_rate())
+        .expect("queue speech");
+    // The wake noise is 30,870 samples; stop well inside the speech.
+    pull_samples(&mut source, 45_000);
+    assert!(level.level() > 0.4, "speech was being measured");
+
+    player.stop();
+
+    assert_eq!(level.level(), 0.0);
+    pull_samples(&mut source, 10_000);
+    assert_eq!(level.level(), 0.0);
+}
+
+#[test]
+fn the_next_answer_is_measured_after_a_stop() {
+    let (mut player, mut source) = test_player();
+    let level = player.level();
+    player
+        .append(vec![0.5; 100_000], output_rate())
+        .expect("queue first answer");
+    pull_samples(&mut source, 45_000);
+    player.stop();
+
+    player
+        .append(vec![0.25; 100_000], output_rate())
+        .expect("queue second answer");
+    pull_samples(&mut source, 45_000);
+
+    assert!((level.level() - 0.25).abs() < 1e-4, "{}", level.level());
+}
+
+#[test]
+fn dropping_the_player_mid_answer_leaves_the_level_at_zero() {
+    let (mut player, mut source) = test_player();
+    let level = player.level();
+    player
+        .append(vec![0.5; 100_000], output_rate())
+        .expect("queue speech");
+    pull_samples(&mut source, 45_000);
+    assert!(level.level() > 0.4);
+
+    drop(player);
+
+    assert_eq!(level.level(), 0.0);
+}

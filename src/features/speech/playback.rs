@@ -18,7 +18,10 @@ use rodio::{
 };
 use thiserror::Error;
 
-use super::sample_rate::SampleRate;
+use super::{
+    playback_level::{LevelReceiver, PlaybackLevel},
+    sample_rate::SampleRate,
+};
 
 const OUTPUT_CHANNELS: u16 = 1;
 pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration::from_millis(700);
@@ -48,6 +51,8 @@ pub(super) struct AudioPlayer {
     _output: Box<dyn Any + Send>,
     player: Option<Player>,
     device_failed: Arc<AtomicBool>,
+    /// Loudness of what the mixer is pulling; 0 whenever nothing is playing.
+    level: PlaybackLevel,
 }
 
 impl AudioPlayer {
@@ -99,6 +104,7 @@ impl AudioPlayer {
             _output: Box::new(output),
             player: None,
             device_failed,
+            level: PlaybackLevel::new(),
         }
     }
 
@@ -126,26 +132,44 @@ impl AudioPlayer {
 
         let player = self.player.get_or_insert_with(|| {
             let player = Player::connect_new(&self.mixer);
-            player.append(samples_buffer(
+            player.append(self.level.tap(samples_buffer(
                 wake_noise(sample_rate),
                 sample_rate.for_rodio(),
-            ));
+            )));
             player
         });
-        player.append(samples_buffer(samples, sample_rate.for_rodio()));
+        player.append(
+            self.level
+                .tap(samples_buffer(samples, sample_rate.for_rodio())),
+        );
 
         Ok(())
     }
 
     /// Stops and drops the per-utterance player while keeping the output stream open.
+    /// The level goes to 0 and stays there until the next answer is played.
     pub fn stop(&mut self) {
         if let Some(player) = self.player.take() {
             player.stop();
         }
+        self.level.end();
     }
 
+    /// Ends an answer that has played out. The level goes to 0.
     pub fn finish(&mut self) {
         self.player = None;
+        self.level.end();
+    }
+
+    /// A reader of the playback loudness, 0 to 1, about 30 times a second while speech plays.
+    ///
+    /// It belongs to this player: if the player is replaced, ask the new one.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by visual-jarvis ticket 07")
+    )]
+    pub fn level(&self) -> LevelReceiver {
+        self.level.subscribe()
     }
 
     pub fn is_playing(&self) -> bool {
@@ -154,6 +178,13 @@ impl AudioPlayer {
 
     pub fn has_device_failed(&self) -> bool {
         self.device_failed.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for AudioPlayer {
+    /// A player dropped mid-answer (failure, shutdown) must not leave the level lit.
+    fn drop(&mut self) {
+        self.level.end();
     }
 }
 
