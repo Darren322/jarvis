@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: 02 and 06 are done. 07 (orb interface) and 12 (orb restyle: a mix of the JARVIS HUD and the Great Sage orb) are in review, uncommitted in the working tree; neither has run on the Pi. 01 and 08 are in review: Darren liked the six looks on the Pi, and whether the window was full screen with no cursor is still unconfirmed. Next: Darren looks at the restyled orb on the Pi (needs a commit and a pull there), then 09 (connect `jarvis-orb` to the socket) and 10.
+Resume here: 02 and 06 are done. 07 (orb interface) and 12 (restyle; Darren approved the look on the Pi) are committed and pushed, and the workspace builds on the Pi. 09 (orb link and taps) is in review, uncommitted. Next: commit and push 09, then the first end-to-end run on the Pi with Darren (Jarvis in a terminal, `jarvis-orb` on the screen: states, levels, each tap case, reconnect), then 10 (autostart). Still unconfirmed for 01 and 08: full screen with no cursor.
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 

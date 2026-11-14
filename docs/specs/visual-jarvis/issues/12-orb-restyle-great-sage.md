@@ -19,12 +19,12 @@ Owns: crates/jarvis-orb/src/look.rs, crates/jarvis-orb/src/orb.rs, crates/jarvis
 Keep from ticket 08: the `View` and `Look` split (`look.rs` pure, `orb.rs` drawing), the six distinct looks and what each one means (spec D2 and D3), the easing between looks, the stand-in driver and its flags, no text, no socket code, and the frame rate. The lattice of points may stay as a smaller, dimmer sparkle inside the core ring so the mic pulse and speech motion still read. Add a `--snapshot <dir>` flag that saves one PNG per view and exits, so the picture can be reviewed without the Pi.
 
 ## Acceptance criteria
-- [ ] The composition is face-on and matches the description above; the glyphs are invented and no text is drawn.
-- [ ] The six views stay visibly different and keep their meaning: offline dim grey and breathing; idle dim and slow; listening reacts to the mic level; transcribing spins a glyph band fast; thinking counter-rotates the bands around a gold core; speaking drives the rays and motion from the level.
+- [x] The composition is face-on and matches the description above; the glyphs are invented and no text is drawn.
+- [x] The six views stay visibly different and keep their meaning: offline dim grey and breathing; idle dim and slow; listening reacts to the mic level; transcribing spins a glyph band fast; thinking counter-rotates the bands around a gold core; speaking drives the rays and motion from the level.
 - [x] `look` stays a pure function with its table tests updated, including level 0.0, 1.0 and out-of-range values clamped.
 - [ ] `--snapshot <dir>` writes six PNG files; the coordinator has looked at them.
 - [x] No new crate. `cargo fmt`, `check`, `clippy -D warnings` and `test` pass for the workspace with `--locked --offline`, and `git diff --check` is clean.
-- [ ] 60 FPS on the 8 GB Pi (checked with `--demo --fps`), and Darren has seen it on the Pi screen.
+- [x] 60 FPS on the 8 GB Pi (checked with `--demo --fps`), and Darren has seen it on the Pi screen.
 
 ## Comments
 
@@ -34,3 +34,5 @@ Keep from ticket 08: the `View` and `Look` split (`look.rs` pure, `orb.rs` drawi
 - **New flag:** `--snapshot <dir>` saves one PNG per view and exits.
 - **Verified by Claude on the Mac:** the workspace Verification list is clean (19 `jarvis-orb` tests). Snapshots looked at by Claude: idle, thinking and speaking. Not looked at in the last version: offline, listening, transcribing. 180 FPS windowed on the Mac, which only shows it is not slow.
 - **Not done:** Claude has not read all 1,119 lines of the restyled `orb.rs`, only the parts it changed. Not built or run on the Pi, so the frame rate there and the look on the 5 inch screen are open. Darren has not seen it.
+
+2026-11-14 (Claude, later): committed as `2b934d4` and pushed; the Pi checkout is at `a5763ab` and the whole workspace builds there in release mode (2 min). On the 8 GB Pi the restyled orb ran `--demo --fps --seconds 31`: 60.0 FPS in every one-second window, longest frame 16.95 ms, 4.6% of one core, 78 MiB, exit 0. Darren saw it on the Pi screen and said "the orb looks good". Still open: Claude has not looked at the offline, listening and transcribing snapshots of the final version, and has not read all of `orb.rs`.
