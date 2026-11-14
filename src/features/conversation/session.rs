@@ -6,7 +6,7 @@ use super::history::{History, merge_source_dependencies};
 use crate::features::assistant::{
     Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta,
 };
-use crate::features::memory::{MemoryService, RecallSnapshot};
+use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot};
 use crate::storage::{
     ArchiveOutcome, ConversationArchive, MemoryEligibility, MemoryRepository, MemorySaveState,
     SourceId, StorageError,
@@ -73,19 +73,23 @@ impl ConversationSession {
         self.history.clear();
     }
 
-    /// Retrieves bounded memory once, sends it as one run-local message before the
-    /// last whole exchange, and archives the canonical final only after the native stream completes.
+    /// When `recall_mode` is `Search`, retrieves bounded memory once and sends it as
+    /// one run-local message before the last whole exchange. `Skip` makes no search
+    /// and no warning. Either way the canonical final is archived only after the
+    /// native stream completes.
     pub(crate) async fn respond_stream(
         &mut self,
         assistant: &Assistant,
         memory: Option<&MemoryService>,
+        recall_mode: RecallMode,
         prompt: &str,
         deltas: mpsc::Sender<AssistantTextDelta>,
     ) -> ConversationTurn {
         let excluded = self.history.source_ids();
-        let recall = match memory {
-            Some(memory) => memory.recall(prompt, &excluded).await,
-            None => RecallSnapshot::unavailable(
+        let recall = match (recall_mode, memory) {
+            (RecallMode::Skip, _) => RecallSnapshot::default(),
+            (RecallMode::Search, Some(memory)) => memory.recall(prompt, &excluded).await,
+            (RecallMode::Search, None) => RecallSnapshot::unavailable(
                 "local memory storage is unavailable; normal chat is continuing",
             ),
         };

@@ -238,7 +238,10 @@ async fn run_one_prompt_with_taps(
         &mut input,
         &mut taps,
         speech.as_mut(),
-        "a question",
+        PromptRequest {
+            text: "a question",
+            recall: RecallMode::Skip,
+        },
     )
     .await
     .expect("the prompt should run");
@@ -591,7 +594,10 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
         &mut input,
         &mut Taps::none(),
         Some(&mut speech),
-        "a question",
+        PromptRequest {
+            text: "a question",
+            recall: RecallMode::Skip,
+        },
     )
     .await;
 

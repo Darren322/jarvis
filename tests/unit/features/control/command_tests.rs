@@ -24,6 +24,16 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("/memory rebuild", memory(MemoryCommand::Rebuild)),
         // The import path keeps its inner spaces.
         ("/import notes from 2024.md", memory(MemoryCommand::Import("notes from 2024.md".into()))),
+        // /recall runs the question as a prompt with a search; without one it shows a hint.
+        ("/recall what is my cat called?", Command::Recall("what is my cat called?".into())),
+        ("  /recall   last time we met  ", Command::Recall("last time we met".into())),
+        ("/recall", Command::Usage("Use /recall followed by what you want to remember.")),
+        ("  /recall  ", Command::Usage("Use /recall followed by what you want to remember.")),
+        ("/recalled it", Command::Usage(UNKNOWN)),
+        // An ordinary line that mentions "recall" is still a prompt (the REPL decides on a search).
+        ("do you recall my cat?", Command::Prompt("do you recall my cat?".into())),
+        ("recall my cat", Command::Prompt("recall my cat".into())),
+        ("what does /recall do", Command::Prompt("what does /recall do".into())),
         // /forget takes exactly a numeric id.
         ("/forget 42", memory(MemoryCommand::Forget(MemoryId(42)))),
         ("/forget 4x2", Command::Usage("Use /forget followed by a numeric memory ID.")),

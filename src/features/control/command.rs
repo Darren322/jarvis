@@ -12,6 +12,8 @@ pub(crate) enum Command {
     Reset,
     Help,
     Memory(MemoryCommand),
+    /// `/recall <question>`: run the question as a prompt with a memory search forced.
+    Recall(String),
     /// A recognized command with unusable arguments; holds the usage hint.
     Usage(&'static str),
     Prompt(String),
@@ -35,6 +37,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/forget <id>",     "forget a memory and everything built from it"),
     ("forget that",      "forget the last answer or the single listed memory"),
     ("forget <detail>",  "forget the one memory that matches <detail>"),
+    ("/recall <question>", "answer <question> after searching old conversations"),
     ("/import <path>",   "remember a .txt or .md file (up to 1 MiB)"),
     ("/memory status",   "show memory counts and embedder state"),
     ("/memory rebuild",  "re-embed every memory while idle"),
@@ -67,6 +70,7 @@ pub(crate) fn parse(input: String) -> Command {
         "/listen" => return Command::Listen,
         "/reset" => return Command::Reset,
         "/help" => return Command::Help,
+        "/recall" => return Command::Usage(RECALL_USAGE),
         "/memories" => return Command::Memory(MemoryCommand::List(None)),
         "/memory status" => return Command::Memory(MemoryCommand::Status),
         "/memory rebuild" => return Command::Memory(MemoryCommand::Rebuild),
@@ -81,6 +85,9 @@ pub(crate) fn parse(input: String) -> Command {
             Ok(id) => Command::Memory(MemoryCommand::Forget(MemoryId(id))),
             Err(_) => Command::Usage("Use /forget followed by a numeric memory ID."),
         };
+    }
+    if let Some(question) = trimmed.strip_prefix("/recall ") {
+        return Command::Recall(question.trim().to_owned());
     }
     if let Some(path) = input.trim_start().strip_prefix("/import ") {
         return Command::Memory(MemoryCommand::Import(path.trim_start().to_owned()));
@@ -104,6 +111,8 @@ pub(crate) fn parse(input: String) -> Command {
 
     Command::Prompt(input)
 }
+
+const RECALL_USAGE: &str = "Use /recall followed by what you want to remember.";
 
 /// Shown for a mistyped command such as `/iste`, so it is not sent to the model as a prompt.
 const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for commands.";

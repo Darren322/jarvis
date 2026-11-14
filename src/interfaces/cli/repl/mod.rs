@@ -7,7 +7,7 @@ use crate::features::{
     control::{self, Command, MemoryControl, TapAction, tap_action},
     conversation::ConversationSession,
     listening::Listener,
-    memory::MemoryService,
+    memory::{MemoryService, RecallMode, wants_memory_search},
     state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
@@ -22,7 +22,7 @@ mod turn;
 use idle::read_line_during_idle_work;
 use listen::{ListenEnd, ListenStop, NOT_CONFIGURED, listen};
 use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
-use turn::run_prompt;
+use turn::{PromptRequest, run_prompt};
 
 type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>;
 
@@ -177,108 +177,138 @@ where
         match line {
             InputLine::Eof => return Ok(()),
             InputLine::Rejected(reason) => eprintln!("Input rejected: {}", reason.message()),
-            InputLine::Prompt(raw) => match control::parse(raw) {
-                Command::Exit => return Ok(()),
-                Command::Stop => println!("Stopped."),
-                Command::Listen => {
-                    match listener {
-                        None => presenter.notice(NOT_CONFIGURED)?,
-                        Some(listener) => {
-                            listen_once(
-                                listener,
-                                &mut input,
-                                &mut taps,
-                                presenter,
-                                ListenStop::OnRequest,
-                                &mut state_awaiting_idle,
-                                &mut next_input,
-                            )
-                            .await?;
-                        }
-                    }
-                    idle_work_due = true;
-                }
-                Command::Help => println!("{}", control::help_text()),
-                Command::Usage(hint) => println!("{hint}"),
-                Command::Reset => {
-                    if let Some(speech) = speech.as_mut() {
-                        let cleanup_ok = report_speech_cleanup(speech.cancel().await);
-                        if !cleanup_ok || speech.is_disabled() {
-                            speech_available = false;
-                        }
-                    }
-                    if let Err(error) = session.reset().await {
-                        eprintln!("Warning: local archiving is unavailable: {error}");
-                    }
-                    memory_control.clear();
-                    println!("Conversation context reset.");
-                }
-                Command::Memory(command) => {
-                    print_notices(&memory_control.run(command, memory, session).await);
-                    idle_work_due = true;
-                }
-                Command::Prompt(prompt) => {
-                    // `run_prompt` reports its own states, starting with `Thinking`.
-                    state_awaiting_idle = false;
-                    let speaking = if speech_available {
-                        speech.as_mut()
-                    } else {
-                        None
-                    };
-                    let end = run_prompt(
-                        assistant, session, memory, presenter, &mut input, &mut taps, speaking,
-                        &prompt,
-                    )
-                    .await?;
-                    if end.succeeded {
-                        memory_control.focus_on_turn(end.current_source_id);
-                    }
-                    prompt_is_visible = false;
-                    listen_due = end.listen_next;
-                    if let Some(SpokenOutcome { wait, first_audio }) = end.speech {
-                        presenter.notice(&format_first_audio(first_audio))?;
-                        let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
-                        match wait {
-                            SpeechWait::Completed => {
-                                if speech_disabled {
-                                    speech_available = false;
-                                }
-                                prompt_is_visible = true;
-                            }
-                            SpeechWait::Stopped { cleanup_ok } => {
-                                if cleanup_ok {
-                                    println!("Speech stopped.");
-                                }
-                                if !cleanup_ok || speech_disabled {
-                                    speech_available = false;
-                                }
-                                prompt_is_visible = true;
-                            }
-                            SpeechWait::Input { line, cleanup_ok } => {
-                                if !cleanup_ok || speech_disabled {
-                                    speech_available = false;
-                                }
-                                state_awaiting_idle = true;
-                                next_input = Some(line);
-                                prompt_is_visible = true;
-                            }
-                            SpeechWait::Aborted { cleanup_ok } => {
-                                if !cleanup_ok || speech_disabled {
-                                    speech_available = false;
-                                }
-                            }
-                            SpeechWait::Tapped { cleanup_ok } => {
-                                if !cleanup_ok || speech_disabled {
-                                    speech_available = false;
-                                }
-                                prompt_is_visible = end.prompt_shown;
+            InputLine::Prompt(raw) => {
+                let command = control::parse(raw);
+                let recall = recall_mode(&command);
+                match command {
+                    Command::Exit => return Ok(()),
+                    Command::Stop => println!("Stopped."),
+                    Command::Listen => {
+                        match listener {
+                            None => presenter.notice(NOT_CONFIGURED)?,
+                            Some(listener) => {
+                                listen_once(
+                                    listener,
+                                    &mut input,
+                                    &mut taps,
+                                    presenter,
+                                    ListenStop::OnRequest,
+                                    &mut state_awaiting_idle,
+                                    &mut next_input,
+                                )
+                                .await?;
                             }
                         }
+                        idle_work_due = true;
                     }
-                    idle_work_due = true;
+                    Command::Help => println!("{}", control::help_text()),
+                    Command::Usage(hint) => println!("{hint}"),
+                    Command::Reset => {
+                        if let Some(speech) = speech.as_mut() {
+                            let cleanup_ok = report_speech_cleanup(speech.cancel().await);
+                            if !cleanup_ok || speech.is_disabled() {
+                                speech_available = false;
+                            }
+                        }
+                        if let Err(error) = session.reset().await {
+                            eprintln!("Warning: local archiving is unavailable: {error}");
+                        }
+                        memory_control.clear();
+                        println!("Conversation context reset.");
+                    }
+                    Command::Memory(command) => {
+                        print_notices(&memory_control.run(command, memory, session).await);
+                        idle_work_due = true;
+                    }
+                    Command::Prompt(prompt) | Command::Recall(prompt) => {
+                        // `run_prompt` reports its own states, starting with `Thinking`.
+                        state_awaiting_idle = false;
+                        let speaking = if speech_available {
+                            speech.as_mut()
+                        } else {
+                            None
+                        };
+                        let end = run_prompt(
+                            assistant,
+                            session,
+                            memory,
+                            presenter,
+                            &mut input,
+                            &mut taps,
+                            speaking,
+                            PromptRequest {
+                                text: &prompt,
+                                recall,
+                            },
+                        )
+                        .await?;
+                        if end.succeeded {
+                            memory_control.focus_on_turn(end.current_source_id);
+                        }
+                        prompt_is_visible = false;
+                        listen_due = end.listen_next;
+                        if let Some(SpokenOutcome { wait, first_audio }) = end.speech {
+                            presenter.notice(&format_first_audio(first_audio))?;
+                            let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
+                            match wait {
+                                SpeechWait::Completed => {
+                                    if speech_disabled {
+                                        speech_available = false;
+                                    }
+                                    prompt_is_visible = true;
+                                }
+                                SpeechWait::Stopped { cleanup_ok } => {
+                                    if cleanup_ok {
+                                        println!("Speech stopped.");
+                                    }
+                                    if !cleanup_ok || speech_disabled {
+                                        speech_available = false;
+                                    }
+                                    prompt_is_visible = true;
+                                }
+                                SpeechWait::Input { line, cleanup_ok } => {
+                                    if !cleanup_ok || speech_disabled {
+                                        speech_available = false;
+                                    }
+                                    state_awaiting_idle = true;
+                                    next_input = Some(line);
+                                    prompt_is_visible = true;
+                                }
+                                SpeechWait::Aborted { cleanup_ok } => {
+                                    if !cleanup_ok || speech_disabled {
+                                        speech_available = false;
+                                    }
+                                }
+                                SpeechWait::Tapped { cleanup_ok } => {
+                                    if !cleanup_ok || speech_disabled {
+                                        speech_available = false;
+                                    }
+                                    prompt_is_visible = end.prompt_shown;
+                                }
+                            }
+                        }
+                        idle_work_due = true;
+                    }
                 }
-            },
+            }
         }
+    }
+}
+
+/// Whether the run for `command` searches memory: `/recall` always does, and a
+/// plain prompt does only when it asks (see [`wants_memory_search`]).
+fn recall_mode(command: &Command) -> RecallMode {
+    match command {
+        Command::Recall(_) => RecallMode::Search,
+        Command::Prompt(prompt) if wants_memory_search(prompt) => RecallMode::Search,
+        Command::Prompt(_)
+        | Command::Exit
+        | Command::Stop
+        | Command::Listen
+        | Command::Reset
+        | Command::Help
+        | Command::Memory(_)
+        | Command::Usage(_) => RecallMode::Skip,
     }
 }
 

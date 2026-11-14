@@ -6,7 +6,7 @@ use crate::features::{
     assistant::{Assistant, AssistantTextDelta},
     control::{TapAction, tap_action},
     conversation::{ConversationSession, ConversationTurn},
-    memory::MemoryService,
+    memory::{MemoryService, RecallMode},
     state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{
@@ -27,6 +27,12 @@ const TEXT_DELTA_QUEUE: usize = 32;
 
 /// Shown in place of an answer that a tap dropped before any of it was printed.
 const ANSWER_DROPPED: &str = "Answer dropped.";
+
+/// One prompt and whether its run searches memory first.
+pub(super) struct PromptRequest<'a> {
+    pub(super) text: &'a str,
+    pub(super) recall: RecallMode,
+}
 
 /// What the loop needs to know about a finished prompt.
 pub(super) struct PromptEnd {
@@ -135,18 +141,22 @@ pub(super) async fn run_prompt<R, S, P>(
     input: &mut InputReader<R>,
     taps: &mut Taps,
     speech: Option<&mut S>,
-    prompt: &str,
+    request: PromptRequest<'_>,
 ) -> io::Result<PromptEnd>
 where
     R: AsyncBufRead + Unpin,
     S: SpeechControl,
     P: AssistantPresenter,
 {
+    let PromptRequest {
+        text: prompt,
+        recall,
+    } = request;
     let prompt_started = Instant::now();
     presenter.state(AssistantState::Thinking)?;
     let (sender, deltas) = mpsc::channel(TEXT_DELTA_QUEUE);
     let mut text = TextStream {
-        response: Box::pin(session.respond_stream(assistant, memory, prompt, sender)),
+        response: Box::pin(session.respond_stream(assistant, memory, recall, prompt, sender)),
         deltas,
         deltas_open: true,
         is_done: false,

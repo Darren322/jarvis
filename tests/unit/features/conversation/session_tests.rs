@@ -20,34 +20,47 @@ use wiremock::{
 use crate::{
     clients::remote_embeddings::RemoteEmbeddings,
     config::EmbeddingConfig,
-    features::{assistant::Assistant, memory::MemoryService},
-    storage::{ArchiveOutcome, MemoryEligibility},
+    features::{
+        assistant::Assistant,
+        memory::{MemoryService, RecallMode},
+    },
+    storage::{ArchiveOutcome, MemoryEligibility, MemorySaveState},
     tools::system_status_tool::SystemStatusTool,
 };
 
 use super::{ConversationSession, ConversationTurn, merge_source_dependencies};
 
 impl ConversationSession {
-    /// Drives the production `respond_stream` path without memory, draining
-    /// visible deltas concurrently as the CLI would.
+    /// Drives the production `respond_stream` path with no memory and no search,
+    /// draining visible deltas concurrently as the CLI would.
     async fn respond(&mut self, assistant: &Assistant, prompt: &str) -> ConversationTurn {
-        let (deltas, mut receiver) = mpsc::channel(16);
-        let drain = async { while receiver.recv().await.is_some() {} };
-        let (turn, ()) = tokio::join!(self.respond_stream(assistant, None, prompt, deltas), drain);
-        turn
+        self.respond_in_mode(assistant, None, RecallMode::Skip, prompt)
+            .await
     }
 
-    /// Same, with recall from `memory`.
+    /// Same, with `mode` deciding whether `memory` is searched.
     async fn respond_with_memory(
         &mut self,
         assistant: &Assistant,
         memory: &MemoryService,
+        mode: RecallMode,
+        prompt: &str,
+    ) -> ConversationTurn {
+        self.respond_in_mode(assistant, Some(memory), mode, prompt)
+            .await
+    }
+
+    async fn respond_in_mode(
+        &mut self,
+        assistant: &Assistant,
+        memory: Option<&MemoryService>,
+        mode: RecallMode,
         prompt: &str,
     ) -> ConversationTurn {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
         let (turn, ()) = tokio::join!(
-            self.respond_stream(assistant, Some(memory), prompt, deltas),
+            self.respond_stream(assistant, memory, mode, prompt, deltas),
             drain
         );
         turn
@@ -364,9 +377,11 @@ async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
     remove_archive(&path);
 }
 
-#[tokio::test]
-async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
-    // An unreachable embedder makes recall keyword-only, which is enough here.
+/// A session whose archive holds "My cat is called Miso." as searchable memory,
+/// with memory opened against an embedding server that always refuses (recall is
+/// then keyword-only, which is enough here). The server is returned so tests can
+/// count the requests it received.
+async fn session_with_cat_memory() -> (ConversationSession, PathBuf, MemoryService, MockServer) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/embeddings"))
@@ -383,13 +398,6 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         model: "bge-test".to_owned(),
     })
     .expect("a localhost URL is allowed");
-
-    let model = MockCompletionModel::from_stream_turns([
-        answer("Your cat has a name."),
-        answer("No further notes."),
-    ]);
-    let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let path = archive_path();
     let mut session = ConversationSession::new(path.clone());
     assert!(session.reset().await.is_ok());
@@ -410,9 +418,37 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         embeddings,
     );
     memory.wait_until_embedder_idle().await;
+    (session, path, memory, server)
+}
+
+/// How many embedding requests the server has received.
+async fn embedding_requests(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("request recording is on")
+        .iter()
+        .filter(|request| request.url.path() == "/v1/embeddings")
+        .count()
+}
+
+#[tokio::test]
+async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
+    let model = MockCompletionModel::from_stream_turns([
+        answer("Your cat has a name."),
+        answer("No further notes."),
+    ]);
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let (mut session, path, memory, server) = session_with_cat_memory().await;
 
     let first = session
-        .respond_with_memory(&assistant, &memory, "What is my cat called?")
+        .respond_with_memory(
+            &assistant,
+            &memory,
+            RecallMode::Search,
+            "What is my cat called?",
+        )
         .await;
     let first_batch = first
         .run
@@ -423,7 +459,7 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         .expect("Rig should return the successful batch")
         .to_vec();
     let second = session
-        .respond_with_memory(&assistant, &memory, "Anything else?")
+        .respond_with_memory(&assistant, &memory, RecallMode::Skip, "Anything else?")
         .await;
     assert!(second.run.is_ok());
 
@@ -456,7 +492,79 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
     assert!(!format!("{:?}", requests[1].chat_history).contains("Miso"));
     assert!(!format!("{:?}", session.history.stored_messages()).contains("Miso"));
 
+    // Only the searching run asked the embedding server for anything.
+    assert_eq!(embedding_requests(&server).await, 1);
+
     drop(memory);
+    drop(session);
+    remove_archive(&path);
+}
+
+#[tokio::test]
+async fn a_run_without_a_search_sends_no_memory_and_no_warning_but_is_still_stored() {
+    let model = MockCompletionModel::from_stream_turns([answer("It is Miso.")]);
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let (mut session, path, memory, server) = session_with_cat_memory().await;
+
+    let turn = session
+        .respond_with_memory(
+            &assistant,
+            &memory,
+            RecallMode::Skip,
+            "What is my cat called?",
+        )
+        .await;
+
+    assert!(turn.run.is_ok());
+    // Matching memory exists, but it was not asked for: not in the request,
+    // no embedding request, no warning.
+    let requests = model_handle.requests();
+    assert_eq!(
+        requests[0].chat_history,
+        vec![user_message("What is my cat called?")]
+    );
+    assert_eq!(embedding_requests(&server).await, 0);
+    assert_eq!(turn.context_warning, None);
+    // The turn is archived, indexed (it has a source) and recorded in the history.
+    assert!(turn.archive_error.is_none());
+    assert_eq!(turn.memory_state, Some(MemorySaveState::Saved));
+    assert!(turn.current_source_id.is_some());
+    assert!(!session.history.stored_messages().is_empty());
+
+    drop(memory);
+    drop(session);
+    let connection = Connection::open(&path).expect("archive database opens");
+    let turns: i64 = connection
+        .query_row("SELECT COUNT(*) FROM turns", [], |row| row.get(0))
+        .expect("turn count is readable");
+    assert_eq!(turns, 2);
+    drop(connection);
+    remove_archive(&path);
+}
+
+#[tokio::test]
+async fn only_a_search_that_cannot_run_warns_that_memory_is_unavailable() {
+    let model = MockCompletionModel::from_stream_turns([answer("one"), answer("two")]);
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_ok());
+
+    let skipped = session
+        .respond_in_mode(&assistant, None, RecallMode::Skip, "Hello")
+        .await;
+    let searched = session
+        .respond_in_mode(&assistant, None, RecallMode::Search, "Do you remember me?")
+        .await;
+
+    assert_eq!(skipped.context_warning, None);
+    assert!(
+        searched
+            .context_warning
+            .is_some_and(|warning| warning.contains("memory storage is unavailable"))
+    );
+
     drop(session);
     remove_archive(&path);
 }

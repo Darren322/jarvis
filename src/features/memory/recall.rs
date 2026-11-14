@@ -6,14 +6,90 @@ use crate::storage::{MemoryId, MemoryKind, RecalledMemory, SourceId, SourceKind}
 
 /// Candidates fetched from each index before fusion.
 pub(super) const SEARCH_LIMIT: usize = 20;
-const MAX_CONTEXT_DOCUMENTS: usize = 5;
-const MAX_CONTEXT_BYTES: usize = 4096;
+/// A search hands the model at most this many memories, and at most
+/// [`MAX_CONTEXT_BYTES`] of them. The model reads about 58 tokens a second on the
+/// Pi and recalled text is never in its cache, so five memories (4,096 bytes) cost
+/// a first word 6 to 16 s late. Measured 2026-11-14: two memories and 1,024 bytes
+/// cost up to about 3 s. Raise these only if searches miss things.
+const MAX_CONTEXT_DOCUMENTS: usize = 2;
+/// See [`MAX_CONTEXT_DOCUMENTS`].
+const MAX_CONTEXT_BYTES: usize = 1024;
 /// Standard reciprocal-rank-fusion constant.
 const RRF_K: f32 = 60.0;
 // Provisional guardrail for normalized BGE-small-en-v1.5 vectors only: a small
 // offline fixture measured 0.74 for a paraphrase and at most 0.56 for unrelated
 // passages. It is not a confidence score. Keyword hits bypass it.
 pub(super) const BGE_MIN_COSINE: f32 = 0.68;
+
+/// Whether a run searches stored memories before the model answers.
+///
+/// `Skip` is "not asked for": no embedding request, no query, no memory message and
+/// no warning. It is not the same as memory being unavailable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecallMode {
+    Search,
+    Skip,
+}
+
+/// Phrases that ask for a memory search, matched as whole words, case-insensitive.
+const SEARCH_PHRASES: &[&str] = &[
+    "remember",
+    "recall",
+    "last time",
+    "what did i tell you",
+    "what did i say",
+    "did i tell you",
+];
+
+/// A line that starts with "remember that" is a save (reserved for the save ticket),
+/// not a search, unless the next word is one of these: "remember that time we went
+/// to Tokyo" asks Jarvis to look back, it does not state a fact.
+const REMEMBER_THAT_SEARCH_WORDS: &[&str] = &["time", "day", "night", "one"];
+
+/// Whether `prompt` asks Jarvis to search its memory. Pure and deterministic.
+///
+/// The prompt is split into lowercase words on anything that is not a letter or
+/// digit, so punctuation and extra spaces between the words of a phrase do not
+/// matter, and "remembering" is not "remember".
+pub(crate) fn wants_memory_search(prompt: &str) -> bool {
+    let words = prompt
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>();
+    if starts_with_save(&words) {
+        return false;
+    }
+    SEARCH_PHRASES.iter().any(|phrase| {
+        let phrase = phrase.split(' ').collect::<Vec<_>>();
+        words
+            .windows(phrase.len())
+            .any(|window| window.iter().zip(&phrase).all(|(word, part)| word == part))
+    })
+}
+
+/// A leading "remember that" (after an optional "hey" and "jarvis") that is not
+/// followed by one of [`REMEMBER_THAT_SEARCH_WORDS`].
+fn starts_with_save(words: &[String]) -> bool {
+    let mut rest = words;
+    if let [first, tail @ ..] = rest
+        && first == "hey"
+    {
+        rest = tail;
+    }
+    if let [first, tail @ ..] = rest
+        && first == "jarvis"
+    {
+        rest = tail;
+    }
+    match rest {
+        [first, second, next @ ..] if first == "remember" && second == "that" => !matches!(
+            next.first(),
+            Some(word) if REMEMBER_THAT_SEARCH_WORDS.contains(&word.as_str())
+        ),
+        _ => false,
+    }
+}
 
 const STOP_WORDS: &[&str] = &[
     "a", "about", "am", "an", "and", "any", "are", "as", "at", "be", "been", "but", "by", "can",

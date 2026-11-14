@@ -30,14 +30,16 @@ use wiremock::{
 };
 
 use crate::{
-    clients::speech_to_text::SpeechToText,
-    config::SpeechToTextConfig,
+    clients::{remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText},
+    config::{EmbeddingConfig, SpeechToTextConfig},
     features::{
         assistant::Assistant,
         conversation::ConversationSession,
         listening::{Listener, Recorder},
+        memory::MemoryService,
         state::AssistantState,
     },
+    storage::{ArchiveOutcome, ConversationArchive, MemoryEligibility},
     tools::system_status_tool::SystemStatusTool,
 };
 
@@ -1595,4 +1597,112 @@ async fn a_tap_without_voice_settings_names_them_and_stays_idle() {
 
     assert_eq!(notices(&shown), [NOT_CONFIGURED]);
     assert!(harness.model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
+    // The embedding server refuses, so recall is keyword-only; that is enough to
+    // find "Miso" and to count the searches (each one asks the server once).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let embeddings = RemoteEmbeddings::new(&EmbeddingConfig {
+        base_url: format!("{}/v1", server.uri()),
+        model: "bge-test".to_owned(),
+    })
+    .expect("a localhost URL is allowed");
+    let model = MockCompletionModel::from_stream_turns((0..3).map(|_| {
+        vec![
+            MockStreamEvent::text("an answer"),
+            MockStreamEvent::final_response(Usage::new()),
+        ]
+    }));
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
+    let database = archive_dir.path().join("conversation.sqlite3");
+    let seed = ConversationArchive::open(database.clone())
+        .await
+        .expect("archive opens");
+    seed.append_turn(
+        "Remember my cat is called Miso.",
+        ArchiveOutcome::Completed("Noted, master.".to_owned()),
+        MemoryEligibility::Eligible,
+        &[],
+    )
+    .await
+    .expect("remembered turn archives");
+    // An answer that recalled a memory keeps it in the history, so a later search is
+    // not shown it again; the third prompt below therefore needs a memory of its own.
+    seed.append_turn(
+        "Remember my dog is called Rex.",
+        ArchiveOutcome::Completed("Noted, master.".to_owned()),
+        MemoryEligibility::Eligible,
+        &[],
+    )
+    .await
+    .expect("remembered turn archives");
+    drop(seed);
+    let mut session = ConversationSession::new(database);
+    assert!(session.reset().await.is_ok());
+    let memory = MemoryService::open(
+        session.memory_repository().expect("archive is open"),
+        embeddings,
+    );
+    memory.wait_until_embedder_idle().await;
+
+    let mut speech = None::<FailingSpeech>;
+    let mut input = BufReader::new(std::io::Cursor::new(
+        b"What is my cat called?\n/recall What is my cat called?\nDo you remember my dog called?\n/exit\n",
+    ));
+    let mut presenter = TerminalPresenter::with_writer(Vec::new());
+    run_input_loop(
+        &assistant,
+        &mut session,
+        Some(&memory),
+        &mut speech,
+        &mut input,
+        Taps::none(),
+        &mut presenter,
+        None,
+    )
+    .await
+    .expect("piped input should complete");
+
+    let requests = model_handle.requests();
+    assert_eq!(requests.len(), 3);
+    let mentions =
+        |index: usize, name: &str| format!("{:?}", requests[index].chat_history).contains(name);
+    // A plain question finds nothing in memory, though a matching memory exists.
+    assert!(!mentions(0, "Miso"));
+    assert_eq!(
+        requests[0].chat_history,
+        vec![user_message("What is my cat called?")]
+    );
+    // `/recall` searches, and the question reaches the model without the command.
+    assert!(mentions(1, "Miso"));
+    assert_eq!(
+        requests[1].chat_history.last(),
+        Some(&user_message("What is my cat called?"))
+    );
+    assert!(!format!("{:?}", requests[1].chat_history).contains("/recall"));
+    // So does a prompt that asks Jarvis to remember.
+    assert!(mentions(2, "Rex"));
+    // Only those two runs asked the embedding server anything.
+    let embedding_requests = server
+        .received_requests()
+        .await
+        .expect("request recording is on")
+        .iter()
+        .filter(|request| request.url.path() == "/v1/embeddings")
+        .count();
+    assert_eq!(embedding_requests, 2);
 }

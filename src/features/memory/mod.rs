@@ -11,6 +11,7 @@ use crate::storage::{
 };
 
 pub(crate) use embedder::{EmbedError, EmbedderState};
+pub(crate) use recall::{RecallMode, wants_memory_search};
 pub(crate) use types::{IdlePass, MemoryError, MemoryStatus, RecallSnapshot};
 
 use embedder::{EmbedKind, Embedder};
