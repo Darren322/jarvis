@@ -22,16 +22,8 @@ mod level;
 mod listener;
 mod vad;
 
-#[cfg_attr(
-    not(test),
-    expect(unused_imports, reason = "wired by visual-jarvis ticket 07")
-)]
-pub(crate) use level::run_level_meter;
+pub(crate) use level::{LEVEL_INTERVAL, run_level_meter};
 pub(crate) use listener::{Heard, ListenError, Listener};
-#[cfg_attr(
-    not(test),
-    expect(unused_imports, reason = "wired by visual-jarvis ticket 07")
-)]
 pub(crate) use vad::speech_ended;
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -121,10 +113,6 @@ impl Recorder {
     /// `Recording` discards. An observer that subscribes mid-recording starts at
     /// the next sample boundary; one that lags loses whole chunks, so it stays
     /// aligned.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "wired by visual-jarvis ticket 07")
-    )]
     pub(crate) fn tap(&self) -> broadcast::Receiver<AudioChunk> {
         self.tap.subscribe()
     }

@@ -1,9 +1,10 @@
-//! `/listen` in the terminal: what the typed line does while the microphone is open.
+//! Listening in the REPL: what input does while the microphone is open.
 //!
 //! The shared record-and-transcribe work is `features::listening::Listener`. This
-//! file adds only what is the terminal's own: Enter stops recording, `/stop`
-//! cancels, any other line cancels and runs as the next input, and every stage is
-//! shown through the presenter.
+//! file adds only what is the loop's own: Enter stops recording, `/stop` cancels,
+//! any other line cancels and runs as the next input, a tap sends what was heard,
+//! and every stage is shown through the presenter. A recording started by a tap
+//! also ends by itself when the speaker stops (`ListenStop::OnSilence`).
 
 use std::io;
 
@@ -11,12 +12,14 @@ use tokio::{io::AsyncBufRead, sync::oneshot};
 
 use crate::clients::speech_to_text::SpeechToTextError;
 use crate::features::{
-    control::{self, Command},
-    listening::{Heard, ListenError, Listener},
+    control::{self, Command, TapAction, tap_action},
+    listening::{Heard, ListenError, Listener, speech_ended},
     state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::error_chain;
-use crate::interfaces::cli::input::{InputLine, InputReader, InputRejection, read_input_line};
+use crate::interfaces::cli::input::{
+    InputLine, InputReader, InputRejection, Taps, read_input_line,
+};
 use crate::interfaces::cli::presentation::AssistantPresenter;
 
 /// Shown when `/listen` is used without the three speech-to-text settings.
@@ -26,7 +29,17 @@ const RECORDING_CANCELLED: &str = "Recording cancelled. Nothing was sent.";
 const TRANSCRIPTION_CANCELLED: &str = "Transcription cancelled. The speech-to-text server may still be working on it. Nothing was sent.";
 const TIMED_OUT: &str = "Speech-to-text timed out; the server may still be working.";
 
-/// What the loop does after `/listen`.
+/// What ends a recording, besides Enter, a tap and the recorder's own limits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ListenStop {
+    /// Nothing else: the typed `/listen`, where the user presses Enter.
+    OnRequest,
+    /// The speaker falling silent: a recording started by a tap, where no keyboard
+    /// may be in reach.
+    OnSilence,
+}
+
+/// What the loop does after listening.
 pub(super) enum ListenEnd {
     /// Nothing more: back at the prompt.
     Done,
@@ -39,12 +52,15 @@ pub(super) enum ListenEnd {
 
 /// Records one utterance and returns what the loop should do with it.
 ///
-/// User input always wins (`biased;`). The listening future is dropped to cancel,
-/// which kills the recorder or stops waiting for the server; both are drop-safe.
+/// User input always wins (`biased;`): a typed line first, then a tap. The
+/// listening future is dropped to cancel, which kills the recorder or stops
+/// waiting for the server; both are drop-safe.
 pub(super) async fn listen<R, P>(
     listener: &Listener,
     input: &mut InputReader<R>,
+    taps: &mut Taps,
     presenter: &mut P,
+    stop: ListenStop,
 ) -> io::Result<ListenEnd>
 where
     R: AsyncBufRead + Unpin,
@@ -61,9 +77,23 @@ where
     let mut recording_pending = true;
     let mut transcribing_pending = true;
     let mut is_transcribing = false;
+    // A fresh observer per recording, so the detector never hears an earlier one.
+    let silence = match stop {
+        ListenStop::OnSilence => Some(speech_ended(listener.tap())),
+        ListenStop::OnRequest => None,
+    };
     let mut listening = Box::pin(listener.listen(
         async {
-            let _ = stop_receiver.await;
+            match silence {
+                Some(silence) => tokio::select! {
+                    biased;
+                    _ = stop_receiver => {}
+                    () = silence => {}
+                },
+                None => {
+                    let _ = stop_receiver.await;
+                }
+            }
         },
         recording_sender,
         transcribing_sender,
@@ -96,6 +126,25 @@ where
                     return Ok(ListenEnd::Interrupted(other));
                 }
             },
+            _tap = taps.next() => {
+                let state = if is_transcribing {
+                    AssistantState::Transcribing
+                } else {
+                    AssistantState::Listening
+                };
+                match tap_action(state) {
+                    TapAction::SendNow => {
+                        if let Some(sender) = stop_sender.take() {
+                            let _ = sender.send(());
+                        }
+                    }
+                    // Only `SendNow` and `Ignore` belong to these two states.
+                    TapAction::Ignore
+                    | TapAction::Listen
+                    | TapAction::DropAnswerThenListen
+                    | TapAction::StopSpeakingThenListen => {}
+                }
+            }
             sent = &mut recording_receiver, if recording_pending => {
                 recording_pending = false;
                 if sent.is_ok() {

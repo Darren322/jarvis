@@ -4,6 +4,7 @@ use tokio::{io::AsyncBufRead, sync::mpsc};
 
 use crate::features::{
     assistant::{Assistant, AssistantTextDelta},
+    control::{TapAction, tap_action},
     conversation::{ConversationSession, ConversationTurn},
     memory::MemoryService,
     state::AssistantState,
@@ -11,7 +12,7 @@ use crate::features::{
 use crate::interfaces::cli::diagnostics::{
     print_run_diagnostics, report_turn_warnings, safe_error_message,
 };
-use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
+use crate::interfaces::cli::input::{InputLine, InputReader, Taps, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
 use crate::storage::SourceId;
 
@@ -24,6 +25,9 @@ use super::speech::{
 /// Text deltas the model run may have buffered ahead of the terminal.
 const TEXT_DELTA_QUEUE: usize = 32;
 
+/// Shown in place of an answer that a tap dropped before any of it was printed.
+const ANSWER_DROPPED: &str = "Answer dropped.";
+
 /// What the loop needs to know about a finished prompt.
 pub(super) struct PromptEnd {
     /// Whether the model run succeeded, so the turn can become the "forget that" focus.
@@ -31,6 +35,20 @@ pub(super) struct PromptEnd {
     pub(super) current_source_id: Option<SourceId>,
     /// How speech ended; `None` when this answer was not spoken.
     pub(super) speech: Option<SpokenOutcome>,
+    /// A tap ended this prompt, so the loop listens next. The state is left where it
+    /// was; listening reports the next one.
+    pub(super) listen_next: bool,
+    /// Whether the prompt is already on screen below the answer.
+    pub(super) prompt_shown: bool,
+}
+
+/// Whether a tap in `state` ends the prompt that is running. Only `Thinking` and
+/// `Speaking` occur while one runs.
+fn tap_ends_prompt(state: AssistantState) -> bool {
+    match tap_action(state) {
+        TapAction::DropAnswerThenListen | TapAction::StopSpeakingThenListen => true,
+        TapAction::Listen | TapAction::SendNow | TapAction::Ignore => false,
+    }
 }
 
 enum StreamItem {
@@ -50,6 +68,27 @@ struct TextStream<'a> {
 }
 
 impl TextStream<'_> {
+    /// Whether the model has finished and only storing the turn remains.
+    ///
+    /// The run owns the sending half of `deltas` and drops it when the model ends,
+    /// before the turn is archived. While this is false the response future has not
+    /// reached the archive, so dropping it stores nothing. Once it is true the
+    /// archive write may already be under way and can no longer be taken back.
+    fn is_storing(&self) -> bool {
+        !self.deltas_open || self.deltas.is_closed()
+    }
+
+    /// Finishes a run whose model has ended: shows the text still buffered and
+    /// returns the stored turn.
+    async fn land<P: AssistantPresenter>(&mut self, presenter: &mut P) -> io::Result<FinishedTurn> {
+        loop {
+            match self.next().await {
+                StreamItem::Delta(delta) => presenter.delta(&delta.text)?,
+                StreamItem::Done(turn) => return complete_turn(*turn, self, presenter, None),
+            }
+        }
+    }
+
     /// The next streamed delta, or the finished turn. Cancel-safe: nothing is held
     /// across the await that a drop would lose.
     async fn next(&mut self) -> StreamItem {
@@ -73,15 +112,28 @@ impl TextStream<'_> {
 /// speaks it while it is still streaming.
 ///
 /// One loop drives the model stream, the speech future and the user's input together,
-/// so a `/stop` or a new prompt cancels speech immediately, even mid-stream. The text
-/// itself cannot be cancelled: the run finishes, is archived and printed as usual.
-/// Input that arrives while speech is not active stays queued, as before.
+/// so a `/stop` or a new prompt cancels speech immediately, even mid-stream. Typed
+/// input cannot cancel the text: the run finishes, is archived and printed as usual,
+/// and a line typed while speech is not active stays queued, as before.
+///
+/// A tap can (spec D7). While the answer is still being written, a tap drops the
+/// model run: nothing of it is archived or added to the history, and the voice
+/// stops with it. Once the text is complete, a tap only stops the voice. Either
+/// way the loop listens next (`PromptEnd::listen_next`). A tap that lands after the
+/// model has ended but before its turn is stored comes too late to drop anything:
+/// that answer is kept whole (see `TextStream::is_storing`), so an answer is never
+/// stored without also being shown and added to the history.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one prompt touches every service the loop holds, plus both input sources"
+)]
 pub(super) async fn run_prompt<R, S, P>(
     assistant: &Assistant,
     session: &mut ConversationSession,
     memory: Option<&MemoryService>,
     presenter: &mut P,
     input: &mut InputReader<R>,
+    taps: &mut Taps,
     speech: Option<&mut S>,
     prompt: &str,
 ) -> io::Result<PromptEnd>
@@ -109,6 +161,7 @@ where
 
         enum Event<E> {
             Input(io::Result<InputLine>),
+            Tap,
             PlaybackStarted(bool),
             Speech(Result<(), E>),
             Text(StreamItem),
@@ -118,6 +171,7 @@ where
             let event = tokio::select! {
                 biased;
                 line = input_future.as_mut() => Event::Input(line),
+                _tap = taps.next() => Event::Tap,
                 signalled = playback_signal(&mut answer.started), if answer.started.is_some() => {
                     Event::PlaybackStarted(signalled)
                 }
@@ -133,6 +187,17 @@ where
                     }
                 }
                 Event::Speech(result) => break SpeechExit::Finished(result),
+                Event::Tap => {
+                    // `Speaking` is shown from the first audio; until then it is `Thinking`.
+                    let state = if answer.first_audio.is_some() {
+                        AssistantState::Speaking
+                    } else {
+                        AssistantState::Thinking
+                    };
+                    if tap_ends_prompt(state) {
+                        break SpeechExit::Tapped;
+                    }
+                }
                 Event::Input(Ok(InputLine::Rejected(reason))) => {
                     presenter.input_received();
                     eprintln!("Input rejected: {}", reason.message());
@@ -189,7 +254,30 @@ where
         drop(answer);
         match settle_speech(speech, exit).await {
             Ok(wait) => {
+                let tapped = matches!(wait, SpeechWait::Tapped { .. });
                 spoken = Some(SpokenOutcome { wait, first_audio });
+                if tapped {
+                    let (succeeded, current_source_id) = match finished {
+                        Some(end) => (end.succeeded, end.current_source_id),
+                        None if text.is_storing() => {
+                            let end = text.land(presenter).await?;
+                            (end.succeeded, end.current_source_id)
+                        }
+                        // Still being written: dropped with the voice, never archived.
+                        None => {
+                            drop(text);
+                            presenter.failed(ANSWER_DROPPED)?;
+                            (false, None)
+                        }
+                    };
+                    return Ok(PromptEnd {
+                        succeeded,
+                        current_source_id,
+                        speech: spoken,
+                        listen_next: true,
+                        prompt_shown,
+                    });
+                }
                 // Speech is over but the model is still writing.
                 if first_audio.is_some()
                     && finished.is_none()
@@ -215,7 +303,33 @@ where
     let end = match finished {
         Some(end) => end,
         None => loop {
-            match text.next().await {
+            let item = tokio::select! {
+                biased;
+                _tap = taps.next() => None,
+                item = text.next() => Some(item),
+            };
+            let Some(item) = item else {
+                if !tap_ends_prompt(AssistantState::Thinking) {
+                    continue;
+                }
+                let (succeeded, current_source_id) = if text.is_storing() {
+                    let end = text.land(presenter).await?;
+                    (end.succeeded, end.current_source_id)
+                } else {
+                    // Dropped mid-run: never archived, and the history is untouched.
+                    drop(text);
+                    presenter.failed(ANSWER_DROPPED)?;
+                    (false, None)
+                };
+                return Ok(PromptEnd {
+                    succeeded,
+                    current_source_id,
+                    speech: spoken,
+                    listen_next: true,
+                    prompt_shown: false,
+                });
+            };
+            match item {
                 StreamItem::Delta(delta) => {
                     if let Err(error) = presenter.delta(&delta.text) {
                         drop(text);
@@ -254,6 +368,8 @@ where
         succeeded: end.succeeded,
         current_source_id: end.current_source_id,
         speech: spoken,
+        listen_next: false,
+        prompt_shown,
     })
 }
 

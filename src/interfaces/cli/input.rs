@@ -1,6 +1,11 @@
 use std::io;
 
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
+use tokio::{
+    io::{AsyncBufRead, AsyncBufReadExt},
+    sync::mpsc,
+};
+
+use crate::features::control::Tap;
 
 const MAX_INPUT_BYTES: usize = 2_048;
 const MAX_FRAMED_INPUT_BYTES: usize = MAX_INPUT_BYTES + 2;
@@ -39,6 +44,37 @@ impl InputRejection {
             Self::InvalidUtf8 => "the line is not valid UTF-8.",
             Self::Blank => "blank messages are not sent to the assistant.",
         }
+    }
+}
+
+/// Taps from a touch front end, read beside the typed line. This is the REPL's one
+/// seam for a second input source: whoever owns the screen (the orb interface)
+/// holds the sending half, and the terminal code never learns who that is.
+///
+/// A tap is handled when the loop reaches a point that reads taps, with the state
+/// the loop is in at that moment.
+pub(crate) struct Taps(Option<mpsc::Receiver<Tap>>);
+
+impl Taps {
+    /// No touch front end: `next` never completes.
+    pub(crate) fn none() -> Self {
+        Self(None)
+    }
+
+    pub(crate) fn new(taps: mpsc::Receiver<Tap>) -> Self {
+        Self(Some(taps))
+    }
+
+    /// The next tap. Never completes without a source or once the source is gone.
+    /// Safe to drop at any `.await`: a tap is only taken when this returns.
+    pub(crate) async fn next(&mut self) -> Tap {
+        if let Some(taps) = self.0.as_mut() {
+            if let Some(tap) = taps.recv().await {
+                return tap;
+            }
+            self.0 = None;
+        }
+        std::future::pending().await
     }
 }
 

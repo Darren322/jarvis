@@ -11,8 +11,12 @@ use tokio::{
 };
 
 use crate::{
+    features::control::Tap,
     features::{assistant::Assistant, conversation::ConversationSession, state::AssistantState},
-    interfaces::cli::{input::InputReader, presentation::AssistantPresenter},
+    interfaces::cli::{
+        input::{InputReader, Taps},
+        presentation::AssistantPresenter,
+    },
     tools::system_status_tool::SystemStatusTool,
 };
 
@@ -76,6 +80,10 @@ enum Behaviour {
         line: &'static str,
         writer: DuplexStream,
     },
+    /// Once the text is complete, the orb is tapped and playback never finishes.
+    TappedAfterText(mpsc::Sender<Tap>),
+    /// The orb is tapped as the first chunk starts playing; playback never finishes.
+    TappedOnFirstChunk(mpsc::Sender<Tap>),
 }
 
 struct ScriptedSpeech {
@@ -108,6 +116,11 @@ impl SpeechControl for ScriptedSpeech {
             if matches!(self.behaviour, Behaviour::FailsOnFirstChunk) {
                 return Err(io::Error::other("injected speech failure"));
             }
+            if let Behaviour::TappedOnFirstChunk(taps) = &self.behaviour {
+                // Let the caller see the playback signal before the tap.
+                tokio::task::yield_now().await;
+                let _ = taps.try_send(Tap);
+            }
             if matches!(self.behaviour, Behaviour::EndsAfterFirstChunk) {
                 // Let the caller see the playback signal before the speech result.
                 tokio::task::yield_now().await;
@@ -119,7 +132,13 @@ impl SpeechControl for ScriptedSpeech {
             Behaviour::SpeaksUntilTextEnds
             | Behaviour::FailsOnFirstChunk
             | Behaviour::EndsAfterFirstChunk => Ok(()),
-            Behaviour::NeverFinishes => std::future::pending().await,
+            Behaviour::NeverFinishes | Behaviour::TappedOnFirstChunk(_) => {
+                std::future::pending().await
+            }
+            Behaviour::TappedAfterText(taps) => {
+                taps.send(Tap).await.expect("the prompt reads taps");
+                std::future::pending().await
+            }
             Behaviour::UserTypesAfterText { line, writer } => {
                 writer
                     .write_all(format!("{line}\n").as_bytes())
@@ -174,9 +193,25 @@ async fn run_one_prompt(
     log: &Log,
     speech: Option<ScriptedSpeech>,
     reader: DuplexStream,
-    mut writer: Option<DuplexStream>,
+    writer: Option<DuplexStream>,
     typed: &[u8],
 ) -> Run {
+    run_one_prompt_with_taps(model_turn, log, speech, reader, writer, typed, Taps::none())
+        .await
+        .0
+}
+
+/// `run_one_prompt` with a touch front end. Also returns how many turns the
+/// archive holds afterwards.
+async fn run_one_prompt_with_taps(
+    model_turn: Vec<MockStreamEvent>,
+    log: &Log,
+    speech: Option<ScriptedSpeech>,
+    reader: DuplexStream,
+    mut writer: Option<DuplexStream>,
+    typed: &[u8],
+    mut taps: Taps,
+) -> (Run, i64) {
     let assistant = Assistant::new(
         AgentBuilder::new(MockCompletionModel::from_stream_turns([model_turn]))
             .tool(SystemStatusTool)
@@ -201,17 +236,51 @@ async fn run_one_prompt(
         None,
         &mut presenter,
         &mut input,
+        &mut taps,
         speech.as_mut(),
         "a question",
     )
     .await
     .expect("the prompt should run");
     drop(writer);
-    Run {
-        end,
-        log: Rc::clone(log),
-        speech,
+    drop(session);
+    let archived_turns =
+        rusqlite::Connection::open(archive_dir.path().join("conversation.sqlite3"))
+            .expect("the archive opens")
+            .query_row("SELECT COUNT(*) FROM turns", [], |row| row.get(0))
+            .expect("the turns can be counted");
+    (
+        Run {
+            end,
+            log: Rc::clone(log),
+            speech,
+        },
+        archived_turns,
+    )
+}
+
+/// Runs one prompt with a tap queue; `speech` is given the sending half.
+async fn run_with_taps(
+    speech: impl FnOnce(&Log, mpsc::Sender<Tap>) -> Option<ScriptedSpeech>,
+    tap_before_start: bool,
+) -> (Run, i64) {
+    let log = Log::default();
+    let (tap, receiver) = mpsc::channel(1);
+    if tap_before_start {
+        tap.try_send(Tap).expect("the queue is empty");
     }
+    let speech = speech(&log, tap);
+    let (writer, reader) = tokio::io::duplex(512);
+    run_one_prompt_with_taps(
+        answer_turn(),
+        &log,
+        speech,
+        reader,
+        Some(writer),
+        b"",
+        Taps::new(receiver),
+    )
+    .await
 }
 
 async fn run_with_input(
@@ -520,6 +589,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
         None,
         &mut presenter,
         &mut input,
+        &mut Taps::none(),
         Some(&mut speech),
         "a question",
     )
@@ -527,4 +597,96 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
 
     assert!(result.is_err());
     assert_eq!(speech.cancel_calls, 1);
+}
+
+#[tokio::test]
+async fn a_tap_while_thinking_drops_the_answer_and_nothing_is_archived() {
+    // No speech; the tap is waiting, so it is seen before the first word of text.
+    let (run, archived_turns) = run_with_taps(|_, _| None, true).await;
+
+    let events = events(&run);
+    assert!(events.contains(&"failed".to_owned()));
+    assert!(!events.contains(&"completed".to_owned()));
+    assert!(!events.iter().any(|event| event.starts_with("delta:")));
+    // No `Idle`: listening reports the next state.
+    assert_eq!(states(&events), ["Thinking"]);
+    assert!(run.end.listen_next);
+    assert!(!run.end.succeeded);
+    assert_eq!(run.end.current_source_id, None);
+    assert!(!run.end.prompt_shown);
+    assert_eq!(archived_turns, 0);
+}
+
+#[tokio::test]
+async fn a_tap_before_the_voice_starts_drops_the_answer_and_cancels_speech() {
+    let (run, archived_turns) =
+        run_with_taps(|log, _| Some(speech(log, Behaviour::NeverFinishes)), true).await;
+
+    let events = events(&run);
+    assert!(events.contains(&"failed".to_owned()));
+    assert!(!events.contains(&"completed".to_owned()));
+    assert!(!events.iter().any(|event| event.starts_with("chunk:")));
+    assert_eq!(states(&events), ["Thinking"]);
+    assert!(matches!(
+        wait(&run),
+        SpeechWait::Tapped { cleanup_ok: true }
+    ));
+    assert_eq!(run.speech.expect("speech").cancel_calls, 1);
+    assert!(run.end.listen_next);
+    assert!(!run.end.succeeded);
+    assert_eq!(archived_turns, 0);
+}
+
+#[tokio::test]
+async fn a_tap_while_speaking_a_finished_answer_stops_the_voice_and_keeps_the_answer() {
+    let (run, archived_turns) = run_with_taps(
+        |log, tap| Some(speech(log, Behaviour::TappedAfterText(tap))),
+        false,
+    )
+    .await;
+
+    let events = events(&run);
+    assert!(events.contains(&"completed".to_owned()));
+    assert!(!events.contains(&"failed".to_owned()));
+    assert_eq!(states(&events), ["Thinking", "Speaking"]);
+    assert!(matches!(
+        wait(&run),
+        SpeechWait::Tapped { cleanup_ok: true }
+    ));
+    assert_eq!(run.speech.expect("speech").cancel_calls, 1);
+    assert!(run.end.listen_next);
+    assert!(run.end.succeeded);
+    assert!(run.end.prompt_shown);
+    assert_eq!(archived_turns, 1);
+}
+
+#[tokio::test]
+async fn an_answer_dropped_by_a_tap_mid_speech_is_archived_only_if_it_had_finished() {
+    let (run, archived_turns) = run_with_taps(
+        |log, tap| Some(speech(log, Behaviour::TappedOnFirstChunk(tap))),
+        false,
+    )
+    .await;
+
+    // Whether the model had ended when the tap came is up to the stream. What must
+    // hold either way: an answer is stored exactly when it was shown whole.
+    let events = events(&run);
+    let completed = events.contains(&"completed".to_owned());
+    let dropped = events.contains(&"failed".to_owned());
+    assert_ne!(completed, dropped, "{events:?}");
+    assert_eq!(run.end.succeeded, completed);
+    assert_eq!(archived_turns, i64::from(completed));
+    assert!(run.end.listen_next);
+    assert!(matches!(
+        wait(&run),
+        SpeechWait::Tapped { cleanup_ok: true }
+    ));
+    assert_eq!(run.speech.expect("speech").cancel_calls, 1);
+}
+
+#[tokio::test]
+async fn without_a_touch_front_end_a_prompt_never_asks_to_listen() {
+    let run = run_with_input(answer_turn(), |_| None, "").await;
+    assert!(!run.end.listen_next);
+    assert!(run.end.succeeded);
 }

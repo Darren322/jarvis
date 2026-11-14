@@ -17,6 +17,7 @@ use rodio::{
     stream::{DeviceSinkBuilder, DeviceSinkError},
 };
 use thiserror::Error;
+use tokio::sync::watch;
 
 use super::{
     playback_level::{LevelReceiver, PlaybackLevel},
@@ -59,7 +60,13 @@ impl AudioPlayer {
     /// Opens one persistent output stream, using an exact configured device identifier or name.
     ///
     /// This performs blocking device discovery and must run on a blocking thread.
-    pub fn new(requested_device: Option<String>) -> Result<Self, PlaybackError> {
+    ///
+    /// The playback loudness is published on `level`, which the caller keeps across
+    /// players, so a reader's receiver survives a player being replaced.
+    pub fn new(
+        requested_device: Option<String>,
+        level: watch::Sender<f32>,
+    ) -> Result<Self, PlaybackError> {
         let host = cpal::default_host();
         let device = match requested_device {
             Some(requested_name) => host
@@ -90,7 +97,9 @@ impl AudioPlayer {
         sink.log_on_drop(false);
 
         let mixer = sink.mixer().clone();
-        Ok(Self::from_mixer(mixer, sink, device_failed))
+        let mut player = Self::from_mixer(mixer, sink, device_failed);
+        player.level = PlaybackLevel::publishing_to(level);
+        Ok(player)
     }
 
     /// Plays through `mixer`; `output` is whatever keeps the mixer's stream alive.
@@ -163,10 +172,11 @@ impl AudioPlayer {
 
     /// A reader of the playback loudness, 0 to 1, about 30 times a second while speech plays.
     ///
-    /// It belongs to this player: if the player is replaced, ask the new one.
+    /// It belongs to this player: production readers use `SpeechOutput::level`, which
+    /// survives a player being replaced.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "read by visual-jarvis ticket 07")
+        expect(dead_code, reason = "production reads through SpeechOutput::level")
     )]
     pub fn level(&self) -> LevelReceiver {
         self.level.subscribe()

@@ -75,10 +75,6 @@ impl SpeechEnd {
 /// so the partial frame is dropped and framing stays sample-aligned. It owns only
 /// its receiver, detector and carry buffer, so it is safe to drop at any
 /// `.await`. Pass it as `stop` to `Recorder::record`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by visual-jarvis ticket 07")
-)]
 pub(crate) async fn speech_ended(mut chunks: broadcast::Receiver<AudioChunk>) {
     let mut detector = Detector::default_boxed();
     let mut state = SpeechEnd::new();

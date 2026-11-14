@@ -4,9 +4,9 @@
 //! stops and what to show; this only turns a stop signal into text.
 
 use thiserror::Error;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
-use super::{CaptureError, Recorder};
+use super::{AudioChunk, CaptureError, Recorder};
 use crate::clients::speech_to_text::{SpeechToText, SpeechToTextError, Transcript};
 
 /// What a finished listen produced.
@@ -38,6 +38,12 @@ impl Listener {
             recorder,
             speech_to_text,
         }
+    }
+
+    /// A new observer of the microphone audio; see [`Recorder::tap`]. Ask for a
+    /// fresh one per recording, so it never holds audio from an earlier one.
+    pub(crate) fn tap(&self) -> broadcast::Receiver<AudioChunk> {
+        self.recorder.tap()
     }
 
     /// Probes the speech-to-text server once.

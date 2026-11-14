@@ -1,5 +1,6 @@
 mod embedding;
 mod local_llm;
+mod orb;
 mod speech_to_text;
 mod tts;
 
@@ -10,6 +11,7 @@ use std::{
 
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
+pub use orb::OrbConfig;
 pub use speech_to_text::SpeechToTextConfig;
 pub use tts::{OptionalTtsConfig, TtsConfig, TtsEngine};
 
@@ -24,6 +26,7 @@ pub struct AppConfig {
     pub tts: OptionalTtsConfig,
     /// `None` when no speech-to-text setting is present.
     pub speech_to_text: Option<SpeechToTextConfig>,
+    pub orb: OrbConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +64,7 @@ impl AppConfig {
             archive_path,
             tts: OptionalTtsConfig::from_env(&current_dir),
             speech_to_text,
+            orb: OrbConfig::from_env(&current_dir),
         })
     }
 }

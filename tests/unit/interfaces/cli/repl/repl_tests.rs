@@ -41,8 +41,10 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
+use super::super::input::Taps;
 use super::super::presentation::{AssistantPresenter, TerminalPresenter};
 use super::{listen::NOT_CONFIGURED, run_input_loop, speech::SpeechControl};
+use crate::features::control::Tap;
 
 type CapturedAnswers = Arc<Mutex<Vec<String>>>;
 
@@ -90,6 +92,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         None,
         &mut speech,
         &mut input,
+        Taps::none(),
         &mut presenter,
         None,
     )
@@ -218,6 +221,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         None,
         &mut speech,
         &mut input,
+        Taps::none(),
         &mut present_answer,
         None,
     ));
@@ -327,6 +331,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         None,
         &mut speech,
         &mut input,
+        Taps::none(),
         &mut present_answer,
         None,
     ));
@@ -420,6 +425,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         None,
         &mut speech,
         &mut input,
+        Taps::none(),
         &mut present_answer,
         None,
     ));
@@ -677,6 +683,16 @@ async fn run_with(
     speech: &mut Option<FailingSpeech>,
     script: impl AsyncFnOnce(&mut Driver),
 ) -> Vec<Shown> {
+    run_with_taps(harness, speech, Taps::none(), script).await
+}
+
+/// `run_with`, with a touch front end: the script taps through the sender it kept.
+async fn run_with_taps(
+    harness: &mut Harness,
+    speech: &mut Option<FailingSpeech>,
+    taps: Taps,
+    script: impl AsyncFnOnce(&mut Driver),
+) -> Vec<Shown> {
     let (writer, reader) = tokio::io::duplex(8192);
     let mut input = BufReader::new(reader);
     let screen = Screen::default();
@@ -692,6 +708,7 @@ async fn run_with(
         None,
         speech,
         &mut input,
+        taps,
         &mut presenter,
         harness.listener.as_ref(),
     ));
@@ -911,6 +928,7 @@ async fn end_of_input_while_listening_ends_the_loop() {
             None,
             &mut speech,
             &mut input,
+            Taps::none(),
             &mut presenter,
             harness.listener.as_ref(),
         ),
@@ -1308,4 +1326,273 @@ async fn listen_typed_right_after_speech_completes_starts_listening() {
     );
     assert_user_message_reached_model(&harness, "hello");
     assert_eq!(harness.stt_requests().await, 0);
+}
+
+/// A tap queue as the orb interface makes it: one tap may wait.
+fn tap_queue() -> (mpsc::Sender<Tap>, Taps) {
+    let (sender, receiver) = mpsc::channel(1);
+    (sender, Taps::new(receiver))
+}
+
+/// The recorder plays two seconds of speech, then silence, and never stops by
+/// itself: only something else can end the recording.
+fn speech_then_silence_script() -> String {
+    let speech = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/unit/features/listening/fixtures/speech_16k_mono_s16le.raw"
+    );
+    format!("cat '{speech}'\nhead -c 48000 /dev/zero\ntouch \"$0.emitted\"\nexec sleep 30")
+}
+
+fn archived_turns(harness: &Harness) -> i64 {
+    let archive = harness._archive_dir.path().join("conversation.sqlite3");
+    rusqlite::Connection::open(archive)
+        .expect("the archive opens")
+        .query_row("SELECT COUNT(*) FROM turns", [], |row| row.get(0))
+        .expect("the turns can be counted")
+}
+
+#[tokio::test]
+async fn a_tap_at_idle_listens_and_the_recording_ends_when_the_speaker_falls_silent() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            &speech_then_silence_script(),
+            transcript_reply("what time is it"),
+        )
+        .await;
+    let (tap, taps) = tap_queue();
+    let started = std::time::Instant::now();
+
+    let shown = run_with_taps(&mut harness, &mut None, taps, async |user| {
+        tap.send(Tap).await.expect("the loop reads taps");
+        // Nobody presses Enter or taps again: silence ends it.
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Listening,
+            AssistantState::Transcribing,
+            AssistantState::Thinking,
+            AssistantState::Idle
+        ]
+    );
+    assert_user_message_reached_model(&harness, "what time is it");
+    // Without the silence stop this recording would run to the 15 s cap.
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn the_typed_listen_does_not_end_on_silence() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            &speech_then_silence_script(),
+            transcript_reply("what time is it"),
+        )
+        .await;
+    let marker = harness.emitted_marker();
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        // The speech and the silence after it have been read, and it still records.
+        wait_until_emitted(&marker).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            user.screen.shown.borrow().last(),
+            Some(&Shown::State(AssistantState::Listening))
+        );
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Listening, AssistantState::Idle]
+    );
+    assert_eq!(harness.stt_requests().await, 0);
+}
+
+#[tokio::test]
+async fn a_tap_while_listening_sends_what_was_heard() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            "head -c 20000 /dev/zero\ntouch \"$0.emitted\"\nexec sleep 30",
+            transcript_reply("what time is it"),
+        )
+        .await;
+    let marker = harness.emitted_marker();
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_taps(&mut harness, &mut None, taps, async |user| {
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Listening).await;
+        wait_until_emitted(&marker).await;
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Listening,
+            AssistantState::Transcribing,
+            AssistantState::Thinking,
+            AssistantState::Idle
+        ]
+    );
+    assert_user_message_reached_model(&harness, "what time is it");
+    assert_eq!(harness.stt_requests().await, 1);
+}
+
+#[tokio::test]
+async fn a_tap_while_transcribing_is_ignored() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            &self_ending_script(20_000),
+            transcript_reply("what time is it").set_delay(Duration::from_millis(400)),
+        )
+        .await;
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_taps(&mut harness, &mut None, taps, async |user| {
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Transcribing).await;
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    // The tap neither cancelled the transcription nor started a second recording.
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Listening,
+            AssistantState::Transcribing,
+            AssistantState::Thinking,
+            AssistantState::Idle
+        ]
+    );
+    assert_eq!(harness.stt_requests().await, 1);
+}
+
+#[tokio::test]
+async fn a_tap_while_thinking_drops_the_answer_unarchived_and_listens() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            &self_ending_script(20_000),
+            transcript_reply("what time is it"),
+        )
+        .await;
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_taps(&mut harness, &mut None, taps, async |user| {
+        // Both are waiting when the loop looks: the typed line is read first and
+        // the tap arrives while its answer is being thought about.
+        tap.try_send(Tap).expect("the queue is empty");
+        user.type_(b"tell me a long story\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Thinking,
+            AssistantState::Listening,
+            AssistantState::Transcribing,
+            AssistantState::Thinking,
+            AssistantState::Idle
+        ]
+    );
+    assert_eq!(
+        shown
+            .iter()
+            .filter(|shown| matches!(shown, Shown::Answer(_)))
+            .collect::<Vec<_>>(),
+        [
+            &Shown::Answer("Answer dropped.".to_owned()),
+            &Shown::Answer(REPLY.to_owned())
+        ]
+    );
+    // The dropped prompt is in neither the history nor the archive: the one model
+    // request carries only the spoken question, and one turn was stored.
+    let requests = harness.model.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].chat_history.iter().collect::<Vec<_>>(),
+        [&user_message("what time is it")]
+    );
+    assert_eq!(archived_turns(&harness), 1);
+}
+
+#[tokio::test]
+async fn a_tap_while_speaking_stops_the_voice_keeps_the_answer_and_listens() {
+    let mut harness = harness()
+        .await
+        .with_voice(AUDIBLE_UNTIL_STOPPED, transcript_reply("never asked"))
+        .await;
+    let (_release_sender, release) = oneshot::channel();
+    let mut speech = Some(speech_that_plays_until_released(release));
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_taps(&mut harness, &mut speech, taps, async |user| {
+        user.type_(b"hello\n").await;
+        user.wait_for(AssistantState::Speaking).await;
+        // The scripted answer is one short text, complete before its speech is.
+        while !user
+            .screen
+            .shown
+            .borrow()
+            .contains(&Shown::Answer(REPLY.to_owned()))
+        {
+            user.screen.changed.notified().await;
+        }
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Thinking,
+            AssistantState::Speaking,
+            AssistantState::Listening,
+            AssistantState::Idle
+        ]
+    );
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(speech.cancel_calls, 1);
+    // The finished answer was kept: shown, and stored as a turn.
+    assert!(shown.contains(&Shown::Answer(REPLY.to_owned())));
+    assert_eq!(archived_turns(&harness), 1);
+    assert_eq!(harness.stt_requests().await, 0);
+}
+
+#[tokio::test]
+async fn a_tap_without_voice_settings_names_them_and_stays_idle() {
+    let mut harness = harness().await;
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_taps(&mut harness, &mut None, taps, async |user| {
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for_notice_containing("Voice input is not configured")
+            .await;
+    })
+    .await;
+
+    assert_eq!(notices(&shown), [NOT_CONFIGURED]);
+    assert!(harness.model.requests().is_empty());
 }

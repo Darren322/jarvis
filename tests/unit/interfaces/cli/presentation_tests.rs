@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use super::{AssistantPresenter, AssistantState, TerminalPresenter};
+use super::{AssistantPresenter, AssistantState, StateFeed, StatePublishing, TerminalPresenter};
 
 impl<W: Write> TerminalPresenter<W> {
     pub(in crate::interfaces::cli) fn into_writer(self) -> W {
@@ -121,4 +121,33 @@ fn a_state_while_the_prompt_is_open_redraws_the_prompt() {
         presenter.state(AssistantState::Idle).unwrap();
     });
     assert_eq!(output, "[speaking]\nYou> \n[idle]\nYou> ");
+}
+
+#[test]
+fn a_state_publishing_presenter_shows_the_state_and_publishes_it() {
+    let states = StateFeed::new();
+    let mut observer = states.observe();
+    let mut output = Vec::new();
+    {
+        let mut presenter =
+            StatePublishing::new(TerminalPresenter::with_writer(&mut output), &states);
+        presenter.state(AssistantState::Thinking).unwrap();
+        presenter.notice("a notice").unwrap();
+    }
+    assert_eq!(String::from_utf8(output).unwrap(), "[thinking]\na notice\n");
+    // Published before this point, so the change is already waiting.
+    assert_eq!(
+        tokio_test_now(observer.next()),
+        Some(AssistantState::Thinking)
+    );
+}
+
+/// The value of a future that is ready on its first poll.
+fn tokio_test_now<T>(future: impl Future<Output = T>) -> Option<T> {
+    let mut future = std::pin::pin!(future);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(value) => Some(value),
+        std::task::Poll::Pending => None,
+    }
 }

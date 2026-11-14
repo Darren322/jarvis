@@ -7,7 +7,7 @@ use std::{
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::{Instant, timeout},
 };
@@ -16,6 +16,7 @@ use crate::config::TtsConfig;
 
 use super::{
     playback::{AudioPlayer, PlaybackError, WAKE_NOISE_DURATION},
+    playback_level::LevelReceiver,
     sample_rate::SampleRate,
     tts_worker::{TtsWorker, WorkerError},
 };
@@ -233,6 +234,9 @@ pub(crate) struct SpeechOutput {
     active: Option<ActiveSpeech>,
     next_id: u64,
     health: SpeechHealth,
+    /// Loudness of the speech being played. It outlives every `AudioPlayer`, which
+    /// is rebuilt after a failure, so readers keep one receiver.
+    level: watch::Sender<f32>,
 }
 
 impl SpeechOutput {
@@ -246,7 +250,14 @@ impl SpeechOutput {
             active: None,
             next_id: 1,
             health: SpeechHealth::Ready,
+            level: watch::Sender::new(0.0),
         }
+    }
+
+    /// A reader of the loudness of the speech being played, 0 to 1, about 30 times a
+    /// second while it plays and 0 otherwise. Valid for the life of this value.
+    pub(crate) fn level(&self) -> LevelReceiver {
+        LevelReceiver::of(&self.level)
     }
 
     pub(crate) fn is_disabled(&self) -> bool {
@@ -629,8 +640,9 @@ impl SpeechOutput {
         }
         if self.player_initialization.is_none() {
             let requested_device = self.config.audio_device.clone();
+            let level = self.level.clone();
             self.player_initialization = Some(tokio::task::spawn_blocking(move || {
-                AudioPlayer::new(requested_device)
+                AudioPlayer::new(requested_device, level)
             }));
         }
 

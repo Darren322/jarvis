@@ -8,6 +8,7 @@ dotenvy = "0.15.7"
 earshot = "=1.2.2"
 futures-util = "=0.3.34"
 hound = "3.5.1"
+orb-protocol = { path = "crates/orb-protocol" }
 reqwest = { version = "0.13.5", features = ["json"] }
 rig-agent = "=0.42.0"
 rig-core = "=0.42.0"

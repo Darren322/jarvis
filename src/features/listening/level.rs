@@ -31,10 +31,6 @@ const FULL_SCALE: f64 = 32_768.0;
 /// into a USB mic is typically 0.01 to 0.1, so a display that wants speech to
 /// look lively applies its own gain and clamp. An empty chunk is 0.0, and an odd
 /// trailing byte (half a sample) is ignored.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by visual-jarvis ticket 07")
-)]
 pub(crate) fn rms_level(pcm: &[u8]) -> f32 {
     // The remainder is the odd trailing byte, dropped here.
     let (samples, _odd_trailing_byte) = pcm.as_chunks::<2>();
@@ -63,10 +59,6 @@ pub(crate) fn rms_level(pcm: &[u8]) -> f32 {
 /// the meter can stay alive across recordings. A lagged tap (this task was
 /// starved) skips the missed chunks. Drop-safe at any `.await`; the caller owns
 /// the task (`tokio::spawn` or `select!`).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by visual-jarvis ticket 07")
-)]
 pub(crate) async fn run_level_meter(
     mut chunks: broadcast::Receiver<AudioChunk>,
     levels: watch::Sender<f32>,

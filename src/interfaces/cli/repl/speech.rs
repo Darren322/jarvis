@@ -194,6 +194,8 @@ pub(super) enum SpeechExit<E> {
     Stopped,
     /// A new prompt (or end of input) arrived while speech was active.
     Input(InputLine),
+    /// The orb was tapped: stop the voice, then listen.
+    Tapped,
     /// Writing to the terminal or reading input failed.
     Io(io::Error),
     /// The model run failed, so the rest of the answer is not spoken.
@@ -211,6 +213,10 @@ pub(super) enum SpeechWait {
     },
     /// The answer failed mid-stream; speech was cancelled without a notice.
     Aborted {
+        cleanup_ok: bool,
+    },
+    /// A tap cancelled speech; the loop listens next.
+    Tapped {
         cleanup_ok: bool,
     },
 }
@@ -246,6 +252,10 @@ pub(super) async fn settle_speech<S: SpeechControl>(
         SpeechExit::Input(line) => {
             let cleanup_ok = report_speech_cleanup(speech.cancel().await);
             SpeechWait::Input { line, cleanup_ok }
+        }
+        SpeechExit::Tapped => {
+            let cleanup_ok = report_speech_cleanup(speech.cancel().await);
+            SpeechWait::Tapped { cleanup_ok }
         }
         SpeechExit::Io(error) => {
             report_speech_cleanup(speech.cancel().await);

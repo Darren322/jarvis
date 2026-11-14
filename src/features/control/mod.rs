@@ -9,9 +9,11 @@
 
 mod command;
 mod memory;
+mod tap;
 
 pub(crate) use command::{Command, MemoryCommand, help_text, parse};
 pub(crate) use memory::MemoryControl;
+pub(crate) use tap::{Tap, TapAction, tap_action};
 
 /// One user-facing line produced by a command.
 #[derive(Clone, Debug, Eq, PartialEq)]

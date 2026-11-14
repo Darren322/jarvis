@@ -7,3 +7,4 @@ mod tts_worker;
 
 pub(crate) use chunker::SpeechChunker;
 pub(crate) use output::{SpeechError, SpeechOutput};
+pub(crate) use playback_level::LevelReceiver;

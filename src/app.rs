@@ -1,22 +1,30 @@
 use std::path::PathBuf;
 
 use rig_agent::AgentBuilder;
-use tokio::io::BufReader;
+use tokio::{
+    io::BufReader,
+    sync::{mpsc, watch},
+};
 
 use crate::clients::{
     local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText,
 };
-use crate::config::{AppConfig, OptionalTtsConfig};
+use crate::config::{AppConfig, OptionalTtsConfig, OrbConfig};
 use crate::features::{
     assistant::{Assistant, SYSTEM_PREAMBLE},
     conversation::ConversationSession,
-    listening::{Listener, Recorder},
+    listening::{Listener, Recorder, run_level_meter},
     memory::MemoryService,
     speech::SpeechOutput,
+    state::StateFeed,
 };
 use crate::interfaces::cli::{
-    diagnostics::error_chain, presentation::TerminalPresenter, repl::run_input_loop,
+    diagnostics::error_chain,
+    input::Taps,
+    presentation::{StatePublishing, TerminalPresenter},
+    repl::run_input_loop,
 };
+use crate::interfaces::orb::{OrbFeeds, OrbServer, TAP_QUEUE};
 use crate::tools;
 
 /// The ALSA recording program; tests substitute a fake script.
@@ -32,6 +40,7 @@ pub struct App {
     tts_config: OptionalTtsConfig,
     /// `None` when the speech-to-text settings are absent: `/listen` says so.
     listener: Option<Listener>,
+    orb_config: OrbConfig,
 }
 
 impl App {
@@ -67,6 +76,7 @@ impl App {
             archive_path: config.archive_path.clone(),
             tts_config: config.tts.clone(),
             listener,
+            orb_config: config.orb.clone(),
         })
     }
 
@@ -102,19 +112,69 @@ impl App {
         };
         println!("Enter a message, or /help for commands.");
 
+        // The orb screen is a second front end beside the terminal. The two meet only
+        // here: the terminal publishes its states and reads taps, the orb interface
+        // shows the states and loudness and sends taps.
+        let states = StateFeed::new();
+        let (mic_levels, mic_level) = watch::channel(0.0);
+        let (tap_sender, tap_receiver) = mpsc::channel(TAP_QUEUE);
+        let orb = self.open_orb();
+        let taps = match orb {
+            Some(_) => Taps::new(tap_receiver),
+            None => Taps::none(),
+        };
+        let feeds = OrbFeeds {
+            states: &states,
+            mic_level,
+            speech_level: speech.as_ref().map(SpeechOutput::level),
+            taps: tap_sender,
+        };
+        let serve_orb = async {
+            let Some(orb) = orb else {
+                return std::future::pending().await;
+            };
+            let meter = async {
+                if let Some(listener) = &self.listener {
+                    run_level_meter(listener.tap(), mic_levels).await;
+                }
+            };
+            // `serve` never returns, so neither does the pair.
+            tokio::join!(orb.serve(feeds), meter).0
+        };
+
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
-        let mut presenter = TerminalPresenter::default();
-        run_input_loop(
-            &self.assistant,
-            &mut session,
-            memory.as_ref(),
-            &mut speech,
-            &mut input,
-            &mut presenter,
-            self.listener.as_ref(),
-        )
-        .await
+        let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
+        // The orb runs beside the REPL in this task and ends with it: dropping
+        // `serve_orb` closes its connections and removes the socket file.
+        tokio::select! {
+            result = run_input_loop(
+                &self.assistant,
+                &mut session,
+                memory.as_ref(),
+                &mut speech,
+                &mut input,
+                taps,
+                &mut presenter,
+                self.listener.as_ref(),
+            ) => result,
+            never = serve_orb => match never {},
+        }
+    }
+
+    /// Opens the orb's socket. The orb is optional, so a socket that cannot be
+    /// opened is a warning and Jarvis runs without it.
+    fn open_orb(&self) -> Option<OrbServer> {
+        match OrbServer::bind(&self.orb_config.socket_path) {
+            Ok(orb) => Some(orb),
+            Err(error) => {
+                eprintln!(
+                    "Warning: the orb screen is unavailable: {}",
+                    error_chain(&error)
+                );
+                None
+            }
+        }
     }
 
     /// The server may come up later, so a failed probe warns and leaves `/listen` on.

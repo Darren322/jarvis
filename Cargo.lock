@@ -1275,6 +1275,7 @@ dependencies = [
  "earshot",
  "futures-util",
  "hound",
+ "orb-protocol",
  "reqwest",
  "rig-agent",
  "rig-core",

@@ -1,6 +1,9 @@
 use std::io::{self, Write};
 
-use crate::features::{listening::MAX_RECORDING_SECONDS, state::AssistantState};
+use crate::features::{
+    listening::MAX_RECORDING_SECONDS,
+    state::{AssistantState, StateFeed},
+};
 
 const PROMPT: &str = "You> ";
 
@@ -193,6 +196,53 @@ impl<W: Write> AssistantPresenter for TerminalPresenter<W> {
 
     fn input_received(&mut self) {
         self.prompt_open = false;
+    }
+}
+
+/// A presenter that also publishes every state to a [`StateFeed`], so another
+/// front end (the orb) shows the same state the terminal does. Everything else
+/// goes straight to `inner`.
+pub(crate) struct StatePublishing<'a, P> {
+    inner: P,
+    states: &'a StateFeed,
+}
+
+impl<'a, P> StatePublishing<'a, P> {
+    pub(crate) fn new(inner: P, states: &'a StateFeed) -> Self {
+        Self { inner, states }
+    }
+}
+
+impl<P: AssistantPresenter> AssistantPresenter for StatePublishing<'_, P> {
+    fn delta(&mut self, text: &str) -> io::Result<()> {
+        self.inner.delta(text)
+    }
+
+    fn completed(&mut self, canonical_answer: &str) -> io::Result<()> {
+        self.inner.completed(canonical_answer)
+    }
+
+    fn failed(&mut self, safe_message: &str) -> io::Result<()> {
+        self.inner.failed(safe_message)
+    }
+
+    fn prompt(&mut self) -> io::Result<()> {
+        self.inner.prompt()
+    }
+
+    fn notice(&mut self, line: &str) -> io::Result<()> {
+        self.inner.notice(line)
+    }
+
+    fn state(&mut self, state: AssistantState) -> io::Result<()> {
+        // Published first: a terminal that cannot be written to must not hide the
+        // state from the other front end.
+        self.states.publish(state);
+        self.inner.state(state)
+    }
+
+    fn input_received(&mut self) {
+        self.inner.input_received();
     }
 }
 

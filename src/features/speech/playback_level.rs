@@ -42,16 +42,21 @@ pub(super) struct PlaybackLevel {
 
 impl PlaybackLevel {
     pub fn new() -> Self {
+        Self::publishing_to(watch::Sender::new(SILENT_LEVEL))
+    }
+
+    /// Publishes on `level`, a channel that outlives this player, so a reader keeps
+    /// one receiver across players. The level starts at 0.
+    pub fn publishing_to(level: watch::Sender<f32>) -> Self {
+        level.send_replace(SILENT_LEVEL);
         Self {
-            level: watch::Sender::new(SILENT_LEVEL),
+            level,
             session_live: Arc::new(AtomicBool::new(true)),
         }
     }
 
     pub fn subscribe(&self) -> LevelReceiver {
-        LevelReceiver {
-            level: self.level.subscribe(),
-        }
+        LevelReceiver::of(&self.level)
     }
 
     /// Wraps `source` so its samples are measured as they are played.
@@ -84,21 +89,28 @@ pub(crate) struct LevelReceiver {
     level: watch::Receiver<f32>,
 }
 
-// The reader is the orb interface (visual-jarvis ticket 07).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by visual-jarvis ticket 07")
-)]
 impl LevelReceiver {
+    /// A reader of `level`, the channel a [`PlaybackLevel`] publishes on.
+    pub(super) fn of(level: &watch::Sender<f32>) -> Self {
+        Self {
+            level: level.subscribe(),
+        }
+    }
+
     /// The latest level, 0.0 (silence or nothing playing) to 1.0 (full scale).
     pub fn level(&self) -> f32 {
         *self.level.borrow()
     }
 
     /// Waits for a level newer than the last one this receiver saw, then returns it.
+    /// The orb interface samples [`LevelReceiver::level`] on its own tick instead.
     ///
     /// Updates are coalesced: a reader that falls behind sees the latest level, not a backlog.
     /// Errors once the player is gone; the level was reset to 0 first.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no reader waits for single updates yet")
+    )]
     pub async fn changed(&mut self) -> Result<f32, watch::error::RecvError> {
         self.level.changed().await?;
         Ok(*self.level.borrow_and_update())
