@@ -22,7 +22,7 @@ mod turn;
 use idle::read_line_during_idle_work;
 use listen::{ListenEnd, ListenStop, NOT_CONFIGURED, listen};
 use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
-use turn::{PromptRequest, run_prompt};
+use turn::{FILLER_LINES, PromptRequest, run_prompt};
 
 type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>;
 
@@ -94,6 +94,8 @@ where
     let mut state_awaiting_idle = false;
     // A tap ended an answer or its speech; the loop listens instead of reading a line.
     let mut listen_due = false;
+    // Which filler line the next search says; it lives as long as the session.
+    let mut filler_position = 0;
 
     loop {
         if !prompt_is_visible && next_input.is_none() && !listen_due {
@@ -239,6 +241,7 @@ where
                             PromptRequest {
                                 text: &prompt,
                                 recall,
+                                filler: next_filler(recall, &mut filler_position),
                             },
                         )
                         .await?;
@@ -309,6 +312,19 @@ fn recall_mode(command: &Command) -> RecallMode {
         | Command::Help
         | Command::Memory(_)
         | Command::Usage(_) => RecallMode::Skip,
+    }
+}
+
+/// The filler line for a run that searches, advancing the rotation; `None` for a run
+/// that skips the search. The position wraps after the last line.
+fn next_filler(recall: RecallMode, position: &mut usize) -> Option<&'static str> {
+    match recall {
+        RecallMode::Search => {
+            let line = FILLER_LINES[*position % FILLER_LINES.len()];
+            *position = (*position + 1) % FILLER_LINES.len();
+            Some(line)
+        }
+        RecallMode::Skip => None,
     }
 }
 

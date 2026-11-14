@@ -28,10 +28,17 @@ const TEXT_DELTA_QUEUE: usize = 32;
 /// Shown in place of an answer that a tap dropped before any of it was printed.
 const ANSWER_DROPPED: &str = "Answer dropped.";
 
+/// The canned lines said when a search starts (spec D4), used in this order and
+/// wrapping after the last. They are never sent to the model or stored.
+pub(super) const FILLER_LINES: [&str; 3] = ["Let me check.", "One moment.", "Let me look that up."];
+
 /// One prompt and whether its run searches memory first.
 pub(super) struct PromptRequest<'a> {
     pub(super) text: &'a str,
     pub(super) recall: RecallMode,
+    /// The line to show (and speak) at once because this run searches; `None` for a
+    /// run that skips the search. It is not part of the answer.
+    pub(super) filler: Option<&'static str>,
 }
 
 /// What the loop needs to know about a finished prompt.
@@ -151,9 +158,15 @@ where
     let PromptRequest {
         text: prompt,
         recall,
+        filler,
     } = request;
     let prompt_started = Instant::now();
     presenter.state(AssistantState::Thinking)?;
+    if let Some(line) = filler {
+        // Shown before the model has produced anything. A terminal write failure here
+        // ends the prompt before the run starts, so nothing is stored.
+        presenter.notice(line)?;
+    }
     let (sender, deltas) = mpsc::channel(TEXT_DELTA_QUEUE);
     let mut text = TextStream {
         response: Box::pin(session.respond_stream(assistant, memory, recall, prompt, sender)),
@@ -167,6 +180,10 @@ where
 
     if let Some(speech) = speech {
         let mut answer = SpokenAnswer::start(&mut *speech);
+        if let Some(line) = filler {
+            // The first chunk of this answer's speech, ahead of the model's text.
+            answer.feed.feed_line(line);
+        }
         let mut input_future: InputFuture<'_> = Box::pin(read_input_line(&mut *input));
 
         enum Event<E> {
@@ -191,6 +208,8 @@ where
 
             match event {
                 Event::PlaybackStarted(signalled) => {
+                    // With a search the first audio is usually the filler line, so this
+                    // measures the wait for the filler, not for the answer's first word.
                     answer.note_playback_started(signalled, prompt_started);
                     if signalled && let Err(error) = presenter.state(AssistantState::Speaking) {
                         break SpeechExit::Io(error);

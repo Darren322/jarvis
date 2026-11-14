@@ -1706,3 +1706,76 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         .count();
     assert_eq!(embedding_requests, 2);
 }
+
+#[tokio::test]
+async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance_them() {
+    let model = MockCompletionModel::from_stream_turns((0..5).map(|_| {
+        vec![
+            MockStreamEvent::text("an answer"),
+            MockStreamEvent::final_response(Usage::new()),
+        ]
+    }));
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
+    let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
+    assert!(session.reset().await.is_ok());
+    let mut speech = None::<FailingSpeech>;
+    let mut input = BufReader::new(std::io::Cursor::new(
+        b"/recall one\n/recall two\njust chatting\n/recall three\n/recall four\n/exit\n",
+    ));
+    let screen = Screen::default();
+    let mut presenter = screen.clone();
+    run_input_loop(
+        &assistant,
+        &mut session,
+        None,
+        &mut speech,
+        &mut input,
+        Taps::none(),
+        &mut presenter,
+        None,
+    )
+    .await
+    .expect("piped input should complete");
+
+    let shown = screen.shown.take();
+    assert_eq!(
+        notices(&shown),
+        [
+            "Let me check.",
+            "One moment.",
+            "Let me look that up.",
+            "Let me check."
+        ]
+    );
+    // The plain prompt came third and showed nothing between the second and third lines.
+    let answers_before_third = shown
+        .iter()
+        .take_while(|shown| **shown != Shown::Notice("Let me look that up.".to_owned()))
+        .filter(|shown| matches!(shown, Shown::Answer(_)))
+        .count();
+    assert_eq!(answers_before_third, 3);
+    // No filler reached the model or the history it was sent.
+    let requests = model_handle.requests();
+    assert_eq!(requests.len(), 5);
+    for request in &requests {
+        let history = format!("{:?}", request.chat_history);
+        for line in ["Let me check.", "One moment.", "Let me look that up."] {
+            assert!(!history.contains(line), "{line:?} reached the model");
+        }
+    }
+    // Nor was it archived.
+    drop(session);
+    let archive = archive_dir.path().join("conversation.sqlite3");
+    let connection = rusqlite::Connection::open(archive).expect("the archive opens");
+    let archived_fillers: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM turns WHERE user_text LIKE '%Let me%' OR user_text LIKE '%One moment%' \
+             OR assistant_text LIKE '%Let me%' OR assistant_text LIKE '%One moment%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the turns can be counted");
+    assert_eq!(archived_fillers, 0);
+}

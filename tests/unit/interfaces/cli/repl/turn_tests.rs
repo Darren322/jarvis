@@ -208,15 +208,40 @@ async fn run_one_prompt_with_taps(
     log: &Log,
     speech: Option<ScriptedSpeech>,
     reader: DuplexStream,
+    writer: Option<DuplexStream>,
+    typed: &[u8],
+    taps: Taps,
+) -> (Run, i64) {
+    let (run, archived_turns, _) = run_request(
+        model_turn,
+        log,
+        speech,
+        reader,
+        writer,
+        typed,
+        taps,
+        (RecallMode::Skip, None),
+    )
+    .await;
+    (run, archived_turns)
+}
+
+/// The most general runner: also takes the run's recall mode and filler line, and
+/// returns the requests the model received.
+#[expect(clippy::too_many_arguments, reason = "a test runner with every knob")]
+async fn run_request(
+    model_turn: Vec<MockStreamEvent>,
+    log: &Log,
+    speech: Option<ScriptedSpeech>,
+    reader: DuplexStream,
     mut writer: Option<DuplexStream>,
     typed: &[u8],
     mut taps: Taps,
-) -> (Run, i64) {
-    let assistant = Assistant::new(
-        AgentBuilder::new(MockCompletionModel::from_stream_turns([model_turn]))
-            .tool(SystemStatusTool)
-            .build(),
-    );
+    (recall, filler): (RecallMode, Option<&'static str>),
+) -> (Run, i64, Vec<rig_core::completion::CompletionRequest>) {
+    let model = MockCompletionModel::from_stream_turns([model_turn]);
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -240,7 +265,8 @@ async fn run_one_prompt_with_taps(
         speech.as_mut(),
         PromptRequest {
             text: "a question",
-            recall: RecallMode::Skip,
+            recall,
+            filler,
         },
     )
     .await
@@ -259,6 +285,7 @@ async fn run_one_prompt_with_taps(
             speech,
         },
         archived_turns,
+        model_handle.requests(),
     )
 }
 
@@ -597,6 +624,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
         PromptRequest {
             text: "a question",
             recall: RecallMode::Skip,
+            filler: None,
         },
     )
     .await;
@@ -695,4 +723,113 @@ async fn without_a_touch_front_end_a_prompt_never_asks_to_listen() {
     let run = run_with_input(answer_turn(), |_| None, "").await;
     assert!(!run.end.listen_next);
     assert!(run.end.succeeded);
+}
+
+const FILLER: &str = "Let me check.";
+
+/// A searching run with `filler`, and speech when `speech` is given.
+async fn run_searching(
+    speech: impl FnOnce(&Log) -> Option<ScriptedSpeech>,
+    recall: RecallMode,
+    filler: Option<&'static str>,
+    typed: &[u8],
+) -> (Run, i64, Vec<rig_core::completion::CompletionRequest>) {
+    let log = Log::default();
+    let speech = speech(&log);
+    let (writer, reader) = tokio::io::duplex(512);
+    run_request(
+        answer_turn(),
+        &log,
+        speech,
+        reader,
+        Some(writer),
+        typed,
+        Taps::none(),
+        (recall, filler),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_search_shows_the_filler_before_any_text_and_speaks_it_first() {
+    let (run, archived_turns, requests) = run_searching(
+        |log| Some(speech(log, Behaviour::SpeaksUntilTextEnds)),
+        RecallMode::Search,
+        Some(FILLER),
+        b"",
+    )
+    .await;
+
+    let events = events(&run);
+    let notice = position(&events, &format!("notice:{FILLER}"));
+    let first_delta = events
+        .iter()
+        .position(|event| event.starts_with("delta:"))
+        .expect("the answer streamed");
+    assert!(notice < first_delta, "{events:?}");
+    let chunks: Vec<&String> = events
+        .iter()
+        .filter(|event| event.starts_with("chunk:"))
+        .collect();
+    assert_eq!(chunks[0], &format!("chunk:{FILLER}"), "{events:?}");
+    assert!(
+        chunks.len() >= 2,
+        "the answer follows the filler: {events:?}"
+    );
+    assert!(chunks[1..].iter().all(|chunk| !chunk.contains(FILLER)));
+    assert!(run.end.succeeded);
+    assert_eq!(archived_turns, 1);
+    // The model saw only the question.
+    assert_eq!(requests.len(), 1);
+    assert!(!format!("{:?}", requests[0].chat_history).contains(FILLER));
+}
+
+#[tokio::test]
+async fn a_skipped_run_shows_no_filler_and_speaks_the_answer_first() {
+    let (run, _, _) = run_searching(
+        |log| Some(speech(log, Behaviour::SpeaksUntilTextEnds)),
+        RecallMode::Skip,
+        None,
+        b"",
+    )
+    .await;
+
+    let events = events(&run);
+    assert!(!events.iter().any(|event| event.starts_with("notice:")));
+    let first_chunk = events
+        .iter()
+        .find(|event| event.starts_with("chunk:"))
+        .expect("the answer was spoken");
+    assert_eq!(first_chunk, &format!("chunk:{FIRST_SENTENCE}"));
+}
+
+#[tokio::test]
+async fn with_speech_off_a_search_still_shows_the_filler() {
+    let (run, archived_turns, requests) =
+        run_searching(|_| None, RecallMode::Search, Some(FILLER), b"").await;
+
+    let events = events(&run);
+    assert!(position(&events, &format!("notice:{FILLER}")) < position(&events, "completed"));
+    assert!(!events.iter().any(|event| event.starts_with("chunk:")));
+    assert_eq!(archived_turns, 1);
+    assert!(!format!("{:?}", requests[0].chat_history).contains(FILLER));
+}
+
+#[tokio::test]
+async fn stop_during_a_searching_run_cancels_speech_and_the_answer_still_finishes() {
+    let (run, archived_turns, _) = run_searching(
+        |log| Some(speech(log, Behaviour::NeverFinishes)),
+        RecallMode::Search,
+        Some(FILLER),
+        b"/stop\n",
+    )
+    .await;
+
+    assert!(matches!(wait(&run), SpeechWait::Stopped { .. }));
+    assert_eq!(run.speech.as_ref().expect("speech").cancel_calls, 1);
+    let events = events(&run);
+    assert!(events.contains(&format!("notice:{FILLER}")));
+    assert!(events.contains(&"completed".to_owned()), "{events:?}");
+    assert!(run.end.succeeded);
+    assert_eq!(archived_turns, 1);
 }

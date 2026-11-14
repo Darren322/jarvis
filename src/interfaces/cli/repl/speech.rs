@@ -95,6 +95,13 @@ impl ChunkFeed {
         }
     }
 
+    /// Queues one whole line as its own chunk, ahead of any streamed text.
+    pub(super) fn feed_line(&mut self, line: &str) {
+        if let Err(error) = self.queue(line.to_owned()) {
+            eprintln!("Warning: local speech: {error}");
+        }
+    }
+
     /// Tells speech the text is complete.
     pub(super) fn finish_text(&mut self) {
         if let Err(error) = self.finish() {
