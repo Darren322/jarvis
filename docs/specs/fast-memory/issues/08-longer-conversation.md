@@ -1,6 +1,6 @@
 # 08: Keep more of the conversation, and stop re-reading it every turn
 
-Status: in-review
+Status: done
 Stories: US1
 Blocked by: None
 Assignee: Claude
@@ -54,3 +54,5 @@ Owns: src/features/conversation/history.rs, src/features/conversation/session.rs
 - **A prompt larger than the old limit is accepted:** a direct request of 3,705 prompt tokens with a one-token limit returned normally.
 - **Not verified.** The same by voice, and a real conversation that reaches the byte cap.
 - **Cleaned up.** Everything this ticket put in `/tmp` on the 8 GB Pi is removed, and the scratch worktree is gone. The Pi checkout is still at `52fdd18`, so the Jarvis running there does not have this change until it is committed, pushed and pulled.
+
+2026-11-15 (Claude): committed as `b2dd2be` and pushed at Darren's request. The 8 GB Pi checkout is at `b2dd2be` with debug and release builds; the Jarvis already running there keeps the old build until Darren restarts `./run.sh`.

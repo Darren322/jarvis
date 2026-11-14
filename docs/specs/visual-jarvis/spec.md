@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: 02 and 06 are done. 07 (orb interface) and 12 (restyle; Darren approved the look on the Pi) are committed and pushed, and the workspace builds on the Pi. 09 (orb link and taps) is in review, uncommitted. Next: commit and push 09, then the first end-to-end run on the Pi with Darren (Jarvis in a terminal, `jarvis-orb` on the screen: states, levels, each tap case, reconnect), then 10 (autostart). Still unconfirmed for 01 and 08: full screen with no cursor.
+Resume here: 02 and 06 are done. 07 (orb interface) and 12 (restyle; Darren approved the look on the Pi) are committed and pushed, and the workspace builds on the Pi. 09 (orb link and taps) is in review, uncommitted. Next: commit and push 09, then the first end-to-end run on the Pi with Darren (Jarvis in a terminal, `jarvis-orb` on the screen: states, levels, each tap case, reconnect), then 10 (autostart). Still unconfirmed for 01 and 08: full screen with no cursor. Added 2026-11-15: ticket 13 (a sound on every state change, spec D16) is settled except for which slice of the reference clip suits each state; a first cut is in `notes/sound-spike/out_ref/`.
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -45,6 +45,7 @@ A separate program, `jarvis-orb`, draws an original orb full-screen on the 800x4
 | D13 | **Wake word (US8)** reuses the VAD and `Listener` path. It is its own later spike: verify openWakeWord's "hey jarvis" model and survey Rust-native detectors. The detector runs on the 8 GB Pi. |
 | D14 | **Supersedes the 2D character.** The earlier "Jarvis animation (2D character, web page in Chromium)" idea in the roadmap and in push-to-talk "Out of scope" is replaced by this orb. No web server crate is needed. |
 | D15 | **Approvals (2026-11-07).** Darren approved `thiserror` (`=2.0.21`, as in the root crate) for `orb-protocol`, and member-crate tests in `crates/<name>/tests/` (one line added to AGENTS.md Testing). |
+| D16 | **Sound cues (2026-11-15).** A short sound on every state change, plus one for a turn that ends with nothing spoken, in the style of Iron Man's JARVIS interface. The sounds are WAV files in `data/sounds/`, cut from Darren's reference clip and kept out of git, because the repository is public and the clip is not his. Jarvis plays them through its open audio output; the orb plays nothing. The listening cue ends before recording starts. Volume and an off switch in config. Details and the cue table: ticket 13. |
 
 ## Code facts these tickets build on
 
