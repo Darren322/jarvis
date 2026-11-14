@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 dotenvy = "0.15.7"
+earshot = "=1.2.2"
 futures-util = "=0.3.34"
 hound = "3.5.1"
 reqwest = { version = "0.13.5", features = ["json"] }

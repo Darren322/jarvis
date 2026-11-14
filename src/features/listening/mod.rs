@@ -20,6 +20,7 @@ use tokio::{
 
 mod level;
 mod listener;
+mod vad;
 
 #[cfg_attr(
     not(test),
@@ -27,6 +28,11 @@ mod listener;
 )]
 pub(crate) use level::run_level_meter;
 pub(crate) use listener::{Heard, ListenError, Listener};
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "wired by visual-jarvis ticket 07")
+)]
+pub(crate) use vad::speech_ended;
 
 const SAMPLE_RATE_HZ: u32 = 16_000;
 const CHANNELS: u32 = 1;
