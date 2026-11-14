@@ -1,89 +1,166 @@
 //! Draws the orb from a [`Look`].
 //!
-//! The picture, back to front: light rays fanning out from the centre; an outer
-//! lattice of points and links with a smaller lattice turning the opposite way
-//! inside it; two tilted rings of invented glyphs; and a warm glow at the core.
-//! No text is ever drawn. Node positions, links and glyph geometry are built once
-//! in [`Orb::new`]; a frame only reuses one scratch buffer.
+//! A flat, face-on mandala that mixes two styles. The warm, living centre is
+//! Great Sage: a white-gold starburst inside a thick, soft, slightly uneven glowing
+//! ring, long thin rays, and a band of tall invented glyphs standing around it. The
+//! cool, technical frame is Iron Man's JARVIS: crisp cyan and blue HUD rings broken
+//! into arcs, dashed and ticked like a gauge, turning at different speeds. Behind it
+//! all, faint out-of-focus blobs of light drift in rings. Back to front: blobs, rays,
+//! HUD rings, glyph band, core ring, sparkles, starburst. No text is ever drawn. All
+//! geometry is built once in [`Orb::new`]; a frame allocates nothing of its own.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 
 use jarvis_orb::look::{Look, Rgb};
 use macroquad::prelude::*;
 
 /// The screen height every pixel size below is written for.
 const REFERENCE_SIZE: f32 = 480.0;
-/// Radius of the outer lattice as a fraction of the screen's shorter side.
-const SPHERE_RADIUS_FRACTION: f32 = 0.38;
-/// Fixed forward lean of the lattices, so the turn shows depth.
-const SPHERE_TILT: f32 = 0.38;
 /// The longest step the animation takes in one frame, in seconds. A stall (for
 /// example the window being dragged) must not make the orb jump.
 const MAX_STEP_SECONDS: f32 = 0.1;
-/// Seed for node placement noise, so the orb is the same on every start.
+/// Seed for placement noise, so the orb is the same on every start.
 const SEED: u64 = 0x0b_1a_57;
-
-const OUTER_NODES: usize = 260;
-const INNER_NODES: usize = 80;
-/// Each node links to this many nearest neighbours.
-const LINKS_PER_NODE: usize = 3;
-const INNER_RADIUS: f32 = 0.55;
-/// The inner lattice turns this many times faster than the outer, the other way.
-const INNER_SPIN_RATIO: f32 = 1.7;
-
-const NODE_BASE_PX: f32 = 1.3;
-const NODE_DEPTH_PX: f32 = 2.2;
-const NODE_SIDES: u8 = 8;
-/// A node at the back of the sphere is this fraction as bright as one at the front.
-const BACK_DIMMING: f32 = 0.25;
-const LINK_ALPHA: f32 = 0.55;
-const LINK_WIDTH_PX: f32 = 1.0;
-/// How much a fully pulsing node grows, as a fraction of its size.
-const PULSE_SIZE_GAIN: f32 = 1.2;
-const PULSE_BRIGHTNESS_GAIN: f32 = 0.35;
-/// Speed of the ripple that runs through pulsing nodes, radians per second.
-const PULSE_WAVE_RATE: f32 = 7.0;
-/// How far a fully jittering node moves in and out, as a fraction of the radius.
-const JITTER_AMPLITUDE: f32 = 0.10;
-const WOBBLE_RATE_MIN: f32 = 4.0;
-const WOBBLE_RATE_MAX: f32 = 9.0;
-/// The whole orb swells by this fraction of the radius at a full node pulse.
-const PULSE_SWELL: f32 = 0.04;
 /// Brightness swing of one breath, as a fraction.
 const BREATH_BRIGHTNESS: f32 = 0.15;
+/// The whole orb swells by this fraction of the radius at a full pulse.
+const PULSE_SWELL: f32 = 0.04;
+/// Speed of the ripple that runs through pulsing sparkles, radians per second.
+const PULSE_WAVE_RATE: f32 = 7.0;
 
-const RAY_COUNT: usize = 28;
-const RAY_SEGMENTS: usize = 3;
-const RAY_START: f32 = 0.16;
-const RAY_MIN_LENGTH: f32 = 0.55;
-const RAY_EXTRA_LENGTH: f32 = 0.85;
-const RAY_ALPHA: f32 = 0.55;
-const RAY_WIDTH_PX: f32 = 1.6;
-const RAY_TURN_RATE: f32 = 0.05;
+// Background blobs. Distances and radii are fractions of the screen's shorter side.
+const BLOB_RING_RADII: [f32; 4] = [0.28, 0.50, 0.75, 1.00];
+const BLOBS_PER_RING: [usize; 4] = [6, 9, 10, 11];
+const BLOB_RADIUS_MIN: f32 = 0.04;
+const BLOB_RADIUS_MAX: f32 = 0.11;
+/// Slowest and fastest drift around the centre, radians per second.
+const BLOB_DRIFT_MAX: f32 = 0.05;
+const BLOB_WOBBLE_RATE: f32 = 0.30;
+const BLOB_WOBBLE_DEPTH: f32 = 0.05;
+/// Each blob is three stacked discs: (radius scale, alpha).
+const BLOB_LAYERS: [(f32, f32); 3] = [(1.0, 0.03), (0.68, 0.04), (0.38, 0.05)];
+const BLOB_BLUE: Rgb = [0.10, 0.30, 0.95];
+const BLOB_TEAL: Rgb = [0.10, 0.70, 0.75];
+const BLOB_GREEN: Rgb = [0.30, 0.85, 0.40];
+const BLOB_AMBER: Rgb = [1.00, 0.60, 0.15];
+const BLOB_PINK: Rgb = [1.00, 0.70, 0.80];
+const BLOB_SIDES: u8 = 20;
+
+// Rays.
+const RAY_COUNT: usize = 64;
+/// Every this-many rays is a thick, bright one.
+const RAY_THICK_EVERY: usize = 8;
+const RAY_START: f32 = 0.03;
+const RAY_MIN_LENGTH: f32 = 0.45;
+const RAY_MAX_LENGTH: f32 = 1.25;
+const RAY_WIDTH_PX: f32 = 0.9;
+const RAY_THICK_WIDTH_PX: f32 = 2.0;
+const RAY_BASE_ALPHA: f32 = 0.22;
+const RAY_STRENGTH_ALPHA: f32 = 0.78;
+const RAY_MAX_ALPHA: f32 = 0.60;
+/// Where along a ray the bright inner part ends, and how bright the rest is.
+const RAY_SPLIT: f32 = 0.35;
+const RAY_OUTER_FADE: f32 = 0.45;
+const RAY_TURN_RATE: f32 = 0.012;
 const RAY_SHIMMER_RATE: f32 = 2.2;
+const RAY_WHITE_MAX: f32 = 0.7;
 
-const CORE_LAYERS: usize = 9;
-const CORE_RADIUS: f32 = 0.11;
-const CORE_OUTER_SCALE: f32 = 3.4;
-const CORE_INNER_SCALE: f32 = 0.45;
-const CORE_LAYER_ALPHA_MIN: f32 = 0.04;
-const CORE_LAYER_ALPHA_MAX: f32 = 0.16;
-const CORE_WHITENING: f32 = 0.65;
-const CORE_SIDES: u8 = 32;
+// Glyph band. Sizes are fractions of the screen's shorter side.
+const BAND_BACKING_ALPHA: f32 = 0.22;
+const BAND_BACKING_SIDES: u8 = 96;
 
-const GLYPH_TRACK_STEPS: usize = 48;
-const GLYPH_LINE_PX: f32 = 1.5;
-const GLYPH_DOT_RADIUS: f32 = 0.16;
-const GLYPH_DOT_SIDES: u8 = 6;
+// HUD rings. Radii and tick lengths are fractions of the screen's shorter side.
+/// Segments per full circle for HUD arcs; an arc uses a share of them.
+const HUD_SIDES: u8 = 96;
+/// A faint wide arc under each arc ring gives the soft blue glow.
+const HUD_GLOW_WIDTH: f32 = 4.0;
+const HUD_GLOW_ALPHA: f32 = 0.16;
+/// How far a notch at the start of an arc reaches past each side of the arc, px.
+const HUD_NOTCH_PX: f32 = 5.0;
+const HUD_NOTCH_ALPHA: f32 = 0.9;
+const HUD_TICK_PX: f32 = 1.0;
+const HUD_MAJOR_TICK_PX: f32 = 1.8;
+const HUD_MAJOR_TICK_BOOST: f32 = 1.3;
+/// Ticks this far outside the screen are skipped, in pixels.
+const HUD_TICK_CULL_PX: f32 = 30.0;
+/// How strongly the flaring ring follows the speech level.
+const HUD_FLARE_GAIN: f32 = 0.8;
+const HUD_FLARE_BASE: f32 = 0.6;
+const GLYPH_SHIMMER_RATE: f32 = 1.3;
 const ARC_STEPS: usize = 6;
-/// The ring track lines sit this far (in glyph half-sizes) beyond the glyphs.
-const TRACK_MARGIN: f32 = 1.35;
-const TRACK_ALPHA: f32 = 0.35;
-/// A glyph at the back of its ring is this fraction as bright as one at the front.
-const RING_BACK_DIMMING: f32 = 0.30;
+
+// Core ring.
+const CORE_RING_RADIUS: f32 = 0.30;
+/// Ring thickness as a fraction of its radius.
+const CORE_RING_THICKNESS: f32 = 1.0 / 6.0;
+/// Points around the ring: enough that it reads as a curve, not a polygon.
+const CORE_RING_SIDES: usize = 72;
+/// How far the ring's edge strays from the true circle, as a fraction.
+const CORE_RING_UNEVENNESS: f32 = 0.022;
+/// The edge wanders in two slow waves around the ring, so it looks hand-drawn
+/// and alive rather than machined: lobes per turn, and each wave's share.
+const CORE_RING_WAVES: [(f32, f32); 2] = [(5.0, 0.6), (9.0, 0.4)];
+/// Layers of the ring glow, widest first: (width as a multiple of the ring
+/// thickness, alpha, heat).
+const CORE_RING_LAYERS: [(f32, f32, f32); 9] = [
+    (4.0, 0.03, 0.0),
+    (3.3, 0.04, 0.05),
+    (2.7, 0.05, 0.10),
+    (2.2, 0.06, 0.18),
+    (1.7, 0.08, 0.28),
+    (1.3, 0.12, 0.40),
+    (0.95, 0.20, 0.55),
+    (0.62, 0.35, 0.75),
+    (0.32, 0.55, 0.92),
+];
+/// The ring turns this much slower than the sparkle cloud.
+const CORE_RING_TURN_RATIO: f32 = 0.25;
+/// Amber fill discs inside the ring: (radius as a fraction of the ring, alpha).
+const CORE_FILL_LAYERS: [(f32, f32); 4] = [(1.0, 0.12), (0.8, 0.10), (0.6, 0.10), (0.4, 0.08)];
+const CORE_FILL_SIDES: u8 = 32;
+
+// Starburst.
+/// Glow discs, widest first (heat is the colour from [`glow_color`]): (radius as a fraction of the ring, alpha, heat).
+const STAR_GLOW_LAYERS: [(f32, f32, f32); 8] = [
+    (0.78, 0.05, 0.10),
+    (0.62, 0.07, 0.20),
+    (0.48, 0.10, 0.35),
+    (0.36, 0.14, 0.50),
+    (0.26, 0.20, 0.65),
+    (0.17, 0.32, 0.80),
+    (0.10, 0.55, 0.92),
+    (0.055, 0.90, 0.98),
+];
+const STAR_GLOW_SIDES: u8 = 28;
+const STAR_RAY_COUNT: usize = 40;
+const STAR_RAY_START: f32 = 0.03;
+const STAR_RAY_REACH: f32 = 0.85;
+const STAR_RAY_ALPHA: f32 = 0.55;
+const STAR_RAY_PX: f32 = 1.0;
+const TWINKLE_COUNT: usize = 10;
+const TWINKLE_SIZE_MIN: f32 = 0.04;
+const TWINKLE_SIZE_MAX: f32 = 0.09;
+const TWINKLE_RATE_MIN: f32 = 1.5;
+const TWINKLE_RATE_MAX: f32 = 4.0;
+/// A full pulse grows a twinkle by this fraction.
+const TWINKLE_PULSE_GAIN: f32 = 0.8;
+const TWINKLE_PX: f32 = 1.2;
+
+// Sparkle cloud inside the core ring.
+const SPARKLE_COUNT: usize = 70;
+const SPARKLE_REACH: f32 = 0.80;
+const SPARKLE_BASE_PX: f32 = 1.0;
+const SPARKLE_PULSE_GAIN: f32 = 1.4;
+const SPARKLE_ALPHA: f32 = 0.55;
+const SPARKLE_PULSE_BRIGHTNESS: f32 = 0.35;
+const SPARKLE_SIDES: u8 = 6;
+const SPARKLE_WOBBLE_MIN: f32 = 4.0;
+const SPARKLE_WOBBLE_MAX: f32 = 9.0;
+/// How far a fully jittering sparkle moves in and out, as a fraction of the ring.
+const JITTER_AMPLITUDE: f32 = 0.18;
 
 /// A glyph stroke in a box running -1 to 1 across (x, along the ring) and from the
-/// ring's centre side to its outer side (y). Angles are in degrees.
+/// band's centre side to its outer side (y). Angles are in degrees.
 #[derive(Clone, Copy)]
 enum Stroke {
     Line(f32, f32, f32, f32),
@@ -99,121 +176,99 @@ enum Stroke {
 
 use Stroke::{Arc, Dot, Line};
 
-/// The invented alphabet: ten marks made of lines, arcs and dots. They stand for
-/// nothing and are not drawn from any real script.
+/// The invented alphabet: ten tall marks made of lines, arcs and dots, in the
+/// spirit of blackletter strokes. They stand for nothing and are not drawn from
+/// any real script.
 const GLYPHS: [&[Stroke]; 10] = [
+    // A stem with a pointed crown, a bar and a dot below.
+    &[
+        Line(0.0, -1.0, 0.0, 1.0),
+        Line(-0.8, 0.55, 0.0, 0.95),
+        Line(0.0, 0.95, 0.8, 0.55),
+        Line(-0.8, -0.3, 0.8, -0.3),
+        Dot(0.0, -0.7),
+    ],
+    // Two uneven stems joined by a slanting bar.
+    &[
+        Line(-0.6, -1.0, -0.6, 1.0),
+        Line(0.6, -1.0, 0.6, 0.6),
+        Line(-0.6, 0.2, 0.6, -0.3),
+        Dot(0.6, 0.92),
+    ],
+    // A diamond on a stem with a foot bar.
+    &[
+        Line(0.0, 1.0, 0.7, 0.5),
+        Line(0.7, 0.5, 0.0, 0.0),
+        Line(0.0, 0.0, -0.7, 0.5),
+        Line(-0.7, 0.5, 0.0, 1.0),
+        Line(0.0, 0.0, 0.0, -1.0),
+        Line(-0.5, -0.6, 0.5, -0.6),
+    ],
+    // An arch on two legs with a seed beneath.
+    &[
+        Arc {
+            cx: 0.0,
+            cy: 0.35,
+            r: 0.75,
+            from: 180.0,
+            to: 360.0,
+        },
+        Line(-0.75, 0.35, -0.75, -0.8),
+        Line(0.75, 0.35, 0.75, -1.0),
+        Dot(0.0, -0.2),
+    ],
+    // A zigzag.
+    &[
+        Line(-0.7, 1.0, 0.7, 0.5),
+        Line(0.7, 0.5, -0.7, 0.0),
+        Line(-0.7, 0.0, 0.7, -0.5),
+        Line(0.7, -0.5, -0.7, -1.0),
+    ],
     // A tine with two unequal branches and a dot above.
     &[
-        Line(0.0, -1.0, 0.0, 0.6),
-        Line(0.0, 0.1, -0.7, 0.7),
-        Line(0.0, -0.2, 0.7, 0.35),
+        Line(0.0, -1.0, 0.0, 0.7),
+        Line(0.0, 0.2, -0.8, 0.8),
+        Line(0.0, -0.2, 0.8, 0.4),
         Dot(0.0, 0.95),
     ],
-    // A crescent holding a seed.
+    // A ladder of two rails with dots at each end.
     &[
-        Arc {
-            cx: 0.0,
-            cy: 0.0,
-            r: 0.8,
-            from: 120.0,
-            to: 330.0,
-        },
-        Dot(0.0, 0.0),
+        Line(-0.5, -1.0, -0.5, 1.0),
+        Line(0.5, -1.0, 0.5, 1.0),
+        Line(-0.5, 0.5, 0.5, 0.5),
+        Line(-0.5, -0.2, 0.5, -0.2),
+        Dot(0.0, 0.85),
+        Dot(0.0, -0.7),
     ],
-    // A spine with two uneven rungs and a far dot.
-    &[
-        Line(-0.1, -1.0, -0.1, 1.0),
-        Line(-0.1, -0.5, 0.8, -0.5),
-        Line(-0.1, 0.3, -0.8, 0.3),
-        Dot(0.7, 0.75),
-    ],
-    // Two half-rings caught on each other.
-    &[
-        Arc {
-            cx: -0.3,
-            cy: 0.0,
-            r: 0.6,
-            from: -90.0,
-            to: 200.0,
-        },
-        Arc {
-            cx: 0.3,
-            cy: 0.0,
-            r: 0.6,
-            from: 90.0,
-            to: 380.0,
-        },
-    ],
-    // Two nested chevrons and a dot.
-    &[
-        Line(-0.8, -0.9, 0.0, -0.1),
-        Line(0.0, -0.1, 0.8, -0.9),
-        Line(-0.5, 0.1, 0.0, 0.6),
-        Line(0.0, 0.6, 0.5, 0.1),
-        Dot(0.0, 0.95),
-    ],
-    // A lens with a pupil.
-    &[
-        Arc {
-            cx: 0.0,
-            cy: -0.7,
-            r: 1.0,
-            from: 50.0,
-            to: 130.0,
-        },
-        Arc {
-            cx: 0.0,
-            cy: 0.7,
-            r: 1.0,
-            from: 230.0,
-            to: 310.0,
-        },
-        Dot(0.0, 0.0),
-    ],
-    // A slash with a tick and a small cup.
-    &[
-        Line(-0.6, -0.9, 0.6, 0.9),
-        Line(-0.2, 0.0, 0.7, -0.5),
-        Arc {
-            cx: -0.4,
-            cy: 0.5,
-            r: 0.4,
-            from: 180.0,
-            to: 300.0,
-        },
-    ],
-    // Three dots, two joined.
-    &[
-        Dot(0.0, 0.8),
-        Dot(-0.7, -0.6),
-        Dot(0.7, -0.6),
-        Line(0.0, 0.8, -0.7, -0.6),
-        Line(-0.7, -0.6, 0.7, -0.6),
-    ],
-    // A staff ending in a hook.
+    // A staff ending in a hook, with a serif and a dot.
     &[
         Line(0.3, -1.0, 0.3, 0.4),
         Arc {
-            cx: -0.1,
-            cy: 0.4,
-            r: 0.4,
+            cx: -0.15,
+            cy: 0.45,
+            r: 0.45,
             from: 0.0,
             to: 180.0,
         },
+        Line(-0.6, -0.5, 0.3, -0.5),
+        Dot(-0.6, -0.8),
     ],
-    // A bar with dotted ends, an arch over it, and a stem.
+    // A trident.
     &[
-        Line(-0.9, 0.1, 0.9, 0.1),
-        Dot(-0.9, 0.1),
-        Dot(0.9, 0.1),
-        Arc {
-            cx: 0.0,
-            cy: 0.1,
-            r: 0.6,
-            from: 200.0,
-            to: 340.0,
-        },
-        Line(0.0, -0.5, 0.0, -1.0),
+        Line(0.0, -1.0, 0.0, 0.6),
+        Line(-0.8, 0.9, -0.8, 0.1),
+        Line(-0.8, 0.1, 0.0, -0.1),
+        Line(0.8, 0.9, 0.8, 0.1),
+        Line(0.8, 0.1, 0.0, -0.1),
+        Dot(0.0, 0.9),
+    ],
+    // A cross-brace on a stem with a foot bar.
+    &[
+        Line(-0.7, 0.9, 0.7, -0.2),
+        Line(0.7, 0.9, -0.7, -0.2),
+        Line(0.0, -0.2, 0.0, -1.0),
+        Line(-0.6, -0.7, 0.6, -0.7),
+        Dot(0.0, 0.95),
     ],
 ];
 
@@ -257,165 +312,241 @@ impl Glyph {
     }
 }
 
-/// One ring of glyphs. Radius and glyph size are fractions of the sphere radius.
-struct Ring {
+/// The band of glyphs standing around a circle, tops pointing outwards. Radius,
+/// height and width are fractions of the screen's shorter side.
+struct Band {
     radius: f32,
-    tilt: f32,
-    roll: f32,
+    height: f32,
+    width: f32,
     glyph_count: usize,
-    glyph_size: f32,
-    /// Which glyph the ring starts its sequence on, so the rings differ.
+    glyph_line_px: f32,
+    /// Which glyph the band starts its sequence on.
     glyph_start: usize,
     /// Step through the alphabet from one glyph to the next.
     glyph_stride: usize,
 }
 
-const RINGS: [Ring; 2] = [
-    Ring {
-        radius: 1.24,
-        tilt: 1.20,
-        roll: 0.18,
-        glyph_count: 26,
-        glyph_size: 0.060,
-        glyph_start: 0,
-        glyph_stride: 3,
+/// The band's centre line is 0.42 of the shorter side from the middle, so with its
+/// height it nearly touches the top and bottom of an 800x480 screen.
+const BAND: Band = Band {
+    radius: 0.42,
+    height: 0.125,
+    width: 0.034,
+    glyph_count: 66,
+    glyph_line_px: 1.7,
+    glyph_start: 0,
+    glyph_stride: 3,
+};
+
+/// What a HUD ring is made of.
+enum HudKind {
+    /// A full thin circle line, thickness in reference pixels.
+    Circle { thickness_px: f32 },
+    /// Arcs of different lengths with gaps: (start, length) in degrees. With
+    /// `notches`, a short cross-line marks the start of each arc.
+    Arcs {
+        arcs: &'static [(f32, f32)],
+        thickness_px: f32,
+        notches: bool,
     },
-    Ring {
-        radius: 0.92,
-        tilt: -0.55,
-        roll: 0.95,
-        glyph_count: 18,
-        glyph_size: 0.050,
-        glyph_start: 4,
-        glyph_stride: 7,
+    /// A circle cut into `count` equal dashes, each `duty` of its pitch long.
+    Dashes {
+        count: usize,
+        duty: f32,
+        thickness_px: f32,
+    },
+    /// Gauge ticks, every `major_every`th one longer. Lengths are fractions of
+    /// the shorter side.
+    Ticks {
+        count: usize,
+        major_every: usize,
+        minor_len: f32,
+        major_len: f32,
+    },
+}
+
+/// One ring of the HUD. `spin` is a multiple of the look's HUD spin, so rings turn
+/// at different speeds and in different directions.
+struct HudRing {
+    radius: f32,
+    spin: f32,
+    alpha: f32,
+    /// True for the ring that flares with the speech level.
+    flare: bool,
+    kind: HudKind,
+}
+
+const ARCS_INNER: [(f32, f32); 6] = [
+    (0.0, 70.0),
+    (80.0, 25.0),
+    (115.0, 60.0),
+    (185.0, 15.0),
+    (210.0, 95.0),
+    (315.0, 30.0),
+];
+const ARCS_MIDDLE: [(f32, f32); 6] = [
+    (10.0, 50.0),
+    (70.0, 10.0),
+    (90.0, 100.0),
+    (205.0, 35.0),
+    (250.0, 70.0),
+    (330.0, 20.0),
+];
+const ARCS_OUTER: [(f32, f32); 5] = [
+    (0.0, 100.0),
+    (115.0, 60.0),
+    (190.0, 40.0),
+    (250.0, 80.0),
+    (340.0, 15.0),
+];
+
+/// Inside out. The two circle and dash rings are the crisp lines bounding the
+/// glyph band (centre 0.42, half-height 0.0575, with a margin).
+const HUD_RINGS: [HudRing; 7] = [
+    HudRing {
+        radius: 0.235,
+        spin: 0.5,
+        alpha: 0.8,
+        flare: false,
+        kind: HudKind::Ticks {
+            count: 72,
+            major_every: 6,
+            minor_len: 0.008,
+            major_len: 0.016,
+        },
+    },
+    HudRing {
+        radius: 0.335,
+        spin: 1.0,
+        alpha: 0.85,
+        flare: false,
+        kind: HudKind::Arcs {
+            arcs: &ARCS_INNER,
+            thickness_px: 1.6,
+            notches: false,
+        },
+    },
+    HudRing {
+        radius: 0.356,
+        spin: 0.0,
+        alpha: 0.7,
+        flare: false,
+        kind: HudKind::Circle { thickness_px: 1.2 },
+    },
+    HudRing {
+        radius: 0.484,
+        spin: 0.3,
+        alpha: 0.8,
+        flare: false,
+        kind: HudKind::Dashes {
+            count: 72,
+            duty: 0.5,
+            thickness_px: 1.4,
+        },
+    },
+    HudRing {
+        radius: 0.525,
+        spin: -0.7,
+        alpha: 0.85,
+        flare: false,
+        kind: HudKind::Arcs {
+            arcs: &ARCS_MIDDLE,
+            thickness_px: 3.0,
+            notches: true,
+        },
+    },
+    HudRing {
+        radius: 0.575,
+        spin: 0.4,
+        alpha: 0.8,
+        flare: false,
+        kind: HudKind::Ticks {
+            count: 120,
+            major_every: 5,
+            minor_len: 0.010,
+            major_len: 0.022,
+        },
+    },
+    HudRing {
+        radius: 0.68,
+        spin: 1.4,
+        alpha: 0.9,
+        flare: true,
+        kind: HudKind::Arcs {
+            arcs: &ARCS_OUTER,
+            thickness_px: 5.0,
+            notches: true,
+        },
     },
 ];
 
-/// One lattice of points on a sphere.
-struct Shell {
-    /// Points on the unit sphere.
-    nodes: Vec<Vec3>,
-    /// Pairs of indices into `nodes`, each pair once.
-    links: Vec<(usize, usize)>,
-    /// Per node: wobble rate and phase.
-    wobble: Vec<(f32, f32)>,
-    /// Radius as a fraction of the orb's radius.
+/// One drifting blob of background light.
+struct Blob {
+    /// Distance from the centre as a fraction of the shorter side.
+    distance: f32,
+    angle: f32,
+    /// Drift around the centre, radians per second.
+    drift: f32,
+    wobble_phase: f32,
+    /// Radius as a fraction of the shorter side.
     radius: f32,
+    color: Rgb,
 }
 
-impl Shell {
-    fn new(count: usize, radius: f32) -> Self {
-        let nodes = fibonacci_sphere(count);
-        let links = nearest_links(&nodes);
-        let wobble = nodes
-            .iter()
-            .map(|_| {
-                (
-                    rand::gen_range(WOBBLE_RATE_MIN, WOBBLE_RATE_MAX),
-                    rand::gen_range(0.0, TAU),
-                )
-            })
-            .collect();
-        Self {
-            nodes,
-            links,
-            wobble,
-            radius,
-        }
-    }
+/// One thin ray from the centre.
+struct Ray {
+    angle: f32,
+    /// 0..1: how far this ray reaches at full strength.
+    reach: f32,
+    /// 0..1: how bright this ray is.
+    brightness: f32,
+    /// 0..1: how white (rather than gold) this ray is.
+    white: f32,
+    phase: f32,
+    thick: bool,
 }
 
-/// `count` points spread evenly over the unit sphere.
-fn fibonacci_sphere(count: usize) -> Vec<Vec3> {
-    let golden_angle = PI * (3.0 - 5f32.sqrt());
-    // `count` and the indices are a few hundred, so the conversions are exact.
-    let total = count as f32;
-    (0..count)
-        .map(|i| {
-            let y = 1.0 - 2.0 * (i as f32 + 0.5) / total;
-            let ring = (1.0 - y * y).sqrt();
-            let angle = golden_angle * i as f32;
-            vec3(ring * angle.cos(), y, ring * angle.sin())
-        })
-        .collect()
+/// A short ray of the starburst.
+struct StarRay {
+    angle: f32,
+    reach: f32,
+    phase: f32,
 }
 
-/// Links every point to its nearest neighbours, each pair once.
-fn nearest_links(nodes: &[Vec3]) -> Vec<(usize, usize)> {
-    let mut links = Vec::new();
-    for (i, a) in nodes.iter().enumerate() {
-        let mut by_distance: Vec<(f32, usize)> = nodes
-            .iter()
-            .enumerate()
-            .filter(|&(j, _)| j != i)
-            .map(|(j, b)| (a.distance_squared(*b), j))
-            .collect();
-        by_distance.sort_by(|x, y| x.0.total_cmp(&y.0));
-        links.extend(
-            by_distance
-                .iter()
-                .take(LINKS_PER_NODE)
-                .map(|&(_, j)| (i.min(j), i.max(j))),
-        );
-    }
-    links.sort_unstable();
-    links.dedup();
-    links
-}
-
-/// Sine and cosine of a turn about Y followed by a lean about X.
-struct Spin {
-    sin_yaw: f32,
-    cos_yaw: f32,
-    sin_tilt: f32,
-    cos_tilt: f32,
-}
-
-impl Spin {
-    fn new(yaw: f32) -> Self {
-        let (sin_yaw, cos_yaw) = yaw.sin_cos();
-        let (sin_tilt, cos_tilt) = SPHERE_TILT.sin_cos();
-        Self {
-            sin_yaw,
-            cos_yaw,
-            sin_tilt,
-            cos_tilt,
-        }
-    }
-
-    fn apply(&self, p: Vec3) -> Vec3 {
-        let x = p.x * self.cos_yaw + p.z * self.sin_yaw;
-        let z = -p.x * self.sin_yaw + p.z * self.cos_yaw;
-        vec3(
-            x,
-            p.y * self.cos_tilt - z * self.sin_tilt,
-            p.y * self.sin_tilt + z * self.cos_tilt,
-        )
-    }
-}
-
-/// A projected point: where it lands on screen and how near the viewer it is
-/// (0 at the back, 1 at the front).
-#[derive(Clone, Copy)]
-struct Projected {
+/// A four-point star that twinkles inside the ring, with its place as a fraction
+/// of the ring radius.
+struct Twinkle {
     pos: Vec2,
-    depth: f32,
+    size: f32,
+    rate: f32,
+    phase: f32,
+}
+
+/// One point of the sparkle cloud: a place in the unit disc, a wobble rate and phase.
+struct Sparkle {
+    pos: Vec2,
+    rate: f32,
+    phase: f32,
 }
 
 /// The per-frame values every drawing step shares.
 struct Frame<'a> {
     look: &'a Look,
     center: Vec2,
-    /// Radius of the outer lattice, in pixels.
-    radius: f32,
+    /// Width and height of the drawing area, in pixels.
+    area: Vec2,
+    /// The screen's shorter side, in pixels.
+    size: f32,
+    /// Distance from the centre to a corner of the screen, in pixels.
+    reach: f32,
     /// Pixels per reference pixel.
     unit: f32,
     /// Seconds since start, in `f64` so long runs keep their precision.
     clock: f64,
     /// Radial swell from breathing and pulsing, as a fraction of the radius.
     swell: f32,
-    /// Brightness factor from breathing.
-    glow: f32,
+    /// Brightness of the whole mandala: the look's brightness and the breath.
+    lum: f32,
 }
 
 fn color(rgb: Rgb, alpha: f32) -> Color {
@@ -426,23 +557,64 @@ fn whiten(rgb: Rgb, amount: f32) -> Rgb {
     rgb.map(|c| c + (1.0 - c) * amount)
 }
 
+/// A colour `amount` of the way from `from` to `to`.
+fn blend(from: Rgb, to: Rgb, amount: f32) -> Rgb {
+    [
+        from[0] + (to[0] - from[0]) * amount,
+        from[1] + (to[1] - from[1]) * amount,
+        from[2] + (to[2] - from[2]) * amount,
+    ]
+}
+
+/// The colour of a glow layer: the deep amber fill at 0, the core colour halfway,
+/// and white-hot at 1.
+fn glow_color(look: &Look, heat: f32) -> Rgb {
+    let heat = heat.clamp(0.0, 1.0);
+    if heat < 0.5 {
+        blend(look.fill_color, look.core_color, heat * 2.0)
+    } else {
+        whiten(look.core_color, (heat - 0.5) * 2.0)
+    }
+}
+
+/// Blends a colour towards its own grey: 0 is grey, 1 is the colour itself.
+fn saturate(rgb: Rgb, amount: f32) -> Rgb {
+    let grey = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    rgb.map(|c| grey + (c - grey) * amount)
+}
+
 /// A sine wave of `rate` radians per second at `phase`, from -1 to 1.
 fn wave(clock: f64, rate: f32, phase: f32) -> f32 {
     // sin is within -1..1, so narrowing to f32 loses nothing that matters.
     (clock * f64::from(rate) + f64::from(phase)).sin() as f32
 }
 
+/// A random angle in 0..TAU.
+fn random_angle() -> f32 {
+    rand::gen_range(0.0, TAU)
+}
+
+/// A random point in the unit disc, spread evenly by area.
+fn random_in_disc() -> Vec2 {
+    let radius = rand::gen_range(0.0f32, 1.0).sqrt();
+    let (sin, cos) = random_angle().sin_cos();
+    vec2(cos, sin) * radius
+}
+
 /// The orb: precomputed geometry plus the angles that keep turning.
 pub struct Orb {
-    shells: [Shell; 2],
     glyphs: Vec<Glyph>,
-    ray_lengths: [f32; RAY_COUNT],
-    /// Scratch space for one lattice's projected points, reused every frame.
-    projected: Vec<Projected>,
+    blobs: Vec<Blob>,
+    rays: Vec<Ray>,
+    star_rays: Vec<StarRay>,
+    twinkles: Vec<Twinkle>,
+    sparkles: Vec<Sparkle>,
+    /// Per vertex of the core ring: its distance from the centre as a fraction of
+    /// the ring radius.
+    ring_vertices: [f32; CORE_RING_SIDES],
     clock: f64,
-    sphere_angle: f32,
-    inner_angle: f32,
-    ring_angles: [f32; 2],
+    sparkle_angle: f32,
+    band_angles: [f32; 2],
     breath_phase: f32,
     ray_angle: f32,
 }
@@ -450,30 +622,101 @@ pub struct Orb {
 impl Orb {
     pub fn new() -> Self {
         rand::srand(SEED);
-        let mut ray_lengths = [0.0; RAY_COUNT];
-        for length in &mut ray_lengths {
-            *length = rand::gen_range(0.5, 1.0);
+        let mut blobs = Vec::new();
+        for (&distance, &count) in BLOB_RING_RADII.iter().zip(&BLOBS_PER_RING) {
+            for _ in 0..count {
+                let pick = rand::gen_range(0.0f32, 1.0);
+                let color = if pick < 0.35 {
+                    BLOB_BLUE
+                } else if pick < 0.65 {
+                    BLOB_TEAL
+                } else if pick < 0.80 {
+                    BLOB_GREEN
+                } else if pick < 0.92 {
+                    BLOB_AMBER
+                } else {
+                    BLOB_PINK
+                };
+                blobs.push(Blob {
+                    distance,
+                    angle: random_angle(),
+                    drift: rand::gen_range(-BLOB_DRIFT_MAX, BLOB_DRIFT_MAX),
+                    wobble_phase: random_angle(),
+                    radius: rand::gen_range(BLOB_RADIUS_MIN, BLOB_RADIUS_MAX),
+                    color,
+                });
+            }
+        }
+        let rays = (0..RAY_COUNT)
+            .map(|index| {
+                let thick = index % RAY_THICK_EVERY == 0;
+                Ray {
+                    angle: random_angle(),
+                    reach: rand::gen_range(0.6, 1.0),
+                    brightness: if thick {
+                        1.0
+                    } else {
+                        rand::gen_range(0.3, 0.85)
+                    },
+                    white: rand::gen_range(0.0, RAY_WHITE_MAX),
+                    phase: random_angle(),
+                    thick,
+                }
+            })
+            .collect();
+        let star_rays = (0..STAR_RAY_COUNT)
+            .map(|_| StarRay {
+                angle: random_angle(),
+                reach: rand::gen_range(0.35, 1.0),
+                phase: random_angle(),
+            })
+            .collect();
+        let twinkles = (0..TWINKLE_COUNT)
+            .map(|_| Twinkle {
+                pos: random_in_disc() * SPARKLE_REACH,
+                size: rand::gen_range(TWINKLE_SIZE_MIN, TWINKLE_SIZE_MAX),
+                rate: rand::gen_range(TWINKLE_RATE_MIN, TWINKLE_RATE_MAX),
+                phase: random_angle(),
+            })
+            .collect();
+        let sparkles = (0..SPARKLE_COUNT)
+            .map(|_| Sparkle {
+                pos: random_in_disc(),
+                rate: rand::gen_range(SPARKLE_WOBBLE_MIN, SPARKLE_WOBBLE_MAX),
+                phase: random_angle(),
+            })
+            .collect();
+        let wave_phases = CORE_RING_WAVES.map(|_| random_angle());
+        let mut ring_vertices = [1.0; CORE_RING_SIDES];
+        for (index, vertex) in ring_vertices.iter_mut().enumerate() {
+            // `index` is below CORE_RING_SIDES (72), so the conversions are exact.
+            let theta = TAU * index as f32 / CORE_RING_SIDES as f32;
+            let wander: f32 = CORE_RING_WAVES
+                .iter()
+                .zip(wave_phases)
+                .map(|(&(lobes, share), phase)| share * (lobes * theta + phase).sin())
+                .sum();
+            *vertex = 1.0 + CORE_RING_UNEVENNESS * wander;
         }
         Self {
-            shells: [
-                Shell::new(OUTER_NODES, 1.0),
-                Shell::new(INNER_NODES, INNER_RADIUS),
-            ],
             glyphs: GLYPHS.iter().map(|strokes| Glyph::bake(strokes)).collect(),
-            ray_lengths,
-            projected: Vec::with_capacity(OUTER_NODES),
+            blobs,
+            rays,
+            star_rays,
+            twinkles,
+            sparkles,
+            ring_vertices,
             clock: 0.0,
-            sphere_angle: 0.0,
-            inner_angle: 0.0,
-            ring_angles: [0.0; 2],
+            sparkle_angle: 0.0,
+            band_angles: [0.0; 2],
             breath_phase: 0.0,
             ray_angle: 0.0,
         }
     }
 
     /// Advances the animation by `dt` seconds and draws one frame of `look`,
-    /// centred on the screen. Sizes follow the screen's shorter side.
-    pub fn draw(&mut self, look: &Look, dt: f32) {
+    /// centred in an `area` of that many pixels. Sizes follow the shorter side.
+    pub fn draw(&mut self, look: &Look, dt: f32, area: Vec2) {
         let dt = if dt.is_nan() {
             0.0
         } else {
@@ -481,46 +724,64 @@ impl Orb {
         };
         self.advance(look, dt);
 
-        let size = screen_width().min(screen_height());
         let breath = self.breath_phase.sin();
         let frame = Frame {
             look,
-            center: vec2(screen_width() / 2.0, screen_height() / 2.0),
-            radius: size * SPHERE_RADIUS_FRACTION,
-            unit: size / REFERENCE_SIZE,
+            center: area / 2.0,
+            area,
+            size: area.min_element(),
+            reach: area.length() / 2.0,
+            unit: area.min_element() / REFERENCE_SIZE,
             clock: self.clock,
             swell: look.breath_depth * breath + look.node_pulse * PULSE_SWELL,
-            glow: 1.0 + BREATH_BRIGHTNESS * breath,
+            lum: look.brightness * (1.0 + BREATH_BRIGHTNESS * breath),
         };
 
+        self.draw_blobs(&frame);
         self.draw_rays(&frame);
-        draw_shell(
-            &self.shells[0],
-            self.sphere_angle,
-            &frame,
-            &mut self.projected,
-        );
-        draw_shell(
-            &self.shells[1],
-            self.inner_angle,
-            &frame,
-            &mut self.projected,
-        );
-        for (index, ring) in RINGS.iter().enumerate() {
-            self.draw_ring(ring, self.ring_angles[index], &frame);
-        }
-        draw_core(&frame);
+        self.draw_hud(&frame);
+        self.draw_band(&BAND, self.band_angles[0], &frame);
+        self.draw_core_ring(&frame);
+        self.draw_sparkles(&frame);
+        self.draw_starburst(&frame);
     }
 
     fn advance(&mut self, look: &Look, dt: f32) {
         self.clock += f64::from(dt);
-        self.sphere_angle = (self.sphere_angle + look.sphere_spin * dt) % TAU;
-        self.inner_angle = (self.inner_angle - look.sphere_spin * INNER_SPIN_RATIO * dt) % TAU;
-        for (angle, spin) in self.ring_angles.iter_mut().zip(look.ring_spin) {
+        self.sparkle_angle = (self.sparkle_angle + look.sparkle_spin * dt) % TAU;
+        for (angle, spin) in self.band_angles.iter_mut().zip(look.band_spin) {
             *angle = (*angle + spin * dt) % TAU;
         }
         self.breath_phase = (self.breath_phase + TAU * look.breath_rate * dt) % TAU;
         self.ray_angle = (self.ray_angle + RAY_TURN_RATE * dt) % TAU;
+    }
+
+    fn draw_blobs(&self, frame: &Frame) {
+        let look = frame.look;
+        if look.background < 0.01 {
+            return;
+        }
+        for blob in &self.blobs {
+            // Wrapped to 0..TAU in f64 first, so the narrowing keeps its precision.
+            let drifted = (f64::from(blob.drift) * frame.clock) % f64::from(TAU);
+            let angle = blob.angle + drifted as f32;
+            let distance = blob.distance
+                * (1.0
+                    + BLOB_WOBBLE_DEPTH * wave(frame.clock, BLOB_WOBBLE_RATE, blob.wobble_phase));
+            let (sin, cos) = angle.sin_cos();
+            let at = frame.center + vec2(cos, sin) * (distance * frame.size);
+            let rgb = saturate(blob.color, look.blob_saturation);
+            for (scale, alpha) in BLOB_LAYERS {
+                draw_poly(
+                    at.x,
+                    at.y,
+                    BLOB_SIDES,
+                    blob.radius * frame.size * scale,
+                    0.0,
+                    color(rgb, alpha * look.background),
+                );
+            }
+        }
     }
 
     fn draw_rays(&self, frame: &Frame) {
@@ -528,216 +789,343 @@ impl Orb {
         if strength < 0.01 {
             return;
         }
-        for (index, &base_length) in self.ray_lengths.iter().enumerate() {
-            // `index` is below RAY_COUNT (28), so the conversion is exact.
-            let slot = index as f32;
-            let angle = self.ray_angle + slot * TAU / RAY_COUNT as f32;
-            let shimmer = 0.7 + 0.3 * wave(frame.clock, RAY_SHIMMER_RATE, slot * 1.7);
-            let length = frame.radius
-                * (RAY_MIN_LENGTH + RAY_EXTRA_LENGTH * strength * base_length * shimmer);
-            let start = frame.radius * RAY_START;
+        let reach = strength.sqrt();
+        let start = frame.size * RAY_START;
+        for ray in &self.rays {
+            let angle = ray.angle + self.ray_angle;
+            let shimmer = 0.8 + 0.2 * wave(frame.clock, RAY_SHIMMER_RATE, ray.phase);
+            let longest = RAY_MAX_LENGTH * ray.reach * shimmer;
+            let length = frame.reach * (RAY_MIN_LENGTH + (longest - RAY_MIN_LENGTH) * reach);
             let (sin, cos) = angle.sin_cos();
             let direction = vec2(cos, sin);
-            for segment in 0..RAY_SEGMENTS {
-                // `segment` is below RAY_SEGMENTS (3), so the conversions are exact.
-                let near = segment as f32 / RAY_SEGMENTS as f32;
-                let far = (segment + 1) as f32 / RAY_SEGMENTS as f32;
-                let from = frame.center + direction * (start + (length - start) * near);
-                let to = frame.center + direction * (start + (length - start) * far);
-                let alpha = strength * RAY_ALPHA * (1.0 - near) * (1.0 - near);
-                draw_line(
-                    from.x,
-                    from.y,
-                    to.x,
-                    to.y,
-                    RAY_WIDTH_PX * frame.unit,
-                    color(frame.look.core_color, alpha),
-                );
+            let alpha =
+                ((RAY_BASE_ALPHA + RAY_STRENGTH_ALPHA * strength) * frame.lum * ray.brightness)
+                    .min(RAY_MAX_ALPHA);
+            let rgb = whiten(frame.look.core_color, ray.white);
+            let width = if ray.thick {
+                RAY_THICK_WIDTH_PX
+            } else {
+                RAY_WIDTH_PX
+            } * frame.unit;
+            let split = start + (length - start) * RAY_SPLIT;
+            let near = frame.center + direction * start;
+            let middle = frame.center + direction * split;
+            let far = frame.center + direction * length;
+            draw_line(near.x, near.y, middle.x, middle.y, width, color(rgb, alpha));
+            draw_line(
+                middle.x,
+                middle.y,
+                far.x,
+                far.y,
+                width,
+                color(rgb, alpha * RAY_OUTER_FADE),
+            );
+        }
+    }
+
+    fn draw_hud(&self, frame: &Frame) {
+        let look = frame.look;
+        let base = look.hud_alpha * frame.lum;
+        if base < 0.01 {
+            return;
+        }
+        let hud_angle = self.band_angles[1];
+        let unit = frame.unit;
+        for ring in &HUD_RINGS {
+            let mut alpha = base * ring.alpha;
+            if ring.flare {
+                alpha *= HUD_FLARE_BASE + HUD_FLARE_GAIN * look.node_jitter;
+            }
+            let radius = frame.size * ring.radius * (1.0 + frame.swell);
+            let turn = hud_angle * ring.spin;
+            let paint = color(look.hud_color, alpha);
+            let (cx, cy) = (frame.center.x, frame.center.y);
+            match ring.kind {
+                HudKind::Circle { thickness_px } => {
+                    let thickness = thickness_px * unit;
+                    draw_arc(
+                        cx,
+                        cy,
+                        HUD_SIDES,
+                        radius - thickness / 2.0,
+                        0.0,
+                        thickness,
+                        360.0,
+                        paint,
+                    );
+                }
+                HudKind::Arcs {
+                    arcs,
+                    thickness_px,
+                    notches,
+                } => {
+                    let thickness = thickness_px * unit;
+                    let glow = thickness * HUD_GLOW_WIDTH;
+                    let notch = HUD_NOTCH_PX * unit;
+                    for &(start, length) in arcs {
+                        let rotation = start + turn.to_degrees();
+                        draw_arc(
+                            cx,
+                            cy,
+                            HUD_SIDES,
+                            radius - glow / 2.0,
+                            rotation,
+                            glow,
+                            length,
+                            color(look.hud_color, alpha * HUD_GLOW_ALPHA),
+                        );
+                        draw_arc(
+                            cx, cy, HUD_SIDES, radius, rotation, thickness, length, paint,
+                        );
+                        if notches {
+                            let (sin, cos) = rotation.to_radians().sin_cos();
+                            let direction = vec2(cos, sin);
+                            let from = frame.center + direction * (radius - notch);
+                            let to = frame.center + direction * (radius + thickness + notch);
+                            draw_line(
+                                from.x,
+                                from.y,
+                                to.x,
+                                to.y,
+                                unit,
+                                color(look.hud_color, alpha * HUD_NOTCH_ALPHA),
+                            );
+                        }
+                    }
+                }
+                HudKind::Dashes {
+                    count,
+                    duty,
+                    thickness_px,
+                } => {
+                    let thickness = thickness_px * unit;
+                    // `count` is a small constant (72), so the conversion is exact.
+                    let pitch = 360.0 / count as f32;
+                    for slot in 0..count {
+                        // `slot` is below `count`, so the conversion is exact.
+                        let rotation = pitch * slot as f32 + turn.to_degrees();
+                        draw_arc(
+                            cx,
+                            cy,
+                            HUD_SIDES,
+                            radius - thickness / 2.0,
+                            rotation,
+                            thickness,
+                            pitch * duty,
+                            paint,
+                        );
+                    }
+                }
+                HudKind::Ticks {
+                    count,
+                    major_every,
+                    minor_len,
+                    major_len,
+                } => {
+                    let limit = frame.area / 2.0 + vec2(HUD_TICK_CULL_PX, HUD_TICK_CULL_PX) * unit;
+                    for slot in 0..count {
+                        // `slot` and `count` are small constants (120 at most), so the conversions are exact.
+                        let theta = turn + TAU * slot as f32 / count as f32;
+                        let (sin, cos) = theta.sin_cos();
+                        let direction = vec2(cos, sin);
+                        let major = slot % major_every == 0;
+                        let length = frame.size * if major { major_len } else { minor_len };
+                        let from = direction * radius;
+                        // Skip ticks that are entirely off screen.
+                        if from.x.abs() > limit.x || from.y.abs() > limit.y {
+                            continue;
+                        }
+                        let to = direction * (radius + length);
+                        let (width, boost) = if major {
+                            (HUD_MAJOR_TICK_PX, HUD_MAJOR_TICK_BOOST)
+                        } else {
+                            (HUD_TICK_PX, 1.0)
+                        };
+                        draw_line(
+                            frame.center.x + from.x,
+                            frame.center.y + from.y,
+                            frame.center.x + to.x,
+                            frame.center.y + to.y,
+                            width * unit,
+                            color(look.hud_color, alpha * boost),
+                        );
+                    }
+                }
             }
         }
     }
 
-    fn draw_ring(&self, ring: &Ring, angle: f32, frame: &Frame) {
-        let alpha = frame.look.ring_alpha;
+    fn draw_band(&self, band: &Band, angle: f32, frame: &Frame) {
+        let look = frame.look;
+        let alpha = look.band_alpha * frame.lum;
         if alpha < 0.01 {
             return;
         }
-        let basis = RingBasis::new(ring);
-        let size = frame.radius * ring.glyph_size;
-        let line = GLYPH_LINE_PX * frame.unit;
+        let rgb = look.band_color;
+        let radius = frame.size * band.radius * (1.0 + frame.swell);
+        let height = frame.size * band.height;
+        let (half_w, half_h) = (frame.size * band.width / 2.0, height / 2.0);
 
-        // Two thin tracks, inside and outside the glyphs.
-        for side in [-1.0, 1.0] {
-            let offset = side * size * TRACK_MARGIN;
-            let mut previous = basis.point(ring, frame, 0.0, offset, 0.0);
-            for step in 1..=GLYPH_TRACK_STEPS {
-                // `step` is at most GLYPH_TRACK_STEPS (48), so the conversions are exact.
-                let theta = TAU * step as f32 / GLYPH_TRACK_STEPS as f32;
-                let next = basis.point(ring, frame, theta, offset, 0.0);
-                let depth = (previous.depth + next.depth) / 2.0;
-                draw_line(
-                    previous.pos.x,
-                    previous.pos.y,
-                    next.pos.x,
-                    next.pos.y,
-                    frame.unit,
-                    color(
-                        frame.look.ring_color,
-                        alpha * TRACK_ALPHA * frame.glow * ring_shade(depth),
-                    ),
-                );
-                previous = next;
+        // A darker amber feel behind the glyphs; the HUD draws the lines around them.
+        draw_poly_lines(
+            frame.center.x,
+            frame.center.y,
+            BAND_BACKING_SIDES,
+            radius - half_h,
+            0.0,
+            height,
+            color(look.fill_color, alpha * BAND_BACKING_ALPHA),
+        );
+
+        let line = band.glyph_line_px * frame.unit;
+        let limit = frame.area / 2.0 + vec2(height, height);
+        for slot in 0..band.glyph_count {
+            // `slot` is below glyph_count (58 at most), so the conversions are exact.
+            let theta = angle + TAU * slot as f32 / band.glyph_count as f32;
+            let (sin, cos) = theta.sin_cos();
+            let outward = vec2(cos, sin);
+            let along = vec2(-sin, cos);
+            let middle = frame.center + outward * radius;
+            // Skip glyphs that are entirely off screen.
+            let offset = (middle - frame.center).abs();
+            if offset.x > limit.x || offset.y > limit.y {
+                continue;
             }
-        }
-
-        for slot in 0..ring.glyph_count {
             let glyph =
-                &self.glyphs[(ring.glyph_start + slot * ring.glyph_stride) % self.glyphs.len()];
-            // `slot` is below glyph_count (26), so the conversion is exact.
-            let theta = angle + TAU * slot as f32 / ring.glyph_count as f32;
-            let place = |p: Vec2| basis.point(ring, frame, theta, p.y * size, p.x * size);
+                &self.glyphs[(band.glyph_start + slot * band.glyph_stride) % self.glyphs.len()];
+            let shimmer = 0.85 + 0.15 * wave(frame.clock, GLYPH_SHIMMER_RATE, slot as f32 * 1.9);
+            let glyph_color = color(rgb, alpha * shimmer);
+            let place = |p: Vec2| middle + outward * (p.y * half_h) + along * (p.x * half_w);
             for [a, b] in &glyph.segments {
                 let (a, b) = (place(*a), place(*b));
-                let depth = (a.depth + b.depth) / 2.0;
-                draw_line(
-                    a.pos.x,
-                    a.pos.y,
-                    b.pos.x,
-                    b.pos.y,
-                    line,
-                    color(
-                        frame.look.ring_color,
-                        alpha * frame.glow * ring_shade(depth),
-                    ),
-                );
+                draw_line(a.x, a.y, b.x, b.y, line, glyph_color);
             }
             for dot in &glyph.dots {
                 let at = place(*dot);
-                draw_poly(
-                    at.pos.x,
-                    at.pos.y,
-                    GLYPH_DOT_SIDES,
-                    size * GLYPH_DOT_RADIUS,
-                    0.0,
-                    color(
-                        frame.look.ring_color,
-                        alpha * frame.glow * ring_shade(at.depth),
-                    ),
-                );
+                draw_poly(at.x, at.y, SPARKLE_SIDES, line, 0.0, glyph_color);
             }
         }
     }
-}
 
-fn ring_shade(depth: f32) -> f32 {
-    RING_BACK_DIMMING + (1.0 - RING_BACK_DIMMING) * depth
-}
+    fn draw_core_ring(&self, frame: &Frame) {
+        let look = frame.look;
+        let ring_radius = frame.size * CORE_RING_RADIUS * (1.0 + frame.swell);
+        let strength = look.core_glow * frame.lum;
+        let turn = self.sparkle_angle * CORE_RING_TURN_RATIO;
 
-/// Sine and cosine of a ring's tilt and roll, worked out once per ring per frame.
-struct RingBasis {
-    sin_tilt: f32,
-    cos_tilt: f32,
-    sin_roll: f32,
-    cos_roll: f32,
-}
+        for (scale, alpha) in CORE_FILL_LAYERS {
+            draw_poly(
+                frame.center.x,
+                frame.center.y,
+                CORE_FILL_SIDES,
+                ring_radius * scale,
+                0.0,
+                color(
+                    look.fill_color,
+                    alpha * (0.5 + 0.5 * look.core_glow) * frame.lum,
+                ),
+            );
+        }
 
-impl RingBasis {
-    fn new(ring: &Ring) -> Self {
-        let (sin_tilt, cos_tilt) = ring.tilt.sin_cos();
-        let (sin_roll, cos_roll) = ring.roll.sin_cos();
-        Self {
-            sin_tilt,
-            cos_tilt,
-            sin_roll,
-            cos_roll,
+        let thickness = ring_radius * CORE_RING_THICKNESS * (0.8 + 0.4 * look.core_glow);
+        for (width_scale, alpha, heat) in CORE_RING_LAYERS {
+            let half = thickness * width_scale / 2.0;
+            // A dim core stays amber; a bright one burns towards white.
+            let paint = color(
+                glow_color(look, heat * (0.5 + 0.5 * look.core_glow)),
+                alpha * strength,
+            );
+            let point = |index: usize, offset: f32| {
+                let vertex = index % CORE_RING_SIDES;
+                // `vertex` is below CORE_RING_SIDES (72), so the conversions are exact.
+                let theta = turn + TAU * vertex as f32 / CORE_RING_SIDES as f32;
+                let (sin, cos) = theta.sin_cos();
+                frame.center + vec2(cos, sin) * (ring_radius * self.ring_vertices[vertex] + offset)
+            };
+            for index in 0..CORE_RING_SIDES {
+                let (inner_a, outer_a) = (point(index, -half), point(index, half));
+                let (inner_b, outer_b) = (point(index + 1, -half), point(index + 1, half));
+                draw_triangle(inner_a, outer_a, outer_b, paint);
+                draw_triangle(inner_a, outer_b, inner_b, paint);
+            }
         }
     }
 
-    /// A point on the ring's tilted plane: `theta` around it, `radial` pixels out
-    /// from the ring line and `along` pixels along it.
-    fn point(&self, ring: &Ring, frame: &Frame, theta: f32, radial: f32, along: f32) -> Projected {
-        let ring_radius = frame.radius * ring.radius * (1.0 + frame.swell);
-        let (sin, cos) = theta.sin_cos();
-        let reach = ring_radius + radial;
-        let x = reach * cos - along * sin;
-        let y = reach * sin + along * cos;
-        let leaned_y = y * self.cos_tilt;
-        let z = y * self.sin_tilt;
-        let rolled = vec2(
-            x * self.cos_roll - leaned_y * self.sin_roll,
-            x * self.sin_roll + leaned_y * self.cos_roll,
-        );
-        Projected {
-            pos: frame.center + rolled,
-            depth: (z / ring_radius).clamp(-1.0, 1.0) * 0.5 + 0.5,
+    fn draw_sparkles(&self, frame: &Frame) {
+        let look = frame.look;
+        let ring_radius = frame.size * CORE_RING_RADIUS * (1.0 + frame.swell);
+        let (sin, cos) = self.sparkle_angle.sin_cos();
+        for sparkle in &self.sparkles {
+            let jitter = look.node_jitter
+                * JITTER_AMPLITUDE
+                * wave(frame.clock, sparkle.rate, sparkle.phase);
+            let turned = vec2(
+                sparkle.pos.x * cos - sparkle.pos.y * sin,
+                sparkle.pos.x * sin + sparkle.pos.y * cos,
+            );
+            let at = frame.center + turned * (ring_radius * SPARKLE_REACH * (1.0 + jitter));
+            let ripple = 0.5 + 0.5 * wave(frame.clock, PULSE_WAVE_RATE, sparkle.phase);
+            let pulse = look.node_pulse * ripple;
+            let size = SPARKLE_BASE_PX * frame.unit * (1.0 + SPARKLE_PULSE_GAIN * pulse);
+            let alpha = frame.lum * SPARKLE_ALPHA + SPARKLE_PULSE_BRIGHTNESS * pulse;
+            draw_poly(
+                at.x,
+                at.y,
+                SPARKLE_SIDES,
+                size,
+                0.0,
+                color(whiten(look.core_color, 0.6), alpha),
+            );
         }
     }
-}
 
-fn draw_shell(shell: &Shell, yaw: f32, frame: &Frame, projected: &mut Vec<Projected>) {
-    let look = frame.look;
-    let spin = Spin::new(yaw);
-    projected.clear();
-    for (node, &(rate, phase)) in shell.nodes.iter().zip(&shell.wobble) {
-        let jitter = look.node_jitter * JITTER_AMPLITUDE * wave(frame.clock, rate, phase);
-        let reach = shell.radius * frame.radius * (1.0 + frame.swell + jitter);
-        let p = spin.apply(*node);
-        projected.push(Projected {
-            pos: frame.center + vec2(p.x, p.y) * reach,
-            depth: (p.z + 1.0) * 0.5,
-        });
-    }
+    fn draw_starburst(&self, frame: &Frame) {
+        let look = frame.look;
+        let ring_radius = frame.size * CORE_RING_RADIUS * (1.0 + frame.swell);
+        let glow = 0.7 + 0.5 * look.core_glow;
+        let strength = look.core_glow * frame.lum;
 
-    let brightness = look.brightness * frame.glow;
-    for &(a, b) in &shell.links {
-        let (a, b) = (projected[a], projected[b]);
-        let depth = (a.depth + b.depth) / 2.0;
-        let alpha = brightness * LINK_ALPHA * (BACK_DIMMING + (1.0 - BACK_DIMMING) * depth);
-        draw_line(
-            a.pos.x,
-            a.pos.y,
-            b.pos.x,
-            b.pos.y,
-            LINK_WIDTH_PX * frame.unit,
-            color(look.link_color, alpha),
-        );
-    }
+        for (scale, alpha, heat) in STAR_GLOW_LAYERS {
+            draw_poly(
+                frame.center.x,
+                frame.center.y,
+                STAR_GLOW_SIDES,
+                ring_radius * scale * glow,
+                0.0,
+                color(glow_color(look, heat), alpha * strength),
+            );
+        }
 
-    for (point, &(_, phase)) in projected.iter().zip(&shell.wobble) {
-        let ripple = 0.5 + 0.5 * wave(frame.clock, PULSE_WAVE_RATE, phase);
-        let pulse = look.node_pulse * ripple;
-        let size = (NODE_BASE_PX + NODE_DEPTH_PX * point.depth)
-            * frame.unit
-            * (1.0 + PULSE_SIZE_GAIN * pulse);
-        let alpha = brightness * (BACK_DIMMING + (1.0 - BACK_DIMMING) * point.depth)
-            + PULSE_BRIGHTNESS_GAIN * pulse;
-        draw_poly(
-            point.pos.x,
-            point.pos.y,
-            NODE_SIDES,
-            size,
-            0.0,
-            color(look.node_color, alpha),
-        );
-    }
-}
+        let rgb = whiten(look.core_color, 0.75);
+        for ray in &self.star_rays {
+            let shimmer = 0.75 + 0.25 * wave(frame.clock, RAY_SHIMMER_RATE, ray.phase);
+            let angle = ray.angle + self.sparkle_angle;
+            let (sin, cos) = angle.sin_cos();
+            let direction = vec2(cos, sin);
+            let from = frame.center + direction * (ring_radius * STAR_RAY_START);
+            let to = frame.center
+                + direction * (ring_radius * STAR_RAY_REACH * ray.reach * glow * shimmer);
+            draw_line(
+                from.x,
+                from.y,
+                to.x,
+                to.y,
+                STAR_RAY_PX * frame.unit,
+                color(rgb, STAR_RAY_ALPHA * strength),
+            );
+        }
 
-fn draw_core(frame: &Frame) {
-    let look = frame.look;
-    let base = frame.radius * CORE_RADIUS * (0.8 + 0.5 * look.core_glow) * (1.0 + frame.swell);
-    for layer in 0..CORE_LAYERS {
-        // `layer` is below CORE_LAYERS (9), so the conversions are exact.
-        let t = (layer + 1) as f32 / CORE_LAYERS as f32;
-        let radius = base * (CORE_OUTER_SCALE + (CORE_INNER_SCALE - CORE_OUTER_SCALE) * t);
-        let alpha = look.core_glow
-            * (CORE_LAYER_ALPHA_MIN + (CORE_LAYER_ALPHA_MAX - CORE_LAYER_ALPHA_MIN) * t);
-        draw_poly(
-            frame.center.x,
-            frame.center.y,
-            CORE_SIDES,
-            radius,
-            0.0,
-            color(whiten(look.core_color, CORE_WHITENING * t), alpha),
-        );
+        for twinkle in &self.twinkles {
+            let flash = (0.5 + 0.5 * wave(frame.clock, twinkle.rate, twinkle.phase)).powi(2);
+            let arm = ring_radius
+                * twinkle.size
+                * (0.4 + 0.6 * flash)
+                * (1.0 + TWINKLE_PULSE_GAIN * look.node_pulse);
+            let at = frame.center + twinkle.pos * ring_radius;
+            let paint = color(rgb, (0.2 + 0.8 * flash) * strength);
+            let width = TWINKLE_PX * frame.unit;
+            draw_line(at.x - arm, at.y, at.x + arm, at.y, width, paint);
+            draw_line(at.x, at.y - arm, at.x, at.y + arm, width, paint);
+        }
     }
 }

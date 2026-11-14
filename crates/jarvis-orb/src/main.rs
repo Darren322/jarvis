@@ -4,10 +4,15 @@
 //! Keys: Space or Right = next view, Left = previous view, Up/Down = raise or
 //! lower the fake level, A = toggle the automatic demo, Escape = quit. A left
 //! click (a finger tap on the Pi) also advances the view.
+//!
+//! `--snapshot <dir>` draws each of the six views at a fixed level and animation
+//! step, saves `<dir>/<n>-<view>.png` for each, and exits, so the picture can be
+//! reviewed without the Pi. It works together with `--windowed`.
 
 mod orb;
 
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use jarvis_orb::look::{self, Look, View, ease_factor};
 use macroquad::miniquad::conf::{LinuxBackend, Platform};
@@ -31,19 +36,38 @@ const DEMO_SYLLABLE_RATE: f64 = 4.0;
 /// Phrases per second in the synthetic speech (the slow envelope).
 const DEMO_PHRASE_RATE: f64 = 0.45;
 const FPS_REPORT_SECONDS: f64 = 1.0;
+/// Snapshots advance the animation by this fixed step per frame, not real time.
+const SNAPSHOT_STEP_SECONDS: f32 = 1.0 / 60.0;
+/// Frames drawn per view before it is saved: 0.67 s, twice the time the easing
+/// needs to settle (about a third of a second).
+const SNAPSHOT_SETTLE_FRAMES: u32 = 40;
+/// The raw level every snapshot is drawn at, loud enough to show the level-driven views.
+const SNAPSHOT_LEVEL: f32 = 0.08;
+/// File-name word for each view, in `View::ALL` order.
+const VIEW_NAMES: [&str; 6] = [
+    "offline",
+    "idle",
+    "listening",
+    "transcribing",
+    "thinking",
+    "speaking",
+];
 
-const USAGE: &str = "usage: jarvis-orb [--demo] [--windowed] [--seconds S] [--fps]";
+const USAGE: &str =
+    "usage: jarvis-orb [--demo] [--windowed] [--seconds S] [--fps] [--snapshot DIR]";
 
 struct Options {
     demo: bool,
     windowed: bool,
     seconds: Option<f64>,
     fps: bool,
+    snapshot: Option<PathBuf>,
 }
 
 enum ArgError {
     Unknown(String),
     BadSeconds,
+    BadSnapshot,
 }
 
 impl Options {
@@ -53,6 +77,7 @@ impl Options {
             windowed: false,
             seconds: None,
             fps: false,
+            snapshot: None,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -67,6 +92,13 @@ impl Options {
                         .filter(|value| value.is_finite() && *value >= 0.0)
                         .ok_or(ArgError::BadSeconds)?;
                     options.seconds = Some(seconds);
+                }
+                "--snapshot" => {
+                    options.snapshot = Some(
+                        args.next()
+                            .map(PathBuf::from)
+                            .ok_or(ArgError::BadSnapshot)?,
+                    );
                 }
                 _ => return Err(ArgError::Unknown(arg)),
             }
@@ -215,6 +247,47 @@ impl FpsMeter {
     }
 }
 
+/// Draws every view in turn into an off-screen target of the reference screen
+/// size, and saves one PNG per view into `dir`. Drawing off screen keeps the
+/// pictures the same size on every desktop, whatever the window manager does to
+/// the window.
+fn save_snapshots(dir: &Path, orb: &mut Orb) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    // 800 and 480 are small whole numbers, exact in `f32`.
+    let area = vec2(SCREEN_WIDTH as f32, SCREEN_HEIGHT as f32);
+    // Both are positive constants, so the conversions are exact.
+    let target = render_target(SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32);
+    let camera = Camera2D {
+        render_target: Some(target.clone()),
+        ..Camera2D::from_display_rect(Rect::new(0.0, 0.0, area.x, area.y))
+    };
+    let mut current = look::look(View::ALL[0], SNAPSHOT_LEVEL);
+    for (index, (view, name)) in View::ALL.into_iter().zip(VIEW_NAMES).enumerate() {
+        let path = dir.join(format!("{}-{name}.png", index + 1));
+        // `export_png` panics on a write error, so prove the file can be created first.
+        std::fs::File::create(&path)?;
+        let path = path.to_str().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path is not valid UTF-8")
+        })?;
+        let aim = look::look(view, SNAPSHOT_LEVEL);
+        for _ in 0..=SNAPSHOT_SETTLE_FRAMES {
+            current = current.lerp(&aim, ease_factor(SNAPSHOT_STEP_SECONDS));
+            set_camera(&camera);
+            clear_background(BLACK);
+            orb.draw(&current, SNAPSHOT_STEP_SECONDS, area);
+            set_default_camera();
+        }
+        let mut image = target.texture.get_texture_data();
+        // Blending lowers the target's alpha channel. The colours are already
+        // blended over black, so make the picture opaque before saving.
+        for pixel in image.bytes.as_chunks_mut::<4>().0 {
+            pixel[3] = u8::MAX;
+        }
+        image.export_png(path);
+    }
+    Ok(())
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let options = match Options::parse(std::env::args().skip(1)) {
@@ -227,7 +300,19 @@ async fn main() {
             eprintln!("--seconds needs a number of seconds\n{USAGE}");
             std::process::exit(2);
         }
+        Err(ArgError::BadSnapshot) => {
+            eprintln!("--snapshot needs a directory\n{USAGE}");
+            std::process::exit(2);
+        }
     };
+
+    if let Some(dir) = &options.snapshot {
+        if let Err(error) = save_snapshots(dir, &mut Orb::new()) {
+            eprintln!("snapshot failed in {}: {error}", dir.display());
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if !options.windowed {
         show_mouse(false);
@@ -249,7 +334,7 @@ async fn main() {
         current = current.lerp(&target, ease_factor(dt));
 
         clear_background(BLACK);
-        orb.draw(&current, dt);
+        orb.draw(&current, dt, vec2(screen_width(), screen_height()));
 
         if let Some(meter) = &mut meter {
             meter.record(now, dt);

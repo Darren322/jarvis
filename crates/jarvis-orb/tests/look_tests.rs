@@ -14,10 +14,10 @@ const BAD_LEVELS: [f32; 5] = [-1.0, 7.5, f32::NAN, f32::INFINITY, f32::NEG_INFIN
 
 fn all_colors(look: &Look) -> [Rgb; 4] {
     [
-        look.node_color,
-        look.link_color,
-        look.ring_color,
         look.core_color,
+        look.fill_color,
+        look.band_color,
+        look.hud_color,
     ]
 }
 
@@ -26,16 +26,19 @@ fn numbers(look: &Look) -> Vec<f32> {
     let mut values: Vec<f32> = all_colors(look).into_iter().flatten().collect();
     values.extend([
         look.brightness,
-        look.sphere_spin,
-        look.ring_spin[0],
-        look.ring_spin[1],
-        look.ring_alpha,
+        look.sparkle_spin,
+        look.band_spin[0],
+        look.band_spin[1],
+        look.band_alpha,
+        look.hud_alpha,
         look.breath_depth,
         look.breath_rate,
         look.node_pulse,
         look.node_jitter,
         look.core_glow,
         look.ray_strength,
+        look.background,
+        look.blob_saturation,
     ]);
     values
 }
@@ -45,11 +48,14 @@ fn is_finite_and_in_range(look: &Look) -> bool {
     all_colors(look).iter().flatten().all(|c| unit_range(*c))
         && [
             look.brightness,
-            look.ring_alpha,
+            look.band_alpha,
+            look.hud_alpha,
             look.node_pulse,
             look.node_jitter,
             look.core_glow,
             look.ray_strength,
+            look.background,
+            look.blob_saturation,
         ]
         .into_iter()
         .all(unit_range)
@@ -104,7 +110,9 @@ fn offline_is_grey_and_dimmer_than_idle() {
     }
     assert!(offline.brightness < idle.brightness);
     assert!(offline.core_glow < idle.core_glow);
-    assert!(offline.ring_alpha < idle.ring_alpha);
+    assert!(offline.band_alpha < idle.band_alpha);
+    assert!(offline.hud_alpha < idle.hud_alpha);
+    assert!(offline.background < idle.background);
     assert_eq!(offline.ray_strength, 0.0);
 }
 
@@ -115,19 +123,24 @@ fn offline_still_breathes_so_it_does_not_look_frozen() {
 }
 
 #[test]
-fn idle_is_blue_and_turns_slowly() {
+fn idle_is_a_cool_blue_hud_with_a_soft_amber_core_and_turns_slowly() {
     let idle = look(IDLE, 0.0);
-    for [r, g, b] in [idle.node_color, idle.link_color, idle.ring_color] {
-        assert!(b > r && b > g, "not blue-dominant: {r} {g} {b}");
-    }
-    assert!(idle.sphere_spin > 0.0 && idle.breath_depth > 0.0);
-    assert!(idle.sphere_spin < look(THINKING, 0.0).sphere_spin);
+    let [r, g, b] = idle.hud_color;
+    assert!(b > r && b > g, "hud not blue-dominant: {r} {g} {b}");
+    let [r, g, b] = idle.core_color;
+    assert!(r > g && g > b, "core not amber: {r} {g} {b}");
+    // The HUD is the strongest thing at rest, and the glow is modest.
+    assert!(idle.hud_alpha > idle.band_alpha);
+    assert!(idle.core_glow < look(THINKING, 0.0).core_glow);
+    assert!(idle.sparkle_spin > 0.0 && idle.breath_depth > 0.0);
+    assert!(idle.sparkle_spin < look(THINKING, 0.0).sparkle_spin);
+    assert!(idle.band_spin.iter().all(|spin| spin.abs() < 0.2));
 }
 
 #[test]
-fn thinking_turns_its_rings_in_opposite_directions_around_a_gold_core() {
+fn thinking_turns_the_glyph_band_and_hud_rings_in_opposite_directions_around_a_gold_core() {
     let thinking = look(THINKING, 0.0);
-    assert!(thinking.ring_spin[0] * thinking.ring_spin[1] < 0.0);
+    assert!(thinking.band_spin[0] * thinking.band_spin[1] < 0.0);
     let [r, g, b] = thinking.core_color;
     assert!(
         r >= 0.95 && (0.7..=0.85).contains(&g) && b <= 0.3,
@@ -142,10 +155,10 @@ fn thinking_turns_its_rings_in_opposite_directions_around_a_gold_core() {
 }
 
 #[test]
-fn transcribing_spins_a_ring_faster_than_any_other_view() {
+fn transcribing_spins_the_glyph_band_faster_than_any_other_view() {
     let fastest = |view: View| {
         look(view, 1.0)
-            .ring_spin
+            .band_spin
             .into_iter()
             .map(f32::abs)
             .fold(0.0, f32::max)
@@ -194,7 +207,7 @@ fn listening_and_speaking_never_fall_as_the_level_rises() {
 }
 
 #[test]
-fn listening_pulses_the_nodes_and_speaking_also_moves_them_and_the_rays() {
+fn listening_pulses_the_core_and_speaking_also_moves_the_sparkles_and_rays() {
     assert_eq!(look(LISTENING, 0.0).node_pulse, 0.0);
     assert!(look(LISTENING, 0.05).node_pulse > 0.5);
     assert_eq!(look(SPEAKING, 0.0).node_jitter, 0.0);
@@ -287,4 +300,10 @@ fn ease_factor_is_zero_for_no_time_and_bad_time_and_approaches_one() {
     // About 95% of a change is done after a third of a second.
     assert!(ease_factor(3.0 / EASE_RATE) > 0.94);
     assert!(ease_factor(10.0) <= 1.0);
+}
+
+#[test]
+fn listening_brightens_the_hud_with_the_level_and_speaking_flares_the_outer_ring() {
+    assert!(look(LISTENING, 0.05).hud_alpha > look(LISTENING, 0.0).hud_alpha);
+    assert!(look(SPEAKING, 0.05).node_jitter > look(SPEAKING, 0.0).node_jitter);
 }
