@@ -18,11 +18,13 @@ mod idle;
 mod listen;
 mod speech;
 mod turn;
+mod warmup;
 
 use idle::read_line_during_idle_work;
 use listen::{ListenEnd, ListenStop, NOT_CONFIGURED, listen};
 use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
 use turn::{FILLER_LINES, PromptRequest, run_prompt};
+use warmup::WarmupTask;
 
 type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>;
 
@@ -96,6 +98,8 @@ where
     let mut listen_due = false;
     // Which filler line the next search says; it lives as long as the session.
     let mut filler_position = 0;
+    // Stopped when the next model run starts and when the loop ends.
+    let mut warmup = WarmupTask::default();
 
     loop {
         if !prompt_is_visible && next_input.is_none() && !listen_due {
@@ -212,6 +216,8 @@ where
                                 speech_available = false;
                             }
                         }
+                        // The history it was sent for is gone.
+                        warmup.cancel();
                         if let Err(error) = session.reset().await {
                             eprintln!("Warning: local archiving is unavailable: {error}");
                         }
@@ -238,6 +244,7 @@ where
                             &mut input,
                             &mut taps,
                             speaking,
+                            &mut warmup,
                             PromptRequest {
                                 text: &prompt,
                                 recall,

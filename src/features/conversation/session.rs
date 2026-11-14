@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use super::history::{History, merge_source_dependencies};
+use super::history::{History, Recorded, merge_source_dependencies};
 use crate::features::assistant::{
-    Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta,
+    Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta, CacheWarmup,
 };
 use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot};
 use crate::storage::{
@@ -33,6 +33,9 @@ pub(crate) struct ConversationTurn {
     pub(crate) archive_error: Option<StorageError>,
     pub(crate) memory_state: Option<MemorySaveState>,
     pub(crate) current_source_id: Option<SourceId>,
+    /// Set when this turn trimmed the history: the start of the next request, for
+    /// the caller to send ahead with `Assistant::warm_cache`.
+    pub(crate) cache_warmup: Option<CacheWarmup>,
 }
 
 impl ConversationSession {
@@ -140,11 +143,11 @@ impl ConversationSession {
                 },
                 None => (None, None, false, None),
             };
-        let history_warning = if lineage_suppressed {
+        let recorded = if lineage_suppressed {
             // The answer was generated against lineage SQLite rejected as stale;
             // keep it archived for the user, but don't replay unsafe native history.
             self.history.clear();
-            Some(SUPPRESSED_LINEAGE_WARNING)
+            Recorded::Cleared(SUPPRESSED_LINEAGE_WARNING)
         } else {
             match &run {
                 Ok(run) => self.history.record_success(
@@ -152,8 +155,13 @@ impl ConversationSession {
                     &recall.source_ids,
                     current_source,
                 ),
-                Err(_) => None,
+                Err(_) => Recorded::Kept,
             }
+        };
+        let (history_warning, cache_warmup) = match recorded {
+            Recorded::Kept => (None, None),
+            Recorded::Trimmed => (None, self.cache_warmup()),
+            Recorded::Cleared(warning) => (Some(warning), None),
         };
         let context_warning = combine_warnings(context_warning, history_warning);
         let current_source_id = if run.is_ok() && !lineage_suppressed {
@@ -168,7 +176,17 @@ impl ConversationSession {
             archive_error,
             memory_state,
             current_source_id,
+            cache_warmup,
         }
+    }
+
+    /// How the next request begins: every stored message up to and including the
+    /// last exchange's prompt. The answer after it cannot be sent ahead, because a
+    /// request has to end with a prompt.
+    fn cache_warmup(&self) -> Option<CacheWarmup> {
+        let (earlier_history, latest_exchange) = self.history.split_last_exchange();
+        let prompt = latest_exchange.into_iter().next()?;
+        Some(CacheWarmup::new(earlier_history, prompt))
     }
 
     /// Saves a safe, non-eligible outcome when terminal output fails mid-stream.

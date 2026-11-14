@@ -4,7 +4,10 @@ mod policy_hook;
 mod run_observer;
 mod run_report;
 
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use rig_agent::{
@@ -31,6 +34,29 @@ pub(crate) const SYSTEM_PREAMBLE: &str = include_str!("preamble.txt");
 const RUN_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_TEXT_DELTA_BYTES: usize = 1024;
 const MAX_RESPONSE_TOKENS: u64 = 1024;
+/// How long a cache warm-up may take. Reading the largest trimmed history takes
+/// well under this at the model server's measured speed.
+const WARMUP_DEADLINE: Duration = Duration::from_secs(30);
+/// A warm-up needs the model server to read the prompt, not to answer it.
+const WARMUP_RESPONSE_TOKENS: u64 = 1;
+
+/// The start of the next request, sent ahead of it so the model server reads it
+/// while nobody is waiting.
+///
+/// The server reuses a cached prompt only up to the first token that differs, so
+/// after the history is trimmed the next request would be read from the system
+/// prompt on. `prompt` is the stored prompt of the last exchange and `history` is
+/// everything before it: that is exactly how the next request begins.
+pub(crate) struct CacheWarmup {
+    history: Vec<Message>,
+    prompt: Message,
+}
+
+impl CacheWarmup {
+    pub(crate) fn new(history: Vec<Message>, prompt: Message) -> Self {
+        Self { history, prompt }
+    }
+}
 
 /// One bounded piece of visible assistant text from the native Rig stream.
 pub(crate) struct AssistantTextDelta {
@@ -95,6 +121,41 @@ impl Assistant {
                 error: AssistantError::RunTimeout,
                 report: observer.finish(RunOutcome::TimedOut, started_at.elapsed()),
             })),
+        }
+    }
+
+    /// Sends `warmup` to the model server and discards whatever comes back.
+    ///
+    /// Nothing is reported, archived or added to any history. The returned future
+    /// borrows nothing, so it can run beside the conversation; dropping it only
+    /// stops Jarvis waiting, and whatever the server had read by then stays cached.
+    /// It carries the same system prompt and tools as a real run, because both are
+    /// part of the cached prompt.
+    pub(crate) fn warm_cache(
+        &self,
+        warmup: CacheWarmup,
+    ) -> impl Future<Output = Result<(), AssistantError>> + Send + 'static {
+        let runner = self
+            .agent
+            .runner(warmup.prompt)
+            .history(warmup.history)
+            .max_turns(1)
+            .tool_concurrency(1)
+            .max_tokens(WARMUP_RESPONSE_TOKENS)
+            .max_invalid_tool_call_retries(0)
+            .without_memory();
+        async move {
+            let read = async {
+                let mut stream = runner.stream().await;
+                while let Some(item) = stream.next().await {
+                    item.map_err(AssistantError::Stream)?;
+                }
+                Ok(())
+            };
+            match tokio::time::timeout(WARMUP_DEADLINE, read).await {
+                Ok(result) => result,
+                Err(_) => Err(AssistantError::RunTimeout),
+            }
         }
     }
 

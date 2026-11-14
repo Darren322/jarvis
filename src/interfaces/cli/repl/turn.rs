@@ -21,6 +21,7 @@ use super::speech::{
     ChunkFeed, SpeechControl, SpeechExit, SpeechWait, SpokenAnswer, SpokenOutcome, playback_signal,
     settle_speech,
 };
+use super::warmup::WarmupTask;
 
 /// Text deltas the model run may have buffered ahead of the terminal.
 const TEXT_DELTA_QUEUE: usize = 32;
@@ -93,11 +94,17 @@ impl TextStream<'_> {
 
     /// Finishes a run whose model has ended: shows the text still buffered and
     /// returns the stored turn.
-    async fn land<P: AssistantPresenter>(&mut self, presenter: &mut P) -> io::Result<FinishedTurn> {
+    async fn land<P: AssistantPresenter>(
+        &mut self,
+        presenter: &mut P,
+        warming: Warming<'_>,
+    ) -> io::Result<FinishedTurn> {
         loop {
             match self.next().await {
                 StreamItem::Delta(delta) => presenter.delta(&delta.text)?,
-                StreamItem::Done(turn) => return complete_turn(*turn, self, presenter, None),
+                StreamItem::Done(turn) => {
+                    return complete_turn(*turn, self, presenter, None, warming);
+                }
             }
         }
     }
@@ -136,6 +143,10 @@ impl TextStream<'_> {
 /// model has ended but before its turn is stored comes too late to drop anything:
 /// that answer is kept whole (see `TextStream::is_storing`), so an answer is never
 /// stored without also being shown and added to the history.
+///
+/// A cache warm-up still running from an earlier turn is stopped before this run
+/// starts, and one is started as soon as this turn is stored if it trimmed the
+/// history (see [`WarmupTask`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "one prompt touches every service the loop holds, plus both input sources"
@@ -148,6 +159,7 @@ pub(super) async fn run_prompt<R, S, P>(
     input: &mut InputReader<R>,
     taps: &mut Taps,
     speech: Option<&mut S>,
+    warmup: &mut WarmupTask,
     request: PromptRequest<'_>,
 ) -> io::Result<PromptEnd>
 where
@@ -161,6 +173,7 @@ where
         filler,
     } = request;
     let prompt_started = Instant::now();
+    warmup.cancel();
     presenter.state(AssistantState::Thinking)?;
     if let Some(line) = filler {
         // Shown before the model has produced anything. A terminal write failure here
@@ -259,11 +272,19 @@ where
                     answer.feed.feed_text(&delta.text);
                 }
                 Event::Text(StreamItem::Done(turn)) => {
-                    let end =
-                        match complete_turn(*turn, &mut text, presenter, Some(&mut answer.feed)) {
-                            Ok(end) => end,
-                            Err(error) => break SpeechExit::Io(error),
-                        };
+                    let end = match complete_turn(
+                        *turn,
+                        &mut text,
+                        presenter,
+                        Some(&mut answer.feed),
+                        Warming {
+                            assistant,
+                            task: &mut *warmup,
+                        },
+                    ) {
+                        Ok(end) => end,
+                        Err(error) => break SpeechExit::Io(error),
+                    };
                     let succeeded = end.succeeded;
                     finished = Some(end);
                     if !succeeded {
@@ -289,7 +310,15 @@ where
                     let (succeeded, current_source_id) = match finished {
                         Some(end) => (end.succeeded, end.current_source_id),
                         None if text.is_storing() => {
-                            let end = text.land(presenter).await?;
+                            let end = text
+                                .land(
+                                    presenter,
+                                    Warming {
+                                        assistant,
+                                        task: &mut *warmup,
+                                    },
+                                )
+                                .await?;
                             (end.succeeded, end.current_source_id)
                         }
                         // Still being written: dropped with the voice, never archived.
@@ -342,7 +371,15 @@ where
                     continue;
                 }
                 let (succeeded, current_source_id) = if text.is_storing() {
-                    let end = text.land(presenter).await?;
+                    let end = text
+                        .land(
+                            presenter,
+                            Warming {
+                                assistant,
+                                task: &mut *warmup,
+                            },
+                        )
+                        .await?;
                     (end.succeeded, end.current_source_id)
                 } else {
                     // Dropped mid-run: never archived, and the history is untouched.
@@ -367,7 +404,16 @@ where
                     }
                 }
                 StreamItem::Done(turn) => {
-                    break complete_turn(*turn, &mut text, presenter, None)?;
+                    break complete_turn(
+                        *turn,
+                        &mut text,
+                        presenter,
+                        None,
+                        Warming {
+                            assistant,
+                            task: &mut *warmup,
+                        },
+                    )?;
                 }
             }
         },
@@ -402,18 +448,26 @@ where
     })
 }
 
+/// What a finished turn needs to start a cache warm-up.
+struct Warming<'a> {
+    assistant: &'a Assistant,
+    task: &'a mut WarmupTask,
+}
+
 struct FinishedTurn {
     succeeded: bool,
     current_source_id: Option<SourceId>,
 }
 
 /// Handles the response completing: shows the text still buffered, tells speech the
-/// text is complete (only for a successful run), then prints the result.
+/// text is complete (only for a successful run), starts the cache warm-up the turn
+/// asked for, then prints the result.
 fn complete_turn<P>(
     turn: ConversationTurn,
     text: &mut TextStream<'_>,
     presenter: &mut P,
     mut speech_text: Option<&mut ChunkFeed>,
+    warming: Warming<'_>,
 ) -> io::Result<FinishedTurn>
 where
     P: AssistantPresenter,
@@ -431,7 +485,11 @@ where
         archive_error,
         memory_state,
         current_source_id,
+        cache_warmup,
     } = turn;
+    if let Some(cache_warmup) = cache_warmup {
+        warming.task.start(warming.assistant, cache_warmup);
+    }
     let succeeded = run.is_ok();
     if succeeded && let Some(feed) = speech_text {
         feed.finish_text();

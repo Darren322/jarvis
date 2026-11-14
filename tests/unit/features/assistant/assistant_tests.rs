@@ -853,3 +853,116 @@ async fn a_changed_recall_leaves_the_older_conversation_as_an_exact_prefix() {
                 || text.contains("Recall number 2."))
     );
 }
+
+/// An answer cut off by the token limit, as the server sends for a warm-up.
+fn truncated_response() -> ResponseTemplate {
+    let chunks = [
+        json!({"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "The"},
+                "finish_reason": null}]}),
+        json!({"id": "c", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}]}),
+    ];
+    let mut body = String::new();
+    for chunk in chunks {
+        body.push_str(&format!("data: {chunk}\n\n"));
+    }
+    body.push_str("data: [DONE]\n\n");
+    ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
+}
+
+/// Every recorded request's whole JSON body.
+async fn wire_bodies(server: &MockServer) -> Vec<Value> {
+    server
+        .received_requests()
+        .await
+        .expect("request recording should be enabled")
+        .iter()
+        .map(|request| {
+            request
+                .body_json()
+                .expect("completion request should contain JSON")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_warm_up_is_the_exact_start_of_the_next_request_and_asks_for_one_token() {
+    struct Case {
+        name: &'static str,
+        latest: Vec<Message>,
+    }
+    let cases = [
+        Case {
+            name: "a plain last exchange",
+            latest: exchange("q3", "a3"),
+        },
+        Case {
+            name: "a last exchange that used a tool",
+            latest: tool_exchange("q3", "a3"),
+        },
+    ];
+
+    for case in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(truncated_response())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(text_response("answer"))
+            .mount(&server)
+            .await;
+        let assistant = wire_assistant(&server);
+        let earlier = [exchange("q1", "a1"), exchange("q2", "a2")].concat();
+
+        // What the session hands over after a trim: everything up to the last prompt.
+        let warmup = super::CacheWarmup::new(earlier.clone(), case.latest[0].clone());
+        assistant
+            .warm_cache(warmup)
+            .await
+            .expect("a truncated answer is all a warm-up needs");
+        assistant
+            .respond_with_recall("new question", &earlier, &case.latest, &[])
+            .await
+            .expect("the run should succeed");
+
+        let messages = wire_messages(&server).await;
+        let (warm, next) = (&messages[0], &messages[1]);
+        assert_eq!(
+            *warm,
+            [
+                wire("system", "system prompt"),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", "q2"),
+                wire("assistant", "a2"),
+                wire("user", "q3"),
+            ],
+            "{}",
+            case.name
+        );
+        assert_eq!(*warm, next[..warm.len()], "{}", case.name);
+
+        // The tools are part of the prompt the server caches, so they must match too.
+        let bodies = wire_bodies(&server).await;
+        assert_eq!(bodies[0]["tools"], bodies[1]["tools"], "{}", case.name);
+        assert!(bodies[0]["tools"].is_array(), "{}", case.name);
+        assert_eq!(bodies[0]["max_tokens"], json!(1), "{}", case.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_warm_up_stops_waiting_at_its_deadline() {
+    let assistant = Assistant::new(AgentBuilder::new(PendingCompletionModel).build());
+    let warmup = super::CacheWarmup::new(Vec::new(), Message::user("q1"));
+    let started = tokio::time::Instant::now();
+
+    let result = assistant.warm_cache(warmup).await;
+
+    assert!(matches!(result, Err(AssistantError::RunTimeout)));
+    assert_eq!(started.elapsed(), super::WARMUP_DEADLINE);
+}

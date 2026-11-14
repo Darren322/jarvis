@@ -568,3 +568,59 @@ async fn only_a_search_that_cannot_run_warns_that_memory_is_unavailable() {
     drop(session);
     remove_archive(&path);
 }
+
+#[tokio::test]
+async fn requests_between_trims_share_their_history_and_a_trim_hands_back_the_warm_up() {
+    // `MAX_EXCHANGES` and `TRIMMED_EXCHANGES` in `history.rs`.
+    const UPPER: usize = 12;
+    const LOWER: usize = 6;
+    let trimming_turn = UPPER + 1;
+    // One scripted answer per turn, one for the warm-up, and one turn after it.
+    let model = MockCompletionModel::from_stream_turns(
+        (1..=trimming_turn + 2).map(|number| answer(&format!("answer {number}"))),
+    );
+    let model_handle = model.clone();
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let mut session = ConversationSession::new(archive_path());
+
+    for number in 1..=trimming_turn {
+        let turn = session
+            .respond(&assistant, &format!("question {number}"))
+            .await;
+        assert!(turn.run.is_ok());
+        assert_eq!(
+            turn.cache_warmup.is_some(),
+            number == trimming_turn,
+            "turn {number}"
+        );
+        if let Some(warmup) = turn.cache_warmup {
+            assistant
+                .warm_cache(warmup)
+                .await
+                .expect("the scripted warm-up succeeds");
+        }
+    }
+    let after_trim = session.respond(&assistant, "question after").await;
+    assert!(after_trim.run.is_ok());
+    assert!(after_trim.cache_warmup.is_none());
+
+    let requests = model_handle.requests();
+    assert_eq!(requests.len(), trimming_turn + 2);
+    // Up to the trim, each request is the one before it plus that turn's answer and
+    // the new prompt: the model server's cached prompt stays valid.
+    for pair in requests[..trimming_turn].windows(2) {
+        let earlier = &pair[0].chat_history;
+        assert_eq!(pair[1].chat_history.len(), earlier.len() + 2);
+        assert_eq!(pair[1].chat_history[..earlier.len()], earlier[..]);
+    }
+    // The warm-up is the start of the first request after the trim, short of the
+    // last answer: the kept exchanges, ending on the last one's prompt.
+    let warm = &requests[trimming_turn].chat_history;
+    let next = &requests[trimming_turn + 1].chat_history;
+    assert_eq!(warm.len(), 2 * LOWER - 1);
+    assert_eq!(warm.first(), Some(&user_message("question 8")));
+    assert_eq!(warm.last(), Some(&user_message("question 13")));
+    assert_eq!(next.len(), 2 * LOWER + 1);
+    assert_eq!(next[..warm.len()], warm[..]);
+    assert_eq!(next.last(), Some(&user_message("question after")));
+}

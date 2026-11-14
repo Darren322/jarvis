@@ -6,6 +6,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 
 - Active spec: [docs/specs/visual-jarvis/spec.md](docs/specs/visual-jarvis/spec.md) (orb, tap-to-talk, VAD). Each ticket's `Status:` line in `issues/` is the progress record, and the spec's `Resume here:` line says what to do first.
 - Second active spec: [docs/specs/fast-memory/spec.md](docs/specs/fast-memory/spec.md) (search memory only on demand, a filler line, a cached facts list). Same rules: ticket `Status:` lines and the spec's `Resume here:` line.
+- As of 2026-11-15: fast-memory 08 (longer conversation, cache warm-up) is in review, uncommitted, and the Gemma server now runs 2 slots of 4,096 tokens; visual-jarvis 13 (state sounds) waits on Darren picking sounds from `notes/sound-spike/`.
 - [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md) closed on 2026-11-11; its "Resume here" lists the non-blocking leftovers. Latest handoff: the newest `notes/HANDOFF_*.md`.
 - At the end of every session, update the ticket `Status:` lines, the spec's `Resume here:` line and this section (and the roadmap if a step finished) so the next session starts from current facts.
 

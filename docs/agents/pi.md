@@ -19,11 +19,19 @@ scripts/pi/ssh.exp scp -o NumberOfPasswordPrompts=1 file darrenrasp@jarvis:/tmp/
 
 One password attempt per host per try, to avoid lockouts.
 
-## Services on the 16 GB Pi (as seen 2026-11-14)
+Things that went wrong with the wrapper on 2026-11-15:
+
+- The remote command's first output line comes out on the same line as the password prompt. Strip the prompt (`sed 's/.*password: *//'`); filtering out lines that contain "password:" loses that line.
+- The wrapper does not pass stdin on, so `ssh host 'python3 -' < script` hangs. Copy the script over with `scp` first, or send it inline as base64.
+- `sudo` needs `ssh -t` and `sudo -p 'sudo password:'`: the wrapper only answers a prompt that ends in "assword:", and sudo's own prompt does not.
+- The wrapper gives up after 300 s. Start anything longer with `setsid nohup ... &` and poll its log.
+- `pkill -f <text>` over SSH also kills the shell running it, because the text is in that shell's command line.
+
+## Services on the 16 GB Pi (as seen 2026-11-15)
 
 | Port | What | Started as |
 | --- | --- | --- |
-| 8080 | Gemma (`unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL`) | `llama-server ... -t 4 -c 2048 -b 512 -ub 128 --jinja --temp 0 --reasoning off`; 4 slots, each with the full 2,048-token context |
+| 8080 | Gemma (`unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL`) | `llama-server ... -t 4 -c 8192 --parallel 2 -b 512 -ub 128 --jinja --temp 0 --reasoning off`; 2 slots of 4,096 tokens each (with an explicit `--parallel` the context is divided between the slots). Changed 2026-11-15 from `-c 2048` with 4 automatic slots; the old unit file is `~/jarvis-gemma.service.bak-2026-11-15` |
 | 8081 | BGE embeddings (`bge-small-en-v1.5`) | `llama-server --embedding --ctx-size 512 --parallel 1` |
 | 8082 | Speech-to-text (`whisper-medium` on the Hailo-10H) | `scripts/stt/jarvis-stt.service` |
 
@@ -42,7 +50,7 @@ Measured: Gemma reads about 58 prompt tokens a second, so every 58 uncached toke
 
 All three run on the 8 GB Pi from `~/jarvis` and need only Python's standard library:
 
-- `python3 scripts/pi/bench_first_text.py <binary> [--empty] [prompts.txt]`: the wait for the first word per question, on a copy of the database. The 2026-11-14 baseline is in `docs/specs/fast-memory/issues/01-search-only-on-demand.md`.
+- `python3 scripts/pi/bench_first_text.py <binary> [--empty] [--pause=SECONDS] [prompts.txt]`: the wait for the first word per question, on a copy of the database. `--pause` leaves Jarvis idle between questions, which a cache warm-up needs. Use questions the server has not seen since its last restart: a repeated conversation is answered from the server's cache and looks faster than it is. The 2026-11-14 baseline is in `docs/specs/fast-memory/issues/01-search-only-on-demand.md`.
 - `python3 scripts/pi/orb_smoke.py`: the orb socket, a tap and mic levels against the real Jarvis; sends nothing to the model.
 - `python3 scripts/pi/stt_timing.py`: speech-to-text latency.
 

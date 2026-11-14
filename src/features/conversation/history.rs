@@ -4,12 +4,22 @@ use rig_core::message::Message;
 
 use crate::storage::SourceId;
 
-const MAX_EXCHANGES: usize = 3;
-const MAX_HISTORY_BYTES: usize = 16 * 1024;
+/// The most exchanges the history holds. One more starts a trim.
+const MAX_EXCHANGES: usize = 12;
+/// The exchanges a trim leaves. Cutting back this far, instead of dropping one
+/// exchange a turn, keeps the start of the conversation unchanged for the next
+/// `MAX_EXCHANGES - TRIMMED_EXCHANGES` turns, so the model's prompt cache holds.
+const TRIMMED_EXCHANGES: usize = 6;
+/// The most serialized history the model's context has room for (see fast-memory
+/// ticket 08 for the budget). One byte more starts a trim.
+const MAX_HISTORY_BYTES: usize = 6 * 1024;
+/// A trim also drops the oldest exchanges until the history is no larger than
+/// this, so a run of long answers does not trim on every turn.
+const TRIMMED_HISTORY_BYTES: usize = MAX_HISTORY_BYTES / 2;
 
 const MISSING_MESSAGES_WARNING: &str =
     "Recent conversation context was cleared because Rig did not return message history.";
-const OVERSIZED_BATCH_WARNING: &str = "Recent conversation context was cleared because the latest exchange exceeded the 16 KiB history limit.";
+const OVERSIZED_BATCH_WARNING: &str = "Recent conversation context was cleared because the latest exchange exceeded the 6 KiB history limit.";
 const HISTORY_SERIALIZATION_WARNING: &str =
     "Recent conversation context was cleared because its messages could not be serialized.";
 // LEARNING: `VecDeque<HistoryBatch>` resembles Java's `ArrayDeque<HistoryBatch>`: each inner
@@ -25,6 +35,18 @@ pub(super) struct History {
 struct HistoryBatch {
     messages: Vec<Message>,
     source_ids: Vec<SourceId>,
+}
+
+/// What recording a successful run did to the stored history.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum Recorded {
+    /// The exchange was added and nothing older was dropped.
+    Kept,
+    /// The exchange was added and the oldest exchanges were dropped, so the next
+    /// request no longer starts the way the last one did.
+    Trimmed,
+    /// Nothing is stored any more; the text says why.
+    Cleared(&'static str),
 }
 
 impl History {
@@ -72,14 +94,14 @@ impl History {
         messages: Option<&[Message]>,
         recalled_source_ids: &[SourceId],
         current_source_id: Option<SourceId>,
-    ) -> Option<&'static str> {
+    ) -> Recorded {
         // LEARNING: `Option<&[Message]>` is an optionally present borrowed slice; Rust makes absence
         // explicit instead of using null.
         // `let Some(..) else` handles absence early. The batch is copied only when the session will
         // own it.
         let Some(messages) = messages else {
             self.batches.clear();
-            return Some(MISSING_MESSAGES_WARNING);
+            return Recorded::Cleared(MISSING_MESSAGES_WARNING);
         };
 
         // LEARNING: `Result` carries a byte count or serialization error. This match guard checks the
@@ -88,11 +110,11 @@ impl History {
             Ok(bytes) if bytes <= MAX_HISTORY_BYTES => {}
             Ok(_) => {
                 self.batches.clear();
-                return Some(OVERSIZED_BATCH_WARNING);
+                return Recorded::Cleared(OVERSIZED_BATCH_WARNING);
             }
             Err(_) => {
                 self.batches.clear();
-                return Some(HISTORY_SERIALIZATION_WARNING);
+                return Recorded::Cleared(HISTORY_SERIALIZATION_WARNING);
             }
         }
 
@@ -106,24 +128,36 @@ impl History {
             messages: messages.to_vec(),
             source_ids,
         });
-        while self.batches.len() > MAX_EXCHANGES {
-            self.batches.pop_front();
-        }
 
-        // LEARNING: `pop_front()` removes the oldest whole exchange. The loop trims batches until the
-        // flattened history fits the byte cap.
-        loop {
-            match serialized_history_bytes(&self.batches) {
-                Ok(bytes) if bytes <= MAX_HISTORY_BYTES => return None,
-                Ok(_) => {
-                    self.batches.pop_front();
-                }
-                Err(_) => {
-                    self.batches.clear();
-                    return Some(HISTORY_SERIALIZATION_WARNING);
-                }
+        match self.trim_if_full() {
+            Ok(recorded) => recorded,
+            Err(_) => {
+                self.batches.clear();
+                Recorded::Cleared(HISTORY_SERIALIZATION_WARNING)
             }
         }
+    }
+
+    /// Cuts a full history back in one step: to `TRIMMED_EXCHANGES`, then further
+    /// while it is still over `TRIMMED_HISTORY_BYTES`. Only whole exchanges go, and
+    /// the newest one always stays (it already fits `MAX_HISTORY_BYTES`).
+    fn trim_if_full(&mut self) -> Result<Recorded, serde_json::Error> {
+        // LEARNING: `pop_front()` removes the oldest whole exchange, so a tool call is never
+        // separated from its result.
+        if self.batches.len() <= MAX_EXCHANGES
+            && serialized_history_bytes(&self.batches)? <= MAX_HISTORY_BYTES
+        {
+            return Ok(Recorded::Kept);
+        }
+        while self.batches.len() > TRIMMED_EXCHANGES {
+            self.batches.pop_front();
+        }
+        while self.batches.len() > 1
+            && serialized_history_bytes(&self.batches)? > TRIMMED_HISTORY_BYTES
+        {
+            self.batches.pop_front();
+        }
+        Ok(Recorded::Trimmed)
     }
 }
 

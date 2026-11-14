@@ -1,8 +1,21 @@
-use std::{cell::RefCell, io, rc::Rc};
+use std::{
+    cell::RefCell,
+    io,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use rig_agent::AgentBuilder;
+use rig_agent::{
+    AgentBuilder,
+    prelude::{CompletionError, CompletionModel},
+};
 use rig_core::{
-    completion::Usage,
+    completion::{CompletionRequest, CompletionResponse, Usage},
+    message::Message,
+    streaming::StreamingCompletionResponse,
     test_utils::{MockCompletionModel, MockStreamEvent},
 };
 use tokio::{
@@ -12,7 +25,11 @@ use tokio::{
 
 use crate::{
     features::control::Tap,
-    features::{assistant::Assistant, conversation::ConversationSession, state::AssistantState},
+    features::{
+        assistant::{Assistant, CacheWarmup},
+        conversation::ConversationSession,
+        state::AssistantState,
+    },
     interfaces::cli::{
         input::{InputReader, Taps},
         presentation::AssistantPresenter,
@@ -263,6 +280,7 @@ async fn run_request(
         &mut input,
         &mut taps,
         speech.as_mut(),
+        &mut WarmupTask::default(),
         PromptRequest {
             text: "a question",
             recall,
@@ -621,6 +639,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
         &mut input,
         &mut Taps::none(),
         Some(&mut speech),
+        &mut WarmupTask::default(),
         PromptRequest {
             text: "a question",
             recall: RecallMode::Skip,
@@ -832,4 +851,139 @@ async fn stop_during_a_searching_run_cancels_speech_and_the_answer_still_finishe
     assert!(events.contains(&"completed".to_owned()), "{events:?}");
     assert!(run.end.succeeded);
     assert_eq!(archived_turns, 1);
+}
+
+/// Answers real runs from a script and never answers a cache warm-up, counting
+/// the warm-ups that started and the ones that were dropped while waiting.
+#[derive(Clone)]
+struct WarmupCountingModel {
+    answers: MockCompletionModel,
+    started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+struct CountsDrop(Arc<AtomicUsize>);
+
+impl Drop for CountsDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl CompletionModel for WarmupCountingModel {
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, CompletionError> {
+        unreachable!("Assistant uses the streaming path")
+    }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse, CompletionError> {
+        // Only a warm-up asks for a single token.
+        if request.max_tokens == Some(1) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let _waiting = CountsDrop(Arc::clone(&self.dropped));
+            return std::future::pending().await;
+        }
+        self.answers.stream(request).await
+    }
+}
+
+/// Lets the spawned warm-up task run, or be cancelled, on the test's one thread.
+async fn let_background_tasks_run() {
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_stops_it() {
+    // `MAX_EXCHANGES` in `features/conversation/history.rs`.
+    const UPPER: usize = 12;
+    let trimming_turn = UPPER + 1;
+    let model = WarmupCountingModel {
+        answers: MockCompletionModel::from_stream_turns(
+            (0..trimming_turn + 2).map(|_| answer_turn()),
+        ),
+        started: Arc::default(),
+        dropped: Arc::default(),
+    };
+    let (started, dropped) = (Arc::clone(&model.started), Arc::clone(&model.dropped));
+    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
+    let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
+    assert!(session.reset().await.is_ok());
+    let log = Log::default();
+    let (_writer, reader) = tokio::io::duplex(64);
+    let mut input = InputReader::new(BufReader::new(reader));
+    let mut presenter = LoggingPresenter {
+        log: Rc::clone(&log),
+        fail_on_delta: false,
+    };
+    let mut warmup = WarmupTask::default();
+    let mut taps = Taps::none();
+    let mut ask = async |warmup: &mut WarmupTask| {
+        let end = run_prompt(
+            &assistant,
+            &mut session,
+            None,
+            &mut presenter,
+            &mut input,
+            &mut taps,
+            None::<&mut ScriptedSpeech>,
+            warmup,
+            PromptRequest {
+                text: "a question",
+                recall: RecallMode::Skip,
+                filler: None,
+            },
+        )
+        .await
+        .expect("the prompt should run");
+        assert!(end.succeeded);
+        let_background_tasks_run().await;
+    };
+
+    // The last turn that does not trim starts nothing.
+    for _ in 0..UPPER {
+        ask(&mut warmup).await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 0);
+
+    // The first that does starts one warm-up, and it keeps running after the turn.
+    ask(&mut warmup).await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    // The next model run stops it, and starts none of its own.
+    ask(&mut warmup).await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_warm_up_still_running_when_the_loop_ends_is_stopped() {
+    let model = WarmupCountingModel {
+        answers: MockCompletionModel::from_stream_turns([answer_turn()]),
+        started: Arc::default(),
+        dropped: Arc::default(),
+    };
+    let (started, dropped) = (Arc::clone(&model.started), Arc::clone(&model.dropped));
+    let assistant = Assistant::new(AgentBuilder::new(model).build());
+    let mut warmup = WarmupTask::default();
+
+    warmup.start(
+        &assistant,
+        CacheWarmup::new(Vec::new(), Message::user("a question")),
+    );
+    let_background_tasks_run().await;
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    drop(warmup);
+    let_background_tasks_run().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }

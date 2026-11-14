@@ -1,7 +1,7 @@
 # Fast memory
 
 Status: active
-Resume here: 01 (search only on demand) and 02 (filler line) are done; 01 is measured on the Pi (five ordinary questions wait 3.1 s in total, down from 32.9 s) and 02 has not been heard there yet. Next: settle 08's open numbers with Darren (more exchanges, a larger context window), then the facts list: 03, 04, 05, 06.
+Resume here: 01 (search only on demand) and 02 (filler line) are done; 01 is measured on the Pi (five ordinary questions wait 3.1 s in total, down from 32.9 s) and 02 has not been heard there yet. 08 (longer conversation, cache warm-up) is in review, uncommitted: built, measured on the Pi, and the Gemma server now runs 2 slots of 4,096 tokens. Next: Darren commits 08, pushes and pulls on the 8 GB Pi; then the facts list: 03, 04, 05, 06.
 
 Settled with Darren in a grilling session on 2026-11-14. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
