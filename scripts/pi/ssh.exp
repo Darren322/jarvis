@@ -1,0 +1,12 @@
+#!/usr/bin/expect -f
+# Usage: scripts/pi/ssh.exp <ssh or scp command> [args...]
+# Answers one password prompt with $JARVIS_PASS from the environment, so the
+# password is never on a command line or in the transcript. See docs/agents/pi.md.
+set timeout 300
+spawn -noecho {*}$argv
+expect {
+  -re "assword:" { log_user 0; send -- "$env(JARVIS_PASS)\r"; expect -re "\n"; log_user 1; exp_continue -continue_timer }
+  eof
+}
+lassign [wait] pid spawnid os_error value
+exit $value
