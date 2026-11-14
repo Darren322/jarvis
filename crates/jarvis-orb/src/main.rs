@@ -1,9 +1,14 @@
-//! `jarvis-orb`: draws the orb full screen. Until the socket to Jarvis exists, a
-//! stand-in driver (keys, clicks and an automatic demo) chooses the view.
+//! `jarvis-orb`: draws the orb full screen. By default it connects to Jarvis over
+//! a Unix socket: Jarvis chooses the view and the level, and a tap (a touch or a
+//! left click, one per press) is reported to Jarvis, which decides what it means.
+//! Offline, it shows the offline look and reconnects every few seconds.
+//! `--socket PATH` overrides the socket path (`JARVIS_ORB_SOCKET`, else
+//! `$XDG_RUNTIME_DIR/jarvis-orb.sock`, else `data/jarvis-orb.sock`).
 //!
-//! Keys: Space or Right = next view, Left = previous view, Up/Down = raise or
-//! lower the fake level, A = toggle the automatic demo, Escape = quit. A left
-//! click (a finger tap on the Pi) also advances the view.
+//! `--standalone` (or `--demo`) skips the socket and uses a stand-in driver. Keys:
+//! Space or Right = next view, Left = previous view, Up/Down = raise or lower the
+//! fake level, A = toggle the automatic demo, Escape = quit. A left click (a
+//! finger tap on the Pi) also advances the view. Escape quits in both modes.
 //!
 //! `--snapshot <dir>` draws each of the six views at a fixed level and animation
 //! step, saves `<dir>/<n>-<view>.png` for each, and exits, so the picture can be
@@ -14,6 +19,8 @@ mod orb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use jarvis_orb::input::TapFilter;
+use jarvis_orb::link::{self, Link};
 use jarvis_orb::look::{self, Look, View, ease_factor};
 use macroquad::miniquad::conf::{LinuxBackend, Platform};
 use macroquad::prelude::*;
@@ -53,11 +60,12 @@ const VIEW_NAMES: [&str; 6] = [
     "speaking",
 ];
 
-const USAGE: &str =
-    "usage: jarvis-orb [--demo] [--windowed] [--seconds S] [--fps] [--snapshot DIR]";
+const USAGE: &str = "usage: jarvis-orb [--socket PATH] [--standalone | --demo] [--windowed] [--seconds S] [--fps] [--snapshot DIR]";
 
 struct Options {
     demo: bool,
+    standalone: bool,
+    socket: Option<PathBuf>,
     windowed: bool,
     seconds: Option<f64>,
     fps: bool,
@@ -68,12 +76,15 @@ enum ArgError {
     Unknown(String),
     BadSeconds,
     BadSnapshot,
+    BadSocket,
 }
 
 impl Options {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, ArgError> {
         let mut options = Self {
             demo: false,
+            standalone: false,
+            socket: None,
             windowed: false,
             seconds: None,
             fps: false,
@@ -83,6 +94,11 @@ impl Options {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--demo" => options.demo = true,
+                "--standalone" => options.standalone = true,
+                "--socket" => {
+                    options.socket =
+                        Some(args.next().map(PathBuf::from).ok_or(ArgError::BadSocket)?);
+                }
                 "--windowed" => options.windowed = true,
                 "--fps" => options.fps = true,
                 "--seconds" => {
@@ -300,6 +316,10 @@ async fn main() {
             eprintln!("--seconds needs a number of seconds\n{USAGE}");
             std::process::exit(2);
         }
+        Err(ArgError::BadSocket) => {
+            eprintln!("--socket needs a path\n{USAGE}");
+            std::process::exit(2);
+        }
         Err(ArgError::BadSnapshot) => {
             eprintln!("--snapshot needs a directory\n{USAGE}");
             std::process::exit(2);
@@ -317,9 +337,36 @@ async fn main() {
     if !options.windowed {
         show_mouse(false);
     }
+    let standalone = options.standalone || options.demo;
+    // Linked mode: Jarvis drives the view. The link starts offline and never
+    // blocks a frame, so a missing Jarvis is just the offline look.
+    let link = if standalone {
+        None
+    } else {
+        let path = match options
+            .socket
+            .clone()
+            .map_or_else(link::socket_path_from_env, Ok)
+        {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("cannot find the working directory: {error}");
+                std::process::exit(1);
+            }
+        };
+        Some(Link::start(path))
+    };
+    let mut taps = TapFilter::new();
     let mut driver = Driver::new(options.demo);
     let mut orb = Orb::new();
-    let mut current = look::look(driver.view, 0.0);
+    let mut current = look::look(
+        if standalone {
+            driver.view
+        } else {
+            View::Offline
+        },
+        0.0,
+    );
     let mut meter = options.fps.then(|| FpsMeter::new(get_time()));
 
     loop {
@@ -329,8 +376,20 @@ async fn main() {
             break;
         }
 
-        let level = driver.update(dt, now);
-        let target: Look = look::look(driver.view, level);
+        let (view, level) = if let Some(link) = &link {
+            let touched = touches()
+                .iter()
+                .any(|touch| touch.phase == TouchPhase::Started);
+            let clicked = is_mouse_button_pressed(MouseButton::Left);
+            if taps.update(touched, clicked, now) {
+                link.tap();
+            }
+            (link.view(), link.level())
+        } else {
+            let level = driver.update(dt, now);
+            (driver.view, level)
+        };
+        let target: Look = look::look(view, level);
         current = current.lerp(&target, ease_factor(dt));
 
         clear_background(BLACK);
