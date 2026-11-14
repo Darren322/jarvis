@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: 02 is done (Darren approved `earshot =1.2.2` and 1000 ms of silence on 2026-11-14) and `serde_json` in `orb-protocol` is approved (03). 06 (VAD stop) is in review, uncommitted in the working tree. 01 and 08 still need Darren's eye on the Pi screen (full screen, no cursor, the six looks). Next: 07 (orb interface; the coordinator implements it, and its Owns must grow as the 2026-11-11 handoff says), then 09, 10.
+Resume here: 02 and 06 are done. 07 (orb interface) and 12 (orb restyle: a mix of the JARVIS HUD and the Great Sage orb) are in review, uncommitted in the working tree; neither has run on the Pi. 01 and 08 are in review: Darren liked the six looks on the Pi, and whether the window was full screen with no cursor is still unconfirmed. Next: Darren looks at the restyled orb on the Pi (needs a commit and a pull there), then 09 (connect `jarvis-orb` to the socket) and 10.
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
