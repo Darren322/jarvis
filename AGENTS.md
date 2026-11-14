@@ -5,6 +5,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
 ## Current work
 
 - Active spec: [docs/specs/visual-jarvis/spec.md](docs/specs/visual-jarvis/spec.md) (orb, tap-to-talk, VAD). Each ticket's `Status:` line in `issues/` is the progress record, and the spec's `Resume here:` line says what to do first.
+- Second active spec: [docs/specs/fast-memory/spec.md](docs/specs/fast-memory/spec.md) (search memory only on demand, a filler line, a cached facts list). Same rules: ticket `Status:` lines and the spec's `Resume here:` line.
 - [docs/specs/push-to-talk.md](docs/specs/push-to-talk.md) closed on 2026-11-11; its "Resume here" lists the non-blocking leftovers. Latest handoff: the newest `notes/HANDOFF_*.md`.
 - At the end of every session, update the ticket `Status:` lines, the spec's `Resume here:` line and this section (and the roadmap if a step finished) so the next session starts from current facts.
 
@@ -17,7 +18,7 @@ Jarvis is a local-first voice assistant written in Rust 2024. It runs on a Raspb
   - Implementing: `rust-skills` (rules index in `~/.claude/skills/rust-skills/`), `tdd` / `test-driven-development`, `incremental-implementation`, and `source-driven-development` for library APIs.
   - Reviewing: `code-review-and-quality`, plus `doubt-driven-development` for risky or irreversible steps.
   - Interfaces: `api-and-interface-design` / `codebase-design`.
-- **Planning flow (new specs).** `/grilling` on the epic → user stories → `/to-spec` → `/to-tickets` → `/implement-spec`. Darren reviews and commits every ticket.
+- **Planning flow (new specs).** `/grilling` on the epic → user stories → `/to-spec` → `/to-tickets` → `/implement-spec`. Darren reviews and commits every ticket. During grilling, write Darren's own example sentences into a table with what each one does, and check every decision against them before a ticket starts.
 
 ## Agent skills
 
@@ -28,6 +29,10 @@ Local markdown under `docs/specs/<feature>/`: `spec.md` (the epic and its user s
 ### Triage labels
 
 The five default roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), written as each ticket's `Status:` line. See `docs/agents/triage-labels.md`.
+
+### The Pis
+
+Hosts, how each service is started and with which flags, and how to measure without touching Darren's data: `docs/agents/pi.md`. Read it before any SSH, benchmark or deployment step.
 
 ### Domain docs
 
@@ -47,10 +52,10 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root, created lazily. 
 - When delegating to sub-agents, give each explicit, non-overlapping file ownership, then integrate and review their work. Agents in worktrees build with `CARGO_TARGET_DIR=<main checkout>/target`, so dependency builds are shared rather than duplicated (about 2 GB per worktree otherwise). Remove each worktree once its changes are integrated. Run agents at `high` effort for very complicated features (concurrency, cancellation, streaming pipelines, multi-module wiring) and at default effort for simple, contained tickets.
 - **Delivering a ticket** (coordinator's loop; details in `docs/agents/issue-tracker.md`):
   1. Take every frontier ticket (all blockers `done` or integrated) whose `Owns:` lists don't overlap, and run them in parallel. Set `Status: in-progress` and `Assignee:` in the main checkout; implementers don't edit ticket files.
-  2. Each brief carries the ticket text, the spec decisions it cites, the Engineering practice section, and these rules: stay inside `Owns:`; never commit; a failed command or a missing approval means stop and report, never force or work around it; report what was not verified.
-  3. Review before integrating: read the whole diff against the acceptance criteria, and re-run the Verification list yourself in the main checkout after `git apply`. An agent's "all green" is a claim, not evidence.
+  2. Each brief carries the ticket text, the spec decisions it cites, the files the agent owns, and a pointer to `docs/agents/implementer-brief.md`, which holds the standing rules (stay inside `Owns:`, leave git alone, stop and report, verify, report facts).
+  3. Review before integrating: read the whole diff against the acceptance criteria, and run `scripts/verify.sh` yourself in the main checkout. An agent's "all green" is a claim, not evidence. A new test of a `select!` race, cancellation or timing passes review only after `scripts/verify.sh --repeat <pattern>` (20 runs): a race that passes once proves nothing.
   4. Integrate uncommitted into `dev`, tick the verified criteria, add a dated Comment with the evidence, set `Status: in-review`, and remove the worktree. Darren commits; then the ticket is `done`. A ticket blocked only on in-review tickets may start from the integrated working tree.
-  5. Who implements: Haiku agents take pure reading and simple mechanical edits (renames, status lines, ticket and doc bookkeeping); Sonnet agents take contained tickets; the coordinator implements a ticket itself, in the main checkout, when it is hard (concurrency, cancellation, cross-module wiring) or when an agent is blocked or has failed a review round. The same review and Verification steps apply either way.
+  5. Who implements: Haiku agents take pure reading and mechanical edits where the agent works out the text itself (surveys, renames across files); the coordinator applies ticket and doc bookkeeping directly when it already has the exact text, since dictating it to an agent costs more than the edit; Sonnet agents take contained tickets; the coordinator implements a ticket itself, in the main checkout, when it is hard (concurrency, cancellation, cross-module wiring), when it is visual work judged by eye (the orb's look), or when an agent is blocked or has failed a review round. The same review and Verification steps apply either way.
   6. Batch what needs Darren (approvals, Pi changes, his voice or eyes) into one clear list instead of stopping at each one; keep working on everything that doesn't need him.
 - The repo is a Cargo workspace (root `jarvis` crate plus `crates/*`). Run the Verification commands with `--workspace` (and `cargo fmt --all --check`) so member crates are covered. Scratch crates outside `crates/` (such as `notes/*-spike/`) carry their own empty `[workspace]` table so the root workspace ignores them.
 - Near a usage limit, write a factual handoff under `notes/`: completed work vs. proposals, changed files, decisions, verification evidence, source revision, and the exact next small action.
@@ -190,7 +195,7 @@ Split or add structure when one of these triggers is hit, and not before:
 
 ## Verification
 
-While iterating, run the smallest relevant tests. Before saying a coherent change is done, run:
+While iterating, run the smallest relevant tests. Before saying a coherent change is done, run `scripts/verify.sh`, which runs this list for the whole workspace plus a check for banned patterns (`unwrap()`, `unsafe` outside `storage/sqlite_vec.rs`, drawn text):
 
 ```sh
 cargo fmt --check

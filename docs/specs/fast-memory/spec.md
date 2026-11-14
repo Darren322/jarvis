@@ -1,7 +1,7 @@
 # Fast memory
 
 Status: active
-Resume here: 01 (search only on demand) is next; nothing is built yet.
+Resume here: 01 (search only on demand) and 02 (filler line) are done; 01 is measured on the Pi (five ordinary questions wait 3.1 s in total, down from 32.9 s) and 02 has not been heard there yet. Next: settle 08's open numbers with Darren (more exchanges, a larger context window), then the facts list: 03, 04, 05, 06.
 
 Settled with Darren in a grilling session on 2026-11-14. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -46,7 +46,7 @@ Jarvis answers slowly. Measured on the Pi on 2026-11-14 with five typed question
 
 - A recall or forget tool that Gemma calls (kept as ticket 07, `needs-triage`).
 - Pruning stored chit-chat, or changing what is archived.
-- Changing the Gemma server's settings. Noted for later: it runs 4 slots on a 2,048-token context; one slot (`--parallel 1`) would give the conversation the whole context and one cache. Not measured as a cause of slowness.
+- Changed on 2026-11-14: a longer conversation and a larger Gemma context are now in scope as ticket 08, at Darren's request. Each of the server's 4 slots already has the full 2,048 tokens.
 
 ## Further Notes
 
