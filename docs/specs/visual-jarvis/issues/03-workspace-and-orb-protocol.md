@@ -15,12 +15,12 @@ Add a line encoder and decoder that fail with a typed error derived with `thiser
 
 ## Acceptance criteria
 - [x] The root crate still builds and all existing tests pass unchanged; `cargo test --locked --offline --workspace` passes.
-- [ ] `jarvis` does not depend on macroquad, and `orb-protocol` depends only on serde and `thiserror`.
+- [x] `jarvis` does not depend on macroquad, and `orb-protocol` depends only on serde and `thiserror`.
 - [x] Tests live in `crates/orb-protocol/tests/` (workspace member crates keep their tests in `crates/<name>/tests/`). Round-trip tests for every message variant, in a table.
 - [x] Boundary tests: level 0.0 and 1.0 accepted, the next value outside the range handled as documented; a line of the maximum length accepted and one byte more rejected; an unknown field and an unknown variant rejected.
 - [x] The wire format (one example per message) is documented on the types with `///`.
 - [x] `cargo fmt --check`, `cargo check --locked --offline --all-targets`, `cargo test --locked --offline`, `cargo clippy --locked --offline --all-targets -- -D warnings` and `git diff --check` pass, also with `--workspace`.
-- [ ] The aarch64 build is checked or the check that could not run is reported.
+- [x] The aarch64 build is checked or the check that could not run is reported.
 
 ## Comments
 
@@ -30,3 +30,5 @@ Add a line encoder and decoder that fail with a typed error derived with `thiser
 - **Deviation, needs Darren's approval:** `serde_json` (`=1.0.151`, already locked for the root crate) is a normal dependency, not a dev-dependency. The ticket asks for a line encoder and decoder in this crate, and those need a JSON library. The second criterion stays unticked until Darren agrees. The alternative is moving `encode`/`decode` into Jarvis and `jarvis-orb`, duplicated.
 - **Verified by Claude:** `cargo fmt --all --check`, `check`, `clippy -D warnings` and `test`, each with `--locked --offline` and with and without `--workspace`, and `git diff --check`: clean. Root crate 286 tests (unchanged by this ticket), `orb-protocol` 7 tests. `Cargo.lock` gained only the `orb-protocol` entry. Spot-check: changing the length check to `>=` failed the maximum-length test. `jarvis` has no macroquad in its tree.
 - **Not checked:** the aarch64 build. The Mac has no `aarch64-unknown-linux-gnu` target installed and nothing was installed for it. The crate is plain serde code; the first Pi build after a pull proves it.
+
+2026-11-14 (Claude): Darren approved `serde_json` as a normal dependency of `orb-protocol`, so the second criterion is met as built (serde, `serde_json` and `thiserror`). The aarch64 build is proven: `jarvis-orb`, which depends on `orb-protocol`, was built in release mode on the 8 GB Pi on 2026-11-12 and ran there today.

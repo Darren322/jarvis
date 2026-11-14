@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: 04 and 05 are done; 01 and 03 are in review (01 needs Darren's eye on full screen and cursor, 03 needs his OK for `serde_json` in `orb-protocol`). Next: 08 (`jarvis-orb` rendering). 02 (VAD spike) needs Darren's voice and blocks 06, 07, 09 and 10.
+Resume here: 02 is done (Darren approved `earshot =1.2.2` and 1000 ms of silence on 2026-11-14) and `serde_json` in `orb-protocol` is approved (03). 01 and 08 still need Darren's eye on the Pi screen (full screen, no cursor, the six looks). 06 (VAD stop) is in progress; then 07 (coordinator implements), 09, 10.
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
