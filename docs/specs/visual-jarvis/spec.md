@@ -1,7 +1,7 @@
 # Visual interaction with Jarvis
 
 Status: active
-Resume here: 02 and 06 are done. 07 (orb interface) and 12 (restyle; Darren approved the look on the Pi) are committed and pushed, and the workspace builds on the Pi. 09 (orb link and taps) is in review, uncommitted. Next: commit and push 09, then the first end-to-end run on the Pi with Darren (Jarvis in a terminal, `jarvis-orb` on the screen: states, levels, each tap case, reconnect), then 10 (autostart). Still unconfirmed for 01 and 08: full screen with no cursor. Added 2026-11-15: ticket 13 (a sound on every state change, spec D16) is settled except for which slice of the reference clip suits each state; a first cut is in `notes/sound-spike/out_ref/`.
+Resume here: 02 and 06 are done. 07 (orb interface) and 12 (restyle; Darren approved the look on the Pi) are committed and pushed, and the workspace builds on the Pi. 09 (orb link and taps) is in review, uncommitted. Next: commit and push 09, then the first end-to-end run on the Pi with Darren (Jarvis in a terminal, `jarvis-orb` on the screen: states, levels, each tap case, reconnect), then 10 (autostart). Still unconfirmed for 01 and 08: full screen with no cursor. Added 2026-11-15: ticket 13 (a sound on every state change, spec D16) is in review: built, tested and verified on the Mac, uncommitted in the working tree. Next for 13: Darren commits, then deploy to the 8 GB Pi and listen to all six cues in a conversation (watch for the speaker clipping a cue after silence, and check a recorded clip for the listening cue).
 
 Settled with Darren in a grilling session on 2026-11-07. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
