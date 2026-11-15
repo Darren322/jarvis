@@ -258,7 +258,14 @@ async fn run_request(
 ) -> (Run, i64, Vec<rig_core::completion::CompletionRequest>) {
     let model = MockCompletionModel::from_stream_turns([model_turn]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -617,6 +624,9 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
     let assistant = Assistant::new(
         AgentBuilder::new(MockCompletionModel::from_stream_turns([answer_turn()]))
             .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
             .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
@@ -912,7 +922,14 @@ async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_s
         dropped: Arc::default(),
     };
     let (started, dropped) = (Arc::clone(&model.started), Arc::clone(&model.dropped));
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());

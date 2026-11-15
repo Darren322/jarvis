@@ -78,7 +78,14 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         ],
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -88,6 +95,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         b"first prompt\nsecond prompt\n/exit\n",
     ));
     let mut presenter = TerminalPresenter::with_writer(Vec::new());
+    let panels = crate::features::panel::channel().0;
     run_input_loop(
         &assistant,
         &mut session,
@@ -97,6 +105,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         Taps::none(),
         &mut presenter,
         None,
+        &panels,
     )
     .await
     .expect("piped input should complete after both serial model runs");
@@ -189,7 +198,14 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         ],
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -217,6 +233,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         .expect("initial prompts should fit in duplex buffer");
 
     let (answers, _presented_signal, mut present_answer) = answer_capture();
+    let panels = crate::features::panel::channel().0;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
@@ -226,6 +243,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         Taps::none(),
         &mut present_answer,
         None,
+        &panels,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait for speech release: {result:?}"),
@@ -299,7 +317,14 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         ],
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -327,6 +352,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         .expect("initial prompt and partial line should fit in duplex buffer");
 
     let (answers, presented_signal, mut present_answer) = answer_capture();
+    let panels = crate::features::panel::channel().0;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
@@ -336,6 +362,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         Taps::none(),
         &mut present_answer,
         None,
+        &panels,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait while queued speech is active: {result:?}"),
@@ -393,7 +420,14 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         MockStreamEvent::text("visible final"),
         MockStreamEvent::final_response(Usage::new()),
     ]]);
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -421,6 +455,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         .expect("prompt should fit in duplex buffer");
 
     let (answers, _presented_signal, mut present_answer) = answer_capture();
+    let panels = crate::features::panel::channel().0;
     let mut loop_future = Box::pin(run_input_loop(
         &assistant,
         &mut session,
@@ -430,6 +465,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         Taps::none(),
         &mut present_answer,
         None,
+        &panels,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait while speech is preparing: {result:?}"),
@@ -597,6 +633,7 @@ struct Harness {
     stt: MockServer,
     script_dir: TempDir,
     listener: Option<Listener>,
+    panels: crate::features::panel::PanelHandle,
 }
 
 const REPLY: &str = "It is noon.";
@@ -610,6 +647,9 @@ async fn harness() -> Harness {
     let assistant = Assistant::new(
         AgentBuilder::new(model.clone())
             .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
             .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
@@ -623,6 +663,7 @@ async fn harness() -> Harness {
         stt: MockServer::start().await,
         script_dir: tempfile::tempdir().expect("temporary script directory should open"),
         listener: None,
+        panels: crate::features::panel::channel().0,
     }
 }
 
@@ -713,6 +754,7 @@ async fn run_with_taps(
         taps,
         &mut presenter,
         harness.listener.as_ref(),
+        &harness.panels,
     ));
     let user = async {
         script(&mut driver).await;
@@ -933,6 +975,7 @@ async fn end_of_input_while_listening_ends_the_loop() {
             Taps::none(),
             &mut presenter,
             harness.listener.as_ref(),
+            &harness.panels,
         ),
         user
     );
@@ -1626,7 +1669,14 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         ]
     }));
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let database = archive_dir.path().join("conversation.sqlite3");
     let seed = ConversationArchive::open(database.clone())
@@ -1664,6 +1714,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         b"What is my cat called?\n/recall What is my cat called?\nDo you remember my dog called?\n/exit\n",
     ));
     let mut presenter = TerminalPresenter::with_writer(Vec::new());
+    let panels = crate::features::panel::channel().0;
     run_input_loop(
         &assistant,
         &mut session,
@@ -1673,6 +1724,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         Taps::none(),
         &mut presenter,
         None,
+        &panels,
     )
     .await
     .expect("piped input should complete");
@@ -1716,7 +1768,14 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         ]
     }));
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
     assert!(session.reset().await.is_ok());
@@ -1726,6 +1785,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
     ));
     let screen = Screen::default();
     let mut presenter = screen.clone();
+    let panels = crate::features::panel::channel().0;
     run_input_loop(
         &assistant,
         &mut session,
@@ -1735,6 +1795,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         Taps::none(),
         &mut presenter,
         None,
+        &panels,
     )
     .await
     .expect("piped input should complete");
@@ -1874,6 +1935,7 @@ async fn run_with_cue_speech(
         taps,
         &mut presenter,
         harness.listener.as_ref(),
+        &harness.panels,
     ));
     let user = async {
         script(&mut driver).await;
@@ -2041,4 +2103,43 @@ async fn no_cue_is_played_when_speech_is_disabled_and_listening_still_works() {
             .is_empty(),
         "a disabled speech output plays no cue"
     );
+}
+
+#[tokio::test]
+async fn close_it_hides_the_panel_that_is_shown_and_makes_no_model_request() {
+    let mut harness = harness().await;
+    let (panels, inbox) = crate::features::panel::channel();
+    let (to_orb, mut shown_to_orb) = mpsc::channel(16);
+    let (_events, from_orb) = mpsc::channel(16);
+    let orb = crate::interfaces::orb::OrbHandle { to_orb, from_orb };
+    let service = tokio::spawn(async move {
+        match inbox
+            .run(Some(orb), crate::features::panel::PANEL_TIMEOUT)
+            .await {}
+    });
+    harness.panels = panels.clone();
+    panels
+        .show(orb_protocol::PanelName::Stats)
+        .await
+        .expect("the panel service is running");
+    assert_eq!(
+        shown_to_orb.recv().await,
+        Some(orb_protocol::ToOrb::ShowPanel {
+            panel: orb_protocol::PanelName::Stats
+        })
+    );
+
+    run_script(&mut harness, async |driver| {
+        driver.type_(b"close it\n").await;
+        // The loop runs lines in order: `/exit` comes after the close was sent.
+    })
+    .await;
+
+    assert_eq!(
+        shown_to_orb.recv().await,
+        Some(orb_protocol::ToOrb::HidePanel {})
+    );
+    assert_eq!(panels.shown(), None);
+    assert_eq!(harness.model.request_count(), 0);
+    service.abort();
 }

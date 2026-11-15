@@ -183,7 +183,14 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
         answer("third answer"),
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let path = archive_path();
     let mut session = ConversationSession::new(path.clone());
     assert!(session.reset().await.is_ok());
@@ -271,7 +278,14 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
         answer("new session answer"),
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let mut session = ConversationSession::new(path.clone());
 
     assert!(session.reset().await.is_ok());
@@ -313,7 +327,14 @@ async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
     let model =
         MockCompletionModel::from_stream_turns([answer("visible answer"), answer("next answer")]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let mut session = ConversationSession::new(path.clone());
     assert!(session.reset().await.is_ok());
 
@@ -439,7 +460,14 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         answer("No further notes."),
     ]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let (mut session, path, memory, server) = session_with_cat_memory().await;
 
     let first = session
@@ -504,7 +532,14 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
 async fn a_run_without_a_search_sends_no_memory_and_no_warning_but_is_still_stored() {
     let model = MockCompletionModel::from_stream_turns([answer("It is Miso.")]);
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let (mut session, path, memory, server) = session_with_cat_memory().await;
 
     let turn = session
@@ -546,7 +581,14 @@ async fn a_run_without_a_search_sends_no_memory_and_no_warning_but_is_still_stor
 #[tokio::test]
 async fn only_a_search_that_cannot_run_warns_that_memory_is_unavailable() {
     let model = MockCompletionModel::from_stream_turns([answer("one"), answer("two")]);
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let path = archive_path();
     let mut session = ConversationSession::new(path.clone());
     assert!(session.reset().await.is_ok());
@@ -580,7 +622,14 @@ async fn requests_between_trims_share_their_history_and_a_trim_hands_back_the_wa
         (1..=trimming_turn + 2).map(|number| answer(&format!("answer {number}"))),
     );
     let model_handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(SystemStatusTool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let mut session = ConversationSession::new(archive_path());
 
     for number in 1..=trimming_turn {

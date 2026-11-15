@@ -70,7 +70,14 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
     };
     let model = MockCompletionModel::from_stream_turns(turns);
     let handle = model.clone();
-    let assistant = Assistant::new(AgentBuilder::new(model).tool(tool).build());
+    let assistant = Assistant::new(
+        AgentBuilder::new(model)
+            .tool(tool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
+            .build(),
+    );
     let result = assistant.respond("Check the system status.", &[]).await;
     Outcome {
         result,
@@ -144,7 +151,7 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
         panic!("expected exactly two model requests");
     };
     let offered: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
-    assert_eq!(offered, ["system_status"]);
+    assert_eq!(offered, ["system_status", "show_panel"]);
     assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
     assert_eq!(first.max_tokens, Some(1024));
     assert!(second.tools.is_empty());
@@ -280,6 +287,9 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
             should_fail: false,
         })
         .tool(UnlistedTool)
+        .tool(crate::tools::show_panel::ShowPanelTool::new(
+            crate::features::panel::channel().0,
+        ))
         .build();
 
     let result = Assistant::new(agent)
@@ -293,6 +303,6 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    assert_eq!(offered, ["system_status"]);
+    assert_eq!(offered, ["system_status", "show_panel"]);
     assert_eq!(requests.len(), 1);
 }

@@ -1,6 +1,6 @@
 # 09: show_panel tool and close phrases
 
-Status: in-progress
+Status: done
 Stories: US2, US3
 Blocked by: 03, 07
 Assignee: Sonnet agent (2026-11-15)
@@ -21,15 +21,17 @@ Traces to: D2, D8
 - The tool result tells the model that the Panel is shown. Jarvis may reply aloud. The run's one tool call is this call (AGENTS policy).
 
 ## Acceptance criteria
-- [ ] `ALLOWED_TOOLS` lists `show_panel`. `registered_tools_match_the_allowed_list` passes.
-- [ ] A `panel` of `stats` is accepted. Unknown names such as `weather` and `Stats` are rejected. An extra field is rejected.
-- [ ] Close phrases table: "close it", "Close it.", "hide that" and "  HIDE THAT  " produce Close. "close" alone, "close the stats", and "don't close it yet" do not.
-- [ ] A close phrase makes no model call. Tested with a mock that fails if called.
-- [ ] Timeout: at `PANEL_TIMEOUT` minus one millisecond the Panel is still shown. At `PANEL_TIMEOUT` it is hidden and HidePanel is sent. Paused time.
-- [ ] A PanelClosed message hides the Panel. A Tap while a Panel shows produces listen and leaves the Panel shown.
-- [ ] A second Panel replaces the first. Only one ShowPanel is pending at a time.
-- [ ] The existing policy hook accepts `show_panel` as the run's one tool call. A second tool call is still rejected (test).
-- [ ] `scripts/verify.sh` passes. Each new boundary test was seen to fail when its limit moved by one.
-- [ ] Local tests only. The report says so.
+- [x] `ALLOWED_TOOLS` lists `show_panel`. `registered_tools_match_the_allowed_list` passes.
+- [x] A `panel` of `stats` is accepted. Unknown names such as `weather` and `Stats` are rejected. An extra field is rejected.
+- [x] Close phrases table: "close it", "Close it.", "hide that" and "  HIDE THAT  " produce Close. "close" alone, "close the stats", and "don't close it yet" do not.
+- [x] A close phrase makes no model call. Tested with a mock that fails if called.
+- [x] Timeout: at `PANEL_TIMEOUT` minus one millisecond the Panel is still shown. At `PANEL_TIMEOUT` it is hidden and HidePanel is sent. Paused time.
+- [x] A PanelClosed message hides the Panel. A Tap while a Panel shows produces listen and leaves the Panel shown.
+- [x] A second Panel replaces the first. Only one ShowPanel is pending at a time.
+- [x] The existing policy hook accepts `show_panel` as the run's one tool call. A second tool call is still rejected (test).
+- [x] `scripts/verify.sh` passes. Each new boundary test was seen to fail when its limit moved by one.
+- [x] Local tests only. The report says so.
 
 ## Comments
+
+- 2026-11-15 (coordinator): `show_panel` tool (`src/tools/show_panel.rs`, in `ALLOWED_TOOLS`), panel service (`src/features/panel/`), `Command::Close` ("close it", "hide that") and `control::close_panel`, wired into the REPL and `app.rs`. The Dashboard timeout is config: `JARVIS_PANEL_TIMEOUT_SECONDS`, default 30 s, 0 rejected. Existing test agents now also register `ShowPanelTool` (Rig rejects an active tool that is not registered); two tool-count expectations went from 1 to 2. Verified with 08 (see its comment). Not proven: a real model choosing `show_panel` from speech, and the UI showing the Dashboard (ticket 10).

@@ -8,6 +8,7 @@ use crate::features::{
     conversation::ConversationSession,
     listening::Listener,
     memory::{MemoryService, RecallMode, wants_memory_search},
+    panel::PanelHandle,
     state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
@@ -45,6 +46,7 @@ pub(crate) async fn run_input_loop<R, S, P>(
     taps: Taps,
     presenter: &mut P,
     listener: Option<&Listener>,
+    panels: &PanelHandle,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
@@ -52,7 +54,7 @@ where
     P: AssistantPresenter,
 {
     let result = run_input_loop_inner(
-        assistant, session, memory, speech, input, taps, presenter, listener,
+        assistant, session, memory, speech, input, taps, presenter, listener, panels,
     )
     .await;
     if let Some(speech) = speech.as_mut()
@@ -79,6 +81,7 @@ async fn run_input_loop_inner<R, S, P>(
     mut taps: Taps,
     presenter: &mut P,
     listener: Option<&Listener>,
+    panels: &PanelHandle,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
@@ -209,6 +212,7 @@ where
                         }
                         idle_work_due = true;
                     }
+                    Command::Close => print_notices(&[control::close_panel(panels).await]),
                     Command::Help => println!("{}", control::help_text()),
                     Command::Usage(hint) => println!("{hint}"),
                     Command::Reset => {
@@ -314,6 +318,7 @@ fn recall_mode(command: &Command) -> RecallMode {
         | Command::Stop
         | Command::Listen
         | Command::Reset
+        | Command::Close
         | Command::Help
         | Command::Memory(_)
         | Command::Usage(_) => RecallMode::Skip,

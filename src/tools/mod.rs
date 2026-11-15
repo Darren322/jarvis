@@ -1,3 +1,4 @@
+pub mod show_panel;
 pub mod system_status;
 pub mod system_status_tool;
 
@@ -8,6 +9,8 @@ use rig_agent::{
 use rig_core::serde_json::{self, Value};
 use serde::de::DeserializeOwned;
 
+use crate::features::panel::PanelHandle;
+use show_panel::ShowPanelTool;
 use system_status_tool::SystemStatusTool;
 
 /// Policy metadata for one tool the model may call.
@@ -52,12 +55,20 @@ where
 // the two lists drift apart.
 
 /// Registers every Jarvis tool with Rig, making it executable.
-pub(crate) fn register(builder: AgentBuilder<NoToolConfig>) -> AgentBuilder<WithBuilderTools> {
-    builder.tool(SystemStatusTool)
+pub(crate) fn register(
+    builder: AgentBuilder<NoToolConfig>,
+    panels: PanelHandle,
+) -> AgentBuilder<WithBuilderTools> {
+    builder
+        .tool(SystemStatusTool)
+        .tool(ShowPanelTool::new(panels))
 }
 
 /// Every tool the policy offers to the model and accepts calls for.
-pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[ToolRule::for_tool::<SystemStatusTool>()];
+pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[
+    ToolRule::for_tool::<SystemStatusTool>(),
+    ToolRule::for_tool::<ShowPanelTool>(),
+];
 
 pub(crate) fn allowed_tool(name: &str) -> Option<&'static ToolRule> {
     ALLOWED_TOOLS.iter().find(|rule| rule.name == name)

@@ -1,0 +1,69 @@
+use orb_protocol::PanelName;
+use rig_agent::tool::{Tool, ToolContext};
+use rig_core::serde_json::json;
+
+use crate::features::panel::{PanelError, PanelHandle};
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShowPanelArgs {
+    /// Which panel to bring up; only `stats` exists.
+    pub panel: PanelName,
+}
+
+/// Brings a panel up on the orb screen. It only displays, so it needs no
+/// approval step (jarvis-ui D8).
+pub(crate) struct ShowPanelTool {
+    panels: PanelHandle,
+}
+
+impl ShowPanelTool {
+    pub(crate) fn new(panels: PanelHandle) -> Self {
+        Self { panels }
+    }
+}
+
+impl Tool for ShowPanelTool {
+    const NAME: &'static str = "show_panel";
+
+    type Args = ShowPanelArgs;
+    type Output = String;
+    type Error = PanelError;
+
+    fn description(&self) -> String {
+        "Shows a panel on the screen. Use it when the user asks to see something, for example \
+         \"bring up the stats\" or \"show me the system stats\". The panel `stats` shows the \
+         Pi's CPU, temperature, memory and whether the language and embedding servers are up."
+            .to_string()
+    }
+
+    fn parameters(&self) -> rig_core::serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "panel": {
+                    "type": "string",
+                    "enum": ["stats"],
+                    "description": "The panel to show."
+                }
+            },
+            "required": ["panel"],
+            "additionalProperties": false
+        })
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
+        self.panels.show(args.panel).await?;
+        Ok(match args.panel {
+            PanelName::Stats => "The stats panel is now shown on the screen.".to_owned(),
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/tools/show_panel_tests.rs"]
+mod tests;

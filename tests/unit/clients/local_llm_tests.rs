@@ -85,6 +85,9 @@ fn local_assistant(origin: &str) -> (LocalLlm, Assistant) {
     let assistant = Assistant::new(
         AgentBuilder::new(local_llm.model())
             .tool(SystemStatusTool)
+            .tool(crate::tools::show_panel::ShowPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
             .build(),
     );
     (local_llm, assistant)
@@ -218,7 +221,7 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     let first_tools = first_request["tools"]
         .as_array()
         .expect("first request should offer the system status tool");
-    assert_eq!(first_tools.len(), 1);
+    assert_eq!(first_tools.len(), 2);
     assert_eq!(
         first_tools[0],
         rig_core::serde_json::json!({

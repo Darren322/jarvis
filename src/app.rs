@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Mutex};
 
 use rig_agent::AgentBuilder;
 use tokio::{
@@ -7,16 +7,21 @@ use tokio::{
 };
 
 use crate::clients::{
-    local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText,
+    health::HealthCheck, local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings,
+    speech_to_text::SpeechToText,
 };
-use crate::config::{AppConfig, CueConfig, CueVolume, OptionalTtsConfig, OrbConfig, TtsConfig};
+use crate::config::{
+    AppConfig, CueConfig, CueVolume, OptionalTtsConfig, OrbConfig, PanelConfig, TtsConfig,
+};
 use crate::features::{
     assistant::{Assistant, SYSTEM_PREAMBLE},
     conversation::ConversationSession,
     listening::{Listener, Recorder, run_level_meter},
     memory::MemoryService,
+    panel::{self, PanelHandle, PanelInbox},
     speech::{CueSounds, SpeechOutput, run_state_cues},
     state::StateFeed,
+    stats::{StatsSource, StatsVisibility, machine::SystemMachine, mirror_panel},
 };
 use crate::interfaces::cli::{
     diagnostics::error_chain,
@@ -24,7 +29,7 @@ use crate::interfaces::cli::{
     presentation::{StatePublishing, TerminalPresenter},
     repl::run_input_loop,
 };
-use crate::interfaces::orb::{OrbFeeds, OrbServer, TAP_QUEUE};
+use crate::interfaces::orb::{OrbFeeds, OrbHandle, OrbServer, TAP_QUEUE};
 use crate::tools;
 
 /// The ALSA recording program; tests substitute a fake script.
@@ -42,6 +47,14 @@ pub struct App {
     listener: Option<Listener>,
     orb_config: OrbConfig,
     cue_config: CueConfig,
+    panel_config: PanelConfig,
+    /// Taken once by `run`; the tool holds a clone of this handle.
+    panels: PanelHandle,
+    /// Taken once by `run`.
+    panel_inbox: Mutex<Option<PanelInbox>>,
+    /// The Dashboard's health checks of the two servers on the 16 GB Pi.
+    llama_health: HealthCheck,
+    bge_health: HealthCheck,
 }
 
 impl App {
@@ -57,8 +70,12 @@ impl App {
         // policy hooks enforce rules. `tools::register` passes the builder
         // through every `.tool(...)` call, registering each tool's schema and
         // implementation for Rig dispatch.
-        let agent =
-            tools::register(AgentBuilder::new(local_llm.model()).preamble(SYSTEM_PREAMBLE)).build();
+        let (panels, panel_inbox) = panel::channel();
+        let agent = tools::register(
+            AgentBuilder::new(local_llm.model()).preamble(SYSTEM_PREAMBLE),
+            panels.clone(),
+        )
+        .build();
         let assistant = Assistant::new(agent);
         let listener = match &config.speech_to_text {
             Some(stt) => Some(Listener::new(
@@ -79,6 +96,11 @@ impl App {
             listener,
             orb_config: config.orb.clone(),
             cue_config: config.cues.clone(),
+            panel_config: config.panel.clone(),
+            panels,
+            panel_inbox: Mutex::new(Some(panel_inbox)),
+            llama_health: HealthCheck::new(&config.local_llm.base_url)?,
+            bge_health: HealthCheck::new(&config.embedding.base_url)?,
         })
     }
 
@@ -120,7 +142,10 @@ impl App {
         let states = StateFeed::new();
         let (mic_levels, mic_level) = watch::channel(0.0);
         let (tap_sender, tap_receiver) = mpsc::channel(TAP_QUEUE);
-        let orb = self.open_orb();
+        let (orb, orb_handle) = match self.open_orb() {
+            Some((orb, handle)) => (Some(orb), Some(handle)),
+            None => (None, None),
+        };
         let taps = match orb {
             Some(_) => Taps::new(tap_receiver),
             None => Taps::none(),
@@ -155,6 +180,38 @@ impl App {
             }
         };
 
+        // Panels follow the orb's lifetime; `run` is called once, so the inbox is there.
+        let panel_inbox = self
+            .panel_inbox
+            .lock()
+            .ok()
+            .and_then(|mut inbox| inbox.take());
+        // The stats go only to an orb: they are the Dashboard's data.
+        let stats_to_orb = orb_handle.as_ref().map(|handle| handle.to_orb.clone());
+        let dashboard_timeout = self.panel_config.dashboard_timeout;
+        let serve_panels = async {
+            match panel_inbox {
+                Some(inbox) => inbox.run(orb_handle, dashboard_timeout).await,
+                None => std::future::pending().await,
+            }
+        };
+        // Stats are read and sent exactly while the stats panel is shown.
+        let serve_stats = async {
+            if let Some(to_orb) = stats_to_orb {
+                let (visibility, shown) = watch::channel(StatsVisibility::Hidden);
+                let source = StatsSource::new(
+                    SystemMachine::new(),
+                    self.llama_health.clone(),
+                    self.bge_health.clone(),
+                );
+                tokio::join!(
+                    mirror_panel(self.panels.watch_shown(), visibility),
+                    source.run(shown, to_orb),
+                );
+            }
+            std::future::pending::<std::convert::Infallible>().await
+        };
+
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
         let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
@@ -170,9 +227,12 @@ impl App {
                 taps,
                 &mut presenter,
                 self.listener.as_ref(),
+                &self.panels,
             ) => result,
             never = serve_orb => match never {},
             never = play_cues => match never {},
+            never = serve_panels => match never {},
+            never = serve_stats => match never {},
         }
     }
 
@@ -225,10 +285,9 @@ impl App {
 
     /// Opens the orb's socket and WebSocket port. The orb is optional, so one that
     /// cannot be opened is a warning and Jarvis runs without it.
-    fn open_orb(&self) -> Option<OrbServer> {
+    fn open_orb(&self) -> Option<(OrbServer, OrbHandle)> {
         match OrbServer::bind(&self.orb_config) {
-            // No feature uses the handle yet.
-            Ok((orb, _handle)) => Some(orb),
+            Ok(opened) => Some(opened),
             Err(error) => {
                 eprintln!(
                     "Warning: the orb screen is unavailable: {}",

@@ -2,6 +2,7 @@ mod cues;
 mod embedding;
 mod local_llm;
 mod orb;
+mod panel;
 mod speech_to_text;
 mod tts;
 
@@ -15,6 +16,7 @@ pub use cues::{CueConfig, CueVolume};
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
 pub use orb::{OrbConfig, OriginError};
+pub use panel::{PanelConfig, PanelTimeoutError};
 pub use speech_to_text::SpeechToTextConfig;
 pub use tts::{OptionalTtsConfig, TtsConfig, TtsEngine};
 
@@ -31,6 +33,7 @@ pub struct AppConfig {
     pub speech_to_text: Option<SpeechToTextConfig>,
     pub orb: OrbConfig,
     pub cues: CueConfig,
+    pub panel: PanelConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +62,12 @@ pub enum ConfigError {
         #[source]
         source: OriginError,
     },
+    #[error("JARVIS_PANEL_TIMEOUT_SECONDS {value:?} is not a timeout")]
+    PanelTimeout {
+        value: String,
+        #[source]
+        source: PanelTimeoutError,
+    },
 }
 
 impl AppConfig {
@@ -84,6 +93,7 @@ impl AppConfig {
             speech_to_text,
             orb: OrbConfig::from_env(&current_dir)?,
             cues: CueConfig::from_env(&current_dir),
+            panel: PanelConfig::from_env()?,
         })
     }
 }

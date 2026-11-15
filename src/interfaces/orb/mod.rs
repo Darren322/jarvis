@@ -110,10 +110,6 @@ pub(crate) struct OrbFeeds<'a> {
 }
 
 /// How a feature talks to the orbs, apart from state, loudness and taps.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no feature sends to or hears from the orb yet")
-)]
 pub(crate) struct OrbHandle {
     /// Sent to every connected orb as an event: in order, and not dropped while
     /// an orb has room. Sending waits when the queue to the hub is full.

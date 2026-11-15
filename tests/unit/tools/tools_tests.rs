@@ -8,6 +8,7 @@ use rig_core::{
 };
 
 use super::{ALLOWED_TOOLS, register};
+use crate::features::panel::channel;
 
 /// Runs one turn with no Jarvis policy attached, so the request lists every
 /// tool registered with Rig rather than only the allowed ones.
@@ -18,7 +19,7 @@ async fn registered_tools_match_the_allowed_list() {
         MockStreamEvent::final_response(Usage::new()),
     ]]);
     let handle = model.clone();
-    let agent = register(AgentBuilder::new(model)).build();
+    let agent = register(AgentBuilder::new(model), channel().0).build();
 
     let mut stream = agent.runner("hello").stream().await;
     while let Some(item) = stream.next().await {

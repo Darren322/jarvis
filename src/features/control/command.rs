@@ -12,6 +12,8 @@ pub(crate) enum Command {
     Reset,
     Help,
     Memory(MemoryCommand),
+    /// "close it" or "hide that": hide the panel on the orb screen. No model call.
+    Close,
     /// `/recall <question>`: run the question as a prompt with a memory search forced.
     Recall(String),
     /// A recognized command with unusable arguments; holds the usage hint.
@@ -43,6 +45,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/memory rebuild",  "re-embed every memory while idle"),
     ("/reset",           "clear the conversation context and start a new session"),
     ("/listen",          "speak instead of typing; Enter sends what you said"),
+    ("close it",         "hide the panel on the screen (\"hide that\" works too)"),
     ("/stop",            "stop speaking"),
     ("/help",            "show this list"),
     ("/exit",            "quit"),
@@ -75,6 +78,10 @@ pub(crate) fn parse(input: String) -> Command {
         "/memory status" => return Command::Memory(MemoryCommand::Status),
         "/memory rebuild" => return Command::Memory(MemoryCommand::Rebuild),
         _ => {}
+    }
+
+    if is_close_phrase(trimmed) {
+        return Command::Close;
     }
 
     if let Some(query) = trimmed.strip_prefix("/memories ") {
@@ -129,6 +136,15 @@ fn is_unknown_command(trimmed: &str) -> bool {
         && name
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+/// "close it" or "hide that", ignoring case and any closing punctuation. Anything
+/// more ("close the stats", "don't close it yet") is left to the model.
+fn is_close_phrase(trimmed: &str) -> bool {
+    let phrase = trimmed.trim_end_matches(is_punctuation);
+    ["close it", "hide that"]
+        .iter()
+        .any(|close| phrase.eq_ignore_ascii_case(close))
 }
 
 /// "forget that", optionally followed by punctuation and/or "please".
