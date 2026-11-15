@@ -1,6 +1,212 @@
 use orb_protocol::{
-    FromOrb, Level, LevelOutOfRange, LevelSource, MAX_LINE_BYTES, OrbState, ProtocolError, ToOrb,
+    CpuPercent, CpuPercentOutOfRange, FromOrb, Level, LevelOutOfRange, LevelSource, MAX_LINE_BYTES,
+    OrbState, PanelName, ProtocolError, ServiceHealth, ToOrb,
 };
+
+fn cpu(value: f32) -> CpuPercent {
+    CpuPercent::new(value).expect("test cpu percent is in range")
+}
+
+fn stats(temperature_c: Option<f32>, llama: ServiceHealth, bge: ServiceHealth) -> ToOrb {
+    ToOrb::Stats {
+        cpu_percent: cpu(12.5),
+        temperature_c,
+        ram_used_bytes: 2,
+        ram_total_bytes: 8,
+        llama,
+        bge,
+    }
+}
+
+#[test]
+fn every_panel_message_has_its_documented_line_and_round_trips() {
+    let to_orb = [
+        (
+            ToOrb::ShowPanel {
+                panel: PanelName::Stats,
+            },
+            r#"{"type":"show_panel","panel":"stats"}"#,
+        ),
+        (ToOrb::HidePanel {}, r#"{"type":"hide_panel"}"#),
+        (
+            stats(Some(55.5), ServiceHealth::Up, ServiceHealth::Down),
+            r#"{"type":"stats","cpu_percent":12.5,"temperature_c":55.5,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}"#,
+        ),
+        (
+            stats(None, ServiceHealth::Down, ServiceHealth::Up),
+            r#"{"type":"stats","cpu_percent":12.5,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"down","bge":"up"}"#,
+        ),
+    ];
+    for (message, wire) in to_orb {
+        let line = message.encode().expect("encodes");
+        assert_eq!(line, format!("{wire}\n"));
+        assert_eq!(line.matches('\n').count(), 1, "only the terminator: {wire}");
+        assert_eq!(ToOrb::decode(&line).expect("decodes with newline"), message);
+        assert_eq!(
+            ToOrb::decode(wire).expect("decodes without newline"),
+            message
+        );
+    }
+
+    let line = FromOrb::PanelClosed {}.encode().expect("encodes");
+    assert_eq!(line, "{\"type\":\"panel_closed\"}\n");
+    assert_eq!(
+        FromOrb::decode(&line).expect("decodes"),
+        FromOrb::PanelClosed {}
+    );
+}
+
+#[test]
+fn a_missing_temperature_is_absent_on_the_wire_and_never_zero() {
+    let line = stats(None, ServiceHealth::Up, ServiceHealth::Up)
+        .encode()
+        .expect("encodes");
+    assert!(!line.contains("temperature_c"), "{line}");
+    assert!(matches!(
+        ToOrb::decode(&line),
+        Ok(ToOrb::Stats {
+            temperature_c: None,
+            ..
+        })
+    ));
+    // A real zero reading stays a zero.
+    let zero = stats(Some(0.0), ServiceHealth::Up, ServiceHealth::Up);
+    assert_eq!(
+        ToOrb::decode(&zero.encode().expect("encodes")).expect("decodes"),
+        zero
+    );
+}
+
+#[test]
+fn a_cpu_percent_is_accepted_from_0_to_100_inclusive_and_rejected_just_outside() {
+    for value in [0.0, f32::MIN_POSITIVE, 50.0, 100.0_f32.next_down(), 100.0] {
+        assert_eq!(CpuPercent::new(value).map(CpuPercent::value), Ok(value));
+    }
+    for value in [
+        0.0_f32.next_down(),
+        100.0_f32.next_up(),
+        -1.0,
+        101.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ] {
+        assert_eq!(CpuPercent::new(value), Err(CpuPercentOutOfRange(value)));
+    }
+    assert!(CpuPercent::new(f32::NAN).is_err());
+
+    let clamped = [
+        (-3.0, 0.0),
+        (42.0, 42.0),
+        (100.0_f32.next_up(), 100.0),
+        (f32::INFINITY, 100.0),
+        (f32::NEG_INFINITY, 0.0),
+        (f32::NAN, 0.0),
+    ];
+    for (raw, expected) in clamped {
+        assert_eq!(CpuPercent::clamped(raw).value(), expected, "{raw}");
+    }
+}
+
+#[test]
+fn a_decoded_stats_message_must_have_a_valid_cpu_percent() {
+    let line = |cpu: &str| {
+        format!(
+            r#"{{"type":"stats","cpu_percent":{cpu},"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"up"}}"#
+        )
+    };
+    for accepted in ["0", "100", "100.0"] {
+        assert!(ToOrb::decode(&line(accepted)).is_ok(), "{accepted}");
+    }
+    for rejected in ["100.00001", "-0.1", "null", "\"5\""] {
+        assert!(
+            matches!(
+                ToOrb::decode(&line(rejected)),
+                Err(ProtocolError::Invalid(_))
+            ),
+            "{rejected}"
+        );
+    }
+}
+
+#[test]
+fn unknown_panels_extra_fields_and_missing_fields_are_rejected() {
+    let to_orb = [
+        r#"{"type":"show_panel","panel":"camera"}"#,
+        r#"{"type":"show_panel","panel":"Stats"}"#,
+        r#"{"type":"show_panel"}"#,
+        r#"{"type":"show_panel","panel":"stats","extra":1}"#,
+        r#"{"type":"hide_panel","extra":1}"#,
+        r#"{"type":"stats","cpu_percent":1,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"up","extra":1}"#,
+        r#"{"type":"stats","cpu_percent":1,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"sideways","bge":"up"}"#,
+        r#"{"type":"stats","cpu_percent":1,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up"}"#,
+        r#"{"type":"stats","cpu_percent":1,"ram_used_bytes":-1,"ram_total_bytes":8,"llama":"up","bge":"up"}"#,
+        r#"{"type":"stats","cpu_percent":1,"ram_used_bytes":18446744073709551616,"ram_total_bytes":8,"llama":"up","bge":"up"}"#,
+    ];
+    for line in to_orb {
+        assert!(
+            matches!(ToOrb::decode(line), Err(ProtocolError::Invalid(_))),
+            "{line}"
+        );
+    }
+    for line in [
+        r#"{"type":"panel_closed","extra":1}"#,
+        r#"{"type":"hide_panel"}"#,
+    ] {
+        assert!(
+            matches!(FromOrb::decode(line), Err(ProtocolError::Invalid(_))),
+            "{line}"
+        );
+    }
+}
+
+/// The widest Stats line: both RAM fields `u64::MAX`, both services down, and the
+/// widest `f32` text (9 significant digits, no exponent) for CPU and temperature.
+fn widest_stats_line() -> String {
+    format!(
+        r#"{{"type":"stats","cpu_percent":0.00000123456789,"temperature_c":-1234567890000000.0,"ram_used_bytes":{max},"ram_total_bytes":{max},"llama":"down","bge":"down"}}"#,
+        max = u64::MAX
+    )
+}
+
+#[test]
+fn the_line_limit_is_the_size_of_the_widest_stats_message() {
+    let widest = widest_stats_line();
+    assert_eq!(widest.len(), MAX_LINE_BYTES);
+    assert!(ToOrb::decode(&widest).is_ok());
+    // One byte more (a space is valid JSON) is rejected.
+    assert!(matches!(
+        ToOrb::decode(&format!("{widest} ")),
+        Err(ProtocolError::LineTooLong { len }) if len == MAX_LINE_BYTES + 1
+    ));
+
+    // Encoding real values never exceeds the limit: sample f32 bit patterns
+    // (deterministic generator) for both float fields.
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        // The high bits are the better mixed ones; the shift leaves 32 bits.
+        u32::try_from(seed >> 32).expect("32 bits fit in u32")
+    };
+    for _ in 0..200_000 {
+        let raw_cpu = f32::from_bits(next());
+        let raw_temp = f32::from_bits(next());
+        if !raw_temp.is_finite() || raw_cpu.is_nan() {
+            continue;
+        }
+        let message = ToOrb::Stats {
+            cpu_percent: CpuPercent::clamped(raw_cpu.abs()),
+            temperature_c: Some(raw_temp),
+            ram_used_bytes: u64::MAX,
+            ram_total_bytes: u64::MAX,
+            llama: ServiceHealth::Down,
+            bge: ServiceHealth::Down,
+        };
+        let line = message.encode().expect("within the limit");
+        assert!(line.len() <= MAX_LINE_BYTES + 1, "{line}");
+    }
+}
 
 fn level(value: f32) -> Level {
     Level::new(value).expect("test level is in range")

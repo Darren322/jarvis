@@ -9,9 +9,17 @@ use thiserror::Error;
 
 /// The longest line either side accepts, in bytes, not counting the newline.
 ///
-/// The longest message this crate encodes is under 60 bytes, so the limit only
+/// The size of the widest message this crate encodes: a [`ToOrb::Stats`] with
+/// `u64::MAX` for both RAM fields, both services down, and the widest `f32` text
+/// for CPU and temperature. `serde_json` prints the shortest text that reads back
+/// as the same `f32`: at most 9 significant digits, written without an exponent
+/// from `1e-5` up to `1e16`. That makes the widest CPU text `0.00000123456789`
+/// (16 bytes, CPU is 0 to 100) and the widest temperature `-1234567890000000.0`
+/// (19 bytes). This is a bound by construction, not a value every f32 reaches
+/// (sampled encodings reach 183). A test builds that line, checks it equals this
+/// constant, and checks sampled encodings never exceed it. The limit also
 /// bounds how much a reader buffers from a peer that never sends a newline.
-pub const MAX_LINE_BYTES: usize = 256;
+pub const MAX_LINE_BYTES: usize = 188;
 
 /// What Jarvis is doing, as the orb shows it. On the wire: `"idle"`,
 /// `"listening"`, `"transcribing"`, `"thinking"`, `"speaking"`.
@@ -89,11 +97,80 @@ impl From<Level> for f32 {
     }
 }
 
+/// A CPU load from 0.0 to 100.0 inclusive, valid by construction like [`Level`].
+///
+/// A sender with a raw measurement uses [`CpuPercent::clamped`]. Decoding is
+/// strict: a value outside the range, or a JSON `null`, makes the message invalid.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(try_from = "f32", into = "f32")]
+pub struct CpuPercent(f32);
+
+/// A CPU percent outside 0 to 100, or not a number.
+#[derive(Clone, Copy, Debug, Error, PartialEq)]
+#[error("cpu percent {0} is outside 0 to 100")]
+pub struct CpuPercentOutOfRange(pub f32);
+
+impl CpuPercent {
+    /// Accepts 0.0 to 100.0 inclusive and rejects everything else, including NaN.
+    pub fn new(value: f32) -> Result<Self, CpuPercentOutOfRange> {
+        if (0.0..=100.0).contains(&value) {
+            Ok(Self(value))
+        } else {
+            Err(CpuPercentOutOfRange(value))
+        }
+    }
+
+    /// Pulls a raw measurement into range; NaN becomes 0.
+    pub fn clamped(value: f32) -> Self {
+        if value.is_nan() {
+            Self(0.0)
+        } else {
+            Self(value.clamp(0.0, 100.0))
+        }
+    }
+
+    pub fn value(self) -> f32 {
+        self.0
+    }
+}
+
+impl TryFrom<f32> for CpuPercent {
+    type Error = CpuPercentOutOfRange;
+
+    fn try_from(value: f32) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<CpuPercent> for f32 {
+    fn from(cpu: CpuPercent) -> Self {
+        cpu.0
+    }
+}
+
+/// A panel the orb can show. On the wire: `"stats"`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelName {
+    Stats,
+}
+
+/// Whether a service answered its last health check. On the wire: `"up"` or `"down"`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceHealth {
+    Up,
+    Down,
+}
+
 /// Jarvis to the orb.
 ///
 /// ```text
 /// {"type":"state","state":"thinking"}
 /// {"type":"level","level":0.25,"source":"mic"}
+/// {"type":"show_panel","panel":"stats"}
+/// {"type":"hide_panel"}
+/// {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}
 /// ```
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -102,6 +179,21 @@ pub enum ToOrb {
     State { state: OrbState },
     /// Sent about 30 times a second while there is something to hear.
     Level { level: Level, source: LevelSource },
+    /// Opens a panel over the orb.
+    ShowPanel { panel: PanelName },
+    /// Closes whatever panel is open.
+    HidePanel {},
+    /// A reading of the Pi's health. A missing temperature sensor is an absent
+    /// `temperature_c`, never 0.
+    Stats {
+        cpu_percent: CpuPercent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        temperature_c: Option<f32>,
+        ram_used_bytes: u64,
+        ram_total_bytes: u64,
+        llama: ServiceHealth,
+        bge: ServiceHealth,
+    },
 }
 
 /// The orb to Jarvis.
@@ -115,6 +207,8 @@ pub enum FromOrb {
     /// The screen was tapped. It carries nothing: Jarvis decides what a tap
     /// means from its own state.
     Tap {},
+    /// Darren tapped outside the open panel, and the orb closed it.
+    PanelClosed {},
 }
 
 #[derive(Debug, Error)]

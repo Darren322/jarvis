@@ -117,6 +117,8 @@ impl Display {
                     *level = next.value();
                 }
             }
+            // The macroquad orb has no panel.
+            ToOrb::ShowPanel { .. } | ToOrb::HidePanel {} | ToOrb::Stats { .. } => {}
         }
     }
 
