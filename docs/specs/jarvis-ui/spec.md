@@ -86,8 +86,8 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 01 | Record the UI runtime decision | done | None |
 | 02 | UI scaffold | done | None |
 | 03 | WebSocket transport | done | None |
-| 04 | React Orb | in-progress | 02 |
-| 05 | Kiosk launch and deploy | ready-for-agent | 03, 04 |
+| 04 | React Orb | in-review | 02 |
+| 05 | Kiosk launch and deploy | in-progress | 03, 04 |
 | 06 | Retire jarvis-orb | ready-for-human | 05 |
 | 07 | Panel messages | done | None |
 | 08 | Stats source | in-progress | 03, 07 |

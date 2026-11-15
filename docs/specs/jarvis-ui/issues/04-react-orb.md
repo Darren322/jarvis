@@ -1,6 +1,6 @@
 # 04: React Orb
 
-Status: in-progress
+Status: in-review
 Stories: US1
 Blocked by: 02
 Assignee: Opus agent (2026-11-15)
@@ -37,3 +37,5 @@ Traces to: D2, D4, D5, D11
 
 - 2026-11-15 (coordinator): Darren chose a blended look (Q31): the libraries.dev "Thinking orbs" motion, animation and 3D feel plus the D1 touches. He then asked why not install the package and remodel it (Q33, "sure"): a Sonnet agent measures `thinking-orbs@0.3.2` (MIT, 2D canvas, no dependencies) on the 8 GB Pi. Approved: if it runs at about 25% of one core or less at 60 fps, install it in `ui/` at exactly 0.3.2 as the orb body, with the plexus, glyph rings and light rays as a thin WebGL2 layer. If not, the Opus agent rebuilds its motion in WebGL2. Until then the agent builds the link, state mapping, level store, renderer interface, preview page and tests, and holds the drawing.
 - 2026-11-15 (coordinator): Run 3 measured `thinking-orbs@0.3.2` on the 8 GB Pi: stock component stretched from 64 px, 65 to 68% of one core; driven through `thinking-orbs/engine` on a 400 px canvas, 29 to 48%; ~490 to 525 MB PSS; ~60 fps (min 55). Over the 25% rule, but Darren accepted it ("i think its fine no? ... its only 1 core"). Installed in `ui/` at exactly 0.3.2 (licence MIT checked). D5, D11 and ADR 0001 updated; budget now about 50% of one core. Drawing path: engine on our own full-size canvas, dots tuned for 400 px, D1 touches as a WebGL2 layer, 30 fps idle cap from the animator.
+- 2026-11-15 (coordinator): Opus agent built the renderer: the `thinking-orbs` engine on a centred 2D canvas (own batched painter, at most 24 fills a frame) in front of a WebGL2 layer with the D1 core, rays, HUD arcs and glyph rings (6 instanced draws, static buffers). The WebGL layer sits behind the dots, not above as briefed, because a glow on top washed the dots out; awaiting Darren's OK. Modes: offline globe (grey), idle web, listening wave, transcribing globe scan, thinking braid, speaking ring; listening and speaking follow the level. Side-by-side sheet: `notes/ui-spike/orb-shots/compare.png`. Coordinator looked at it, stubbed `getContext` in `ui/tests/App.test.tsx`, and ran `scripts/verify.sh`: all checks passed (102 UI tests). Not proven: CPU, memory and look on the Pi (ticket 05).
+- 2026-11-15 (coordinator): Darren approved the glow behind the dots (Q36, "yes to all") and asked to commit and deploy. The look on the Pi is judged in ticket 05.

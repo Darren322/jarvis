@@ -16,10 +16,13 @@ class SilentWebSocket extends EventTarget {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 test('the app renders the Jarvis main landmark without a real connection', async () => {
   vi.stubGlobal('WebSocket', SilentWebSocket);
+  // jsdom has no canvas; the renderer copes with a missing context.
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement('div');
   const root = createRoot(container);

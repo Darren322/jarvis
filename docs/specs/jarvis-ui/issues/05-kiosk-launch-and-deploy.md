@@ -1,9 +1,9 @@
 # 05: Kiosk launch and deploy
 
-Status: ready-for-agent
+Status: in-progress
 Stories: US1
 Blocked by: 03, 04
-Assignee: unassigned
+Assignee: Sonnet agent (2026-11-15)
 Owns: `scripts/deploy-ui.sh`; `scripts/pi/jarvis-ui.service`; the launch section of `docs/agents/pi.md` only
 Traces to: D1, D4, D6, D11
 
@@ -33,3 +33,4 @@ Traces to: D1, D4, D6, D11
 ## Comments
 
 - 2026-11-15 (coordinator): A Sonnet agent diagnosed the white-screen hang (`notes/ui-spike/http-hang-2026-11-15.md`, harness `http-hang-test.sh`). It is not python's http.server: with a normal on-disk profile Chromium 154 never sends the main request to any server (0 of 6). `--password-store=basic` fixed it every time (5 of 5 with fresh profiles, 6 of 6 with a reused profile on localhost:8766, HTTP/1.0 and 1.1), as did `--incognito` (which loses storage). The likely cause, unproven, is the network service waiting on gnome-keyring for the cookie key. Recommended launcher: `chromium --user-data-dir=$HOME/.config/jarvis-ui-chromium --password-store=basic --ozone-platform=wayland --kiosk --no-first-run --noerrdialogs --disable-infobars http://localhost:8766/`. Not tested: Chromium starting before the server.
+- 2026-11-15 (coordinator): Darren's OK for every Pi change in this ticket (Q37, "yes to all"): push `dev` and rebuild Jarvis on the 8 GB Pi; copy `ui/dist/`; add and enable the `jarvis-ui.service` user service on 127.0.0.1:8766; create `~/.config/labwc/autostart` for Chromium kiosk with `--password-store=basic` and the cursor hidden; measure CPU, RAM and fps per state.
