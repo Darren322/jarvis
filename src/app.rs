@@ -9,13 +9,13 @@ use tokio::{
 use crate::clients::{
     local_llm::LocalLlm, remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText,
 };
-use crate::config::{AppConfig, OptionalTtsConfig, OrbConfig};
+use crate::config::{AppConfig, CueConfig, CueVolume, OptionalTtsConfig, OrbConfig, TtsConfig};
 use crate::features::{
     assistant::{Assistant, SYSTEM_PREAMBLE},
     conversation::ConversationSession,
     listening::{Listener, Recorder, run_level_meter},
     memory::MemoryService,
-    speech::SpeechOutput,
+    speech::{CueSounds, SpeechOutput, run_state_cues},
     state::StateFeed,
 };
 use crate::interfaces::cli::{
@@ -41,6 +41,7 @@ pub struct App {
     /// `None` when the speech-to-text settings are absent: `/listen` says so.
     listener: Option<Listener>,
     orb_config: OrbConfig,
+    cue_config: CueConfig,
 }
 
 impl App {
@@ -77,6 +78,7 @@ impl App {
             tts_config: config.tts.clone(),
             listener,
             orb_config: config.orb.clone(),
+            cue_config: config.cues.clone(),
         })
     }
 
@@ -90,7 +92,7 @@ impl App {
                 eprintln!("Warning: local speech is disabled: {reason}");
                 None
             }
-            OptionalTtsConfig::Configured(config) => Some(SpeechOutput::new(config.clone())),
+            OptionalTtsConfig::Configured(config) => Some(self.open_speech(config).await),
         };
 
         println!("Conversation archive: {}", self.archive_path.display());
@@ -142,11 +144,22 @@ impl App {
             tokio::join!(orb.serve(feeds), meter).0
         };
 
+        // The cues follow the same states as the orb, through the speech output's
+        // device: without speech there is no device and so no cue.
+        let cue_states = states.observe();
+        let cue_player = speech.as_ref().map(SpeechOutput::cue_player);
+        let play_cues = async {
+            match cue_player {
+                Some(player) => run_state_cues(cue_states, player).await,
+                None => std::future::pending().await,
+            }
+        };
+
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
         let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
-        // The orb runs beside the REPL in this task and ends with it: dropping
-        // `serve_orb` closes its connections and removes the socket file.
+        // The orb and the cues run beside the REPL in this task and end with it:
+        // dropping `serve_orb` closes its connections and removes the socket file.
         tokio::select! {
             result = run_input_loop(
                 &self.assistant,
@@ -159,7 +172,55 @@ impl App {
                 self.listener.as_ref(),
             ) => result,
             never = serve_orb => match never {},
+            never = play_cues => match never {},
         }
+    }
+
+    /// The speech output, with the state sounds it can play. The sounds are
+    /// optional: whatever does not load is silent, with one warning, and with none
+    /// at all the audio device is opened by the first answer, as before.
+    async fn open_speech(&self, config: &TtsConfig) -> SpeechOutput {
+        let speech = SpeechOutput::new(config.clone());
+        let volume = match &self.cue_config.volume {
+            CueVolume::Off => return speech,
+            CueVolume::Invalid(raw) => {
+                eprintln!(
+                    "Warning: state sounds are off: JARVIS_CUE_VOLUME must be a number from 0 to 1, not {raw:?}"
+                );
+                return speech;
+            }
+            CueVolume::Level(volume) => *volume,
+        };
+        let dir = self.cue_config.dir.clone();
+        let loaded = tokio::task::spawn_blocking(move || CueSounds::load(&dir, volume)).await;
+        let Ok((sounds, failures)) = loaded else {
+            eprintln!("Warning: state sounds are off: loading them did not finish");
+            return speech;
+        };
+        if !failures.is_empty() {
+            let silent: Vec<String> = failures
+                .iter()
+                .map(|failure| {
+                    format!(
+                        "{} ({})",
+                        failure.cue.file_name(),
+                        error_chain(&failure.error)
+                    )
+                })
+                .collect();
+            eprintln!(
+                "Warning: these state sounds did not load from {} and stay silent: {}",
+                self.cue_config.dir.display(),
+                silent.join("; ")
+            );
+        }
+        if sounds.is_empty() {
+            return speech;
+        }
+        let mut speech = speech.with_cues(sounds);
+        // The first cue may come before the first answer.
+        speech.open_audio();
+        speech
     }
 
     /// Opens the orb's socket. The orb is optional, so a socket that cannot be

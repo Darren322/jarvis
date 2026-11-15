@@ -275,3 +275,21 @@ fn dropping_the_player_mid_answer_leaves_the_level_at_zero() {
 
     assert_eq!(level.level(), 0.0);
 }
+
+#[test]
+fn the_mixer_is_offered_while_the_player_is_open_and_withdrawn_when_it_is_dropped() {
+    let (mut player, _source) = test_player();
+    let (offer, offered) = watch::channel(None);
+
+    player.offer_mixer_on(offer);
+    assert!(
+        offered.borrow().is_some(),
+        "offered while the player is open"
+    );
+
+    drop(player);
+    assert!(
+        offered.borrow().is_none(),
+        "withdrawn once the player is gone"
+    );
+}

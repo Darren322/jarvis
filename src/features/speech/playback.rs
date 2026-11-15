@@ -54,6 +54,8 @@ pub(super) struct AudioPlayer {
     device_failed: Arc<AtomicBool>,
     /// Loudness of what the mixer is pulling; 0 whenever nothing is playing.
     level: PlaybackLevel,
+    /// Where this player's mixer is offered to the cue player while it is open.
+    cue_mixer: Option<watch::Sender<Option<Mixer>>>,
 }
 
 impl AudioPlayer {
@@ -62,10 +64,13 @@ impl AudioPlayer {
     /// This performs blocking device discovery and must run on a blocking thread.
     ///
     /// The playback loudness is published on `level`, which the caller keeps across
-    /// players, so a reader's receiver survives a player being replaced.
+    /// players, so a reader's receiver survives a player being replaced. The mixer is
+    /// offered on `cue_mixer` in the same way, from the moment the device is open
+    /// until this player is dropped, so cues can play before the first answer.
     pub fn new(
         requested_device: Option<String>,
         level: watch::Sender<f32>,
+        cue_mixer: watch::Sender<Option<Mixer>>,
     ) -> Result<Self, PlaybackError> {
         let host = cpal::default_host();
         let device = match requested_device {
@@ -99,6 +104,7 @@ impl AudioPlayer {
         let mixer = sink.mixer().clone();
         let mut player = Self::from_mixer(mixer, sink, device_failed);
         player.level = PlaybackLevel::publishing_to(level);
+        player.offer_mixer_on(cue_mixer);
         Ok(player)
     }
 
@@ -114,7 +120,14 @@ impl AudioPlayer {
             player: None,
             device_failed,
             level: PlaybackLevel::new(),
+            cue_mixer: None,
         }
+    }
+
+    /// Offers this player's mixer on `cue_mixer` until the player is dropped.
+    pub fn offer_mixer_on(&mut self, cue_mixer: watch::Sender<Option<Mixer>>) {
+        cue_mixer.send_replace(Some(self.mixer.clone()));
+        self.cue_mixer = Some(cue_mixer);
     }
 
     /// Queues one chunk of speech behind whatever is already queued for this answer.
@@ -192,9 +205,13 @@ impl AudioPlayer {
 }
 
 impl Drop for AudioPlayer {
-    /// A player dropped mid-answer (failure, shutdown) must not leave the level lit.
+    /// A player dropped mid-answer (failure, shutdown) must not leave the level lit,
+    /// and its mixer leads nowhere once the output stream is gone.
     fn drop(&mut self) {
         self.level.end();
+        if let Some(cue_mixer) = &self.cue_mixer {
+            cue_mixer.send_replace(None);
+        }
     }
 }
 

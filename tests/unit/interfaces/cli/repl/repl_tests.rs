@@ -9,7 +9,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use rig_agent::AgentBuilder;
@@ -1778,4 +1778,267 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         )
         .expect("the turns can be counted");
     assert_eq!(archived_fillers, 0);
+}
+
+// ---- the "speak now" cue ---------------------------------------------------------------
+//
+// The cue is played before the recorder starts, so the recording never contains it. The
+// recorder is a script whose first action is to create a marker file, so these tests can tell
+// when it started.
+
+/// One call of `play_listening_cue`.
+struct CueCall {
+    at: Instant,
+    /// Whether the recorder had already started when the cue was asked for.
+    recorder_started: bool,
+}
+
+/// A speech output that only records the listening cue it is asked for.
+struct CueSpeech {
+    cue_length: Duration,
+    disabled: bool,
+    recorder_marker: PathBuf,
+    calls: Arc<Mutex<Vec<CueCall>>>,
+}
+
+impl CueSpeech {
+    fn new(cue_length: Duration, recorder_marker: PathBuf) -> (Self, Arc<Mutex<Vec<CueCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let speech = Self {
+            cue_length,
+            disabled: false,
+            recorder_marker,
+            calls: Arc::clone(&calls),
+        };
+        (speech, calls)
+    }
+}
+
+impl SpeechControl for CueSpeech {
+    type Error = std::io::Error;
+
+    fn is_disabled(&self) -> bool {
+        self.disabled
+    }
+
+    async fn speak(
+        &mut self,
+        _chunks: mpsc::Receiver<String>,
+        _playback_started: oneshot::Sender<()>,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn cancel(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn play_listening_cue(&mut self) -> Duration {
+        self.calls
+            .lock()
+            .expect("the call log lock should be available")
+            .push(CueCall {
+                at: Instant::now(),
+                recorder_started: self.recorder_marker.exists(),
+            });
+        self.cue_length
+    }
+}
+
+/// `run_with_taps` for the cue double, which the shared runner's `FailingSpeech` type rules out.
+async fn run_with_cue_speech(
+    harness: &mut Harness,
+    speech: &mut Option<CueSpeech>,
+    taps: Taps,
+    script: impl AsyncFnOnce(&mut Driver),
+) -> Vec<Shown> {
+    let (writer, reader) = tokio::io::duplex(8192);
+    let mut input = BufReader::new(reader);
+    let screen = Screen::default();
+    let mut presenter = screen.clone();
+    let mut driver = Driver {
+        writer,
+        screen: screen.clone(),
+        cursor: 0,
+    };
+    let mut loop_future = pin!(run_input_loop(
+        &harness.assistant,
+        &mut harness.session,
+        None,
+        speech,
+        &mut input,
+        taps,
+        &mut presenter,
+        harness.listener.as_ref(),
+    ));
+    let user = async {
+        script(&mut driver).await;
+        driver.type_(b"/exit\n").await;
+    };
+    tokio::select! {
+        result = &mut loop_future => panic!("the loop ended before the user was done: {result:?}"),
+        () = user => {}
+    }
+    loop_future.await.expect("the loop should end at /exit");
+    screen.shown.take()
+}
+
+/// A recorder that creates its marker file first, then captures a little audio and waits.
+const MARKS_ITS_START_THEN_AUDIBLE: &str =
+    "touch \"$0.emitted\"\nhead -c 4 /dev/zero\nexec sleep 30";
+
+/// A cue long enough that a recorder started early could not hide behind scheduling noise.
+const TEST_CUE_LENGTH: Duration = Duration::from_millis(400);
+
+/// Asserts that the one cue call was made before the recorder started, and that
+/// `[listening]` appeared only after the whole cue had played.
+fn assert_listening_waited_for_the_cue(calls: &Mutex<Vec<CueCall>>, listening_seen: Instant) {
+    let calls = calls.lock().expect("the call log lock should be available");
+    assert_eq!(calls.len(), 1, "one listening cue per listen");
+    assert!(
+        !calls[0].recorder_started,
+        "the cue was asked for before the recorder started"
+    );
+    assert!(
+        listening_seen.duration_since(calls[0].at) >= TEST_CUE_LENGTH,
+        "listening began {:?} after the cue started, before its {TEST_CUE_LENGTH:?} ended",
+        listening_seen.duration_since(calls[0].at)
+    );
+}
+
+#[tokio::test]
+async fn a_typed_listen_plays_the_cue_out_before_the_recorder_starts() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            MARKS_ITS_START_THEN_AUDIBLE,
+            transcript_reply("never asked"),
+        )
+        .await;
+    let (speech, calls) = CueSpeech::new(TEST_CUE_LENGTH, harness.emitted_marker());
+    let mut speech = Some(speech);
+    let mut listening_seen = None;
+
+    let shown = run_with_cue_speech(&mut harness, &mut speech, Taps::none(), async |user| {
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        listening_seen = Some(Instant::now());
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Listening, AssistantState::Idle]
+    );
+    assert_listening_waited_for_the_cue(&calls, listening_seen.expect("listening was reached"));
+}
+
+#[tokio::test]
+async fn a_tap_plays_the_cue_out_before_the_recorder_starts() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            MARKS_ITS_START_THEN_AUDIBLE,
+            transcript_reply("never asked"),
+        )
+        .await;
+    let (speech, calls) = CueSpeech::new(TEST_CUE_LENGTH, harness.emitted_marker());
+    let mut speech = Some(speech);
+    let (tap, taps) = tap_queue();
+    let mut listening_seen = None;
+
+    let shown = run_with_cue_speech(&mut harness, &mut speech, taps, async |user| {
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Listening).await;
+        listening_seen = Some(Instant::now());
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Listening, AssistantState::Idle]
+    );
+    assert_listening_waited_for_the_cue(&calls, listening_seen.expect("listening was reached"));
+}
+
+#[tokio::test]
+async fn a_zero_length_cue_adds_no_wait_and_listening_proceeds() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            MARKS_ITS_START_THEN_AUDIBLE,
+            transcript_reply("never asked"),
+        )
+        .await;
+    let (speech, calls) = CueSpeech::new(Duration::ZERO, harness.emitted_marker());
+    let mut speech = Some(speech);
+
+    let shown = run_with_cue_speech(&mut harness, &mut speech, Taps::none(), async |user| {
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Listening, AssistantState::Idle]
+    );
+    assert_eq!(notices(&shown), ["Recording cancelled. Nothing was sent."]);
+    let calls = calls.lock().expect("the call log lock should be available");
+    assert_eq!(calls.len(), 1, "the cue is still asked for once");
+    assert!(!calls[0].recorder_started);
+}
+
+#[tokio::test]
+async fn no_cue_is_played_when_speech_is_disabled_and_listening_still_works() {
+    let mut harness = harness()
+        .await
+        .with_voice(
+            MARKS_ITS_START_THEN_AUDIBLE,
+            transcript_reply("never asked"),
+        )
+        .await;
+    let (mut speech, calls) = CueSpeech::new(TEST_CUE_LENGTH, harness.emitted_marker());
+    speech.disabled = true;
+    let mut speech = Some(speech);
+    let (tap, taps) = tap_queue();
+
+    let shown = run_with_cue_speech(&mut harness, &mut speech, taps, async |user| {
+        user.type_(b"/listen\n").await;
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+        tap.send(Tap).await.expect("the loop reads taps");
+        user.wait_for(AssistantState::Listening).await;
+        user.type_(b"/stop\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [
+            AssistantState::Listening,
+            AssistantState::Idle,
+            AssistantState::Listening,
+            AssistantState::Idle
+        ]
+    );
+    assert!(
+        calls
+            .lock()
+            .expect("the call log lock should be available")
+            .is_empty(),
+        "a disabled speech output plays no cue"
+    );
 }

@@ -1,4 +1,4 @@
-use std::{future::Future, io, mem, pin::Pin};
+use std::{future::Future, io, mem, pin::Pin, time::Duration};
 
 use tokio::io::AsyncBufRead;
 
@@ -160,6 +160,7 @@ where
                     Some(listener) => {
                         listen_once(
                             listener,
+                            available(speech, speech_available),
                             &mut input,
                             &mut taps,
                             presenter,
@@ -195,6 +196,7 @@ where
                             Some(listener) => {
                                 listen_once(
                                     listener,
+                                    available(speech, speech_available),
                                     &mut input,
                                     &mut taps,
                                     presenter,
@@ -231,11 +233,7 @@ where
                     Command::Prompt(prompt) | Command::Recall(prompt) => {
                         // `run_prompt` reports its own states, starting with `Thinking`.
                         state_awaiting_idle = false;
-                        let speaking = if speech_available {
-                            speech.as_mut()
-                        } else {
-                            None
-                        };
+                        let speaking = available(speech, speech_available);
                         let end = run_prompt(
                             assistant,
                             session,
@@ -344,9 +342,27 @@ enum Wake {
     },
 }
 
+/// The speech output, unless speech has been given up for this session.
+fn available<S>(speech: &mut Option<S>, speech_available: bool) -> Option<&mut S> {
+    if speech_available {
+        speech.as_mut()
+    } else {
+        None
+    }
+}
+
 /// Listens once and queues what the loop handles next.
-async fn listen_once<R, P>(
+///
+/// The "speak now" cue plays out before the recorder starts, so the recording and
+/// the silence detector never hear it. Nothing interrupts that wait: a cue is at
+/// most 2 s long, and input typed or tapped meanwhile is read straight after.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the loop hands over the state it keeps between inputs"
+)]
+async fn listen_once<R, S, P>(
     listener: &Listener,
+    speech: Option<&mut S>,
     input: &mut InputReader<R>,
     taps: &mut Taps,
     presenter: &mut P,
@@ -356,10 +372,15 @@ async fn listen_once<R, P>(
 ) -> io::Result<()>
 where
     R: AsyncBufRead + Unpin,
+    S: SpeechControl,
     P: AssistantPresenter,
 {
     // `listen` reports its own states, starting with `Listening`.
     *state_awaiting_idle = false;
+    let cue = speech.map_or(Duration::ZERO, S::play_listening_cue);
+    if !cue.is_zero() {
+        tokio::time::sleep(cue).await;
+    }
     match listen(listener, input, taps, presenter, stop).await? {
         ListenEnd::Done => {}
         ListenEnd::Heard(line) => {

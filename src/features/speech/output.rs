@@ -1,8 +1,11 @@
 use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
+
+use rodio::mixer::Mixer;
 
 use tempfile::{Builder, TempDir};
 use thiserror::Error;
@@ -15,6 +18,7 @@ use tokio::{
 use crate::config::TtsConfig;
 
 use super::{
+    cues::{CuePlayer, CueSounds},
     playback::{AudioPlayer, PlaybackError, WAKE_NOISE_DURATION},
     playback_level::LevelReceiver,
     sample_rate::SampleRate,
@@ -237,6 +241,9 @@ pub(crate) struct SpeechOutput {
     /// Loudness of the speech being played. It outlives every `AudioPlayer`, which
     /// is rebuilt after a failure, so readers keep one receiver.
     level: watch::Sender<f32>,
+    /// The open player's mixer, for cues. It outlives every `AudioPlayer` too.
+    cue_mixer: watch::Sender<Option<Mixer>>,
+    cue_sounds: Arc<CueSounds>,
 }
 
 impl SpeechOutput {
@@ -251,6 +258,28 @@ impl SpeechOutput {
             next_id: 1,
             health: SpeechHealth::Ready,
             level: watch::Sender::new(0.0),
+            cue_mixer: watch::Sender::new(None),
+            cue_sounds: Arc::default(),
+        }
+    }
+
+    /// Gives this output the cue sounds to play. Without them every cue is silent.
+    pub(crate) fn with_cues(mut self, sounds: CueSounds) -> Self {
+        self.cue_sounds = Arc::new(sounds);
+        self
+    }
+
+    /// A player for the cue sounds, sharing this output's audio device. Valid for
+    /// the life of this value; it plays nothing while no device is open.
+    pub(crate) fn cue_player(&self) -> CuePlayer {
+        CuePlayer::new(Arc::clone(&self.cue_sounds), self.cue_mixer.subscribe())
+    }
+
+    /// Starts opening the audio device without waiting for it, so a cue can play
+    /// before the first answer is spoken. The next answer picks the device up.
+    pub(crate) fn open_audio(&mut self) {
+        if self.player.is_none() {
+            self.start_player_initialization();
         }
     }
 
@@ -638,13 +667,7 @@ impl SpeechOutput {
         if self.player.is_some() {
             return Ok(());
         }
-        if self.player_initialization.is_none() {
-            let requested_device = self.config.audio_device.clone();
-            let level = self.level.clone();
-            self.player_initialization = Some(tokio::task::spawn_blocking(move || {
-                AudioPlayer::new(requested_device, level)
-            }));
-        }
+        self.start_player_initialization();
 
         let result = {
             let task = self
@@ -676,6 +699,18 @@ impl SpeechOutput {
                 self.health.record_failure();
                 Err(SpeechError::PlaybackInitializationTaskFailed)
             }
+        }
+    }
+
+    /// Opens the audio device on a blocking thread, unless that is already under way.
+    fn start_player_initialization(&mut self) {
+        if self.player_initialization.is_none() {
+            let requested_device = self.config.audio_device.clone();
+            let level = self.level.clone();
+            let cue_mixer = self.cue_mixer.clone();
+            self.player_initialization = Some(tokio::task::spawn_blocking(move || {
+                AudioPlayer::new(requested_device, level, cue_mixer)
+            }));
         }
     }
 

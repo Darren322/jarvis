@@ -1,3 +1,4 @@
+mod cues;
 mod embedding;
 mod local_llm;
 mod orb;
@@ -9,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use cues::{CueConfig, CueVolume};
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
 pub use orb::OrbConfig;
@@ -27,6 +29,7 @@ pub struct AppConfig {
     /// `None` when no speech-to-text setting is present.
     pub speech_to_text: Option<SpeechToTextConfig>,
     pub orb: OrbConfig,
+    pub cues: CueConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +68,7 @@ impl AppConfig {
             tts: OptionalTtsConfig::from_env(&current_dir),
             speech_to_text,
             orb: OrbConfig::from_env(&current_dir),
+            cues: CueConfig::from_env(&current_dir),
         })
     }
 }

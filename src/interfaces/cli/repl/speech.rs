@@ -11,7 +11,7 @@ use tokio::sync::{
     oneshot,
 };
 
-use crate::features::speech::{SpeechChunker, SpeechError, SpeechOutput};
+use crate::features::speech::{Cue, SpeechChunker, SpeechError, SpeechOutput};
 use crate::interfaces::cli::diagnostics::error_chain;
 use crate::interfaces::cli::input::InputLine;
 
@@ -34,6 +34,12 @@ pub(crate) trait SpeechControl {
     ) -> Result<(), Self::Error>;
     async fn cancel(&mut self) -> Result<(), Self::Error>;
     async fn shutdown(&mut self) -> Result<(), Self::Error>;
+    /// Starts the "speak now" cue and returns how long it plays; zero when there is
+    /// none. The caller opens the microphone only after that, so the cue is never
+    /// in the recording.
+    fn play_listening_cue(&mut self) -> Duration {
+        Duration::ZERO
+    }
 }
 
 impl SpeechControl for SpeechOutput {
@@ -57,6 +63,10 @@ impl SpeechControl for SpeechOutput {
 
     async fn shutdown(&mut self) -> Result<(), Self::Error> {
         SpeechOutput::shutdown(self).await
+    }
+
+    fn play_listening_cue(&mut self) -> Duration {
+        self.cue_player().play(Cue::Listening)
     }
 }
 
