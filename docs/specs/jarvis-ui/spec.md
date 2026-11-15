@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01, 02, 03 and 07 are done and committed (2026-11-15). 04 (React Orb) is in progress with an Opus agent: the link, look mapping and tests are built; the drawing uses `thinking-orbs@0.3.2` (installed, uncommitted) with the D1 touches as a WebGL2 layer. A Sonnet agent is diagnosing why Chromium hangs on `python3 -m http.server` on the Pi, which D4 and ticket 05 depend on. Next: review 04's screenshots with Darren, then 05 (needs his OK for Pi changes), then 08 and 09.
+Resume here: 01 to 04 and 07 to 09 are done; 05 is in review and live on the 8 GB Pi (Jarvis 868d7d3 in tmux `jarvis`, `jarvis-ui.service`, Chromium kiosk). First: with Darren, reboot the Pi and run 05's open checks (autostart, hidden cursor, the look in all five states, a real tap, tap-speak-hear), then a one-hour memory soak, then pull 907bf89 on the Pi. Next ticket: 10 (stats Dashboard UI, Opus agent). Handoff: `notes/HANDOFF_2026-11-15c.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
