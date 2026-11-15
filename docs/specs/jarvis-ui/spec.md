@@ -87,7 +87,7 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 02 | UI scaffold | done | None |
 | 03 | WebSocket transport | done | None |
 | 04 | React Orb | in-review | 02 |
-| 05 | Kiosk launch and deploy | in-progress | 03, 04 |
+| 05 | Kiosk launch and deploy | in-review | 03, 04 |
 | 06 | Retire jarvis-orb | ready-for-human | 05 |
 | 07 | Panel messages | done | None |
 | 08 | Stats source | done | 03, 07 |

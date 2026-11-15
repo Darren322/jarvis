@@ -65,3 +65,28 @@ cd ~/jarvis && git worktree remove --force /tmp/jarvis-exp && rm -rf /tmp/jarvis
 ```
 
 Remove every scratch file when done and say in the ticket what was left behind.
+
+## The screen UI (jarvis-ui): launch and deploy
+
+Set up 2026-11-15 (jarvis-ui ticket 05). Chromium shows the React UI full screen on the 5 inch screen; Jarvis serves the WebSocket the UI talks to.
+
+| Piece | Where | Detail |
+| --- | --- | --- |
+| Built UI | `~/jarvis/ui/dist` on the Pi | Copied from the Mac by `scripts/deploy-ui.sh` (`npm ci`, `npm run build`, `rsync --delete`). `ui/dist/` is git-ignored, so the checkout stays clean. The Pi has no Node. `scripts/deploy-ui.sh --dry-run` builds, then prints the copy commands. |
+| UI server | `~/.config/systemd/user/jarvis-ui.service` (repo: `scripts/pi/jarvis-ui.service`) | `python3 -m http.server 8766 --bind 127.0.0.1 --directory %h/jarvis/ui/dist`, `Restart=on-failure`, enabled with `systemctl --user enable --now jarvis-ui`. Port 8766 is `DEFAULT_UI_PORT` in `src/config/orb.rs`; Jarvis's default allowed origin is `http://localhost:8766`. Log: `journalctl --user-unit jarvis-ui` (the access log; plain `-u` finds nothing for a user unit here). |
+| Launcher | `~/.local/bin/jarvis-kiosk.sh` (repo: `scripts/pi/jarvis-kiosk.sh`, copied by the deploy script) | Waits up to 60 s for 127.0.0.1:8766 to accept a connection (a bare TCP connect, so it adds nothing to the access log), then `exec chromium --user-data-dir=$HOME/.config/jarvis-ui-chromium --password-store=basic --ozone-platform=wayland --kiosk --no-first-run --noerrdialogs --disable-infobars http://localhost:8766/`. `--password-store=basic` is required: without it Chromium 154 never sends the page request (`notes/ui-spike/http-hang-2026-11-15.md`). No `--allow-file-access-from-files`. |
+| Autostart | `~/.config/labwc/autostart` (repo: `scripts/pi/labwc-autostart`) | labwc reads this file INSTEAD of `/etc/xdg/labwc/autostart`, so the file repeats that file's four lines (pcmanfm-pi, wf-panel-pi, kanshi, lxsession-xdg-autostart) and adds `$HOME/.local/bin/jarvis-kiosk.sh &`. If the system file changes, update the copy. |
+| Cursor | `~/.local/share/icons/jarvis-blank/` and `XCURSOR_THEME=jarvis-blank` | labwc 0.20 has no setting that hides the pointer for good (the `HideCursor` action only hides it until the next pointer event). So `scripts/pi/make_blank_cursor.py` builds an Xcursor theme whose 62 cursors are one transparent pixel. The launcher exports `XCURSOR_THEME` for Chromium; a line in `~/.config/labwc/environment` makes labwc itself use it (read at labwc start, so it takes effect at the next login). |
+
+Ports: `ss -ltn` shows `127.0.0.1:8766` (UI server) and `127.0.0.1:8765` (Jarvis WebSocket) only. Stopping Jarvis leaves 8766 up, and the page still loads.
+
+Starting Jarvis over SSH so it keeps running with a terminal: `tmux new-session -d -s jarvis -c ~/jarvis 'export PATH=$HOME/.cargo/bin:$PATH XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0; ./run.sh; echo EXITED; sleep 3600'` (`cargo` is not on the non-interactive SSH PATH). Attach with `tmux attach -t jarvis`; send a typed question with `tmux send-keys -t jarvis "question" Enter`.
+
+Measuring the UI: start Chromium with the launcher's flags plus `--remote-debugging-port=9222`, read the frame rate with one `Runtime.evaluate` of a `requestAnimationFrame` counter over 30 s (a stdlib WebSocket client; `websockets` is not installed), and sum CPU ticks (`/proc/<pid>/stat`) and `Pss` (`/proc/<pid>/smaps_rollup`) over every `chromium` process in the same window, as `notes/ui-spike/measure.py` does. A screenshot: `XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim /tmp/x.png` (grim is installed; it does not draw the cursor).
+
+### Removing each change
+
+- Autostart: `rm ~/.config/labwc/autostart` (labwc falls back to the system file), then log out and in. Stop a running kiosk with `pkill -x chromium`.
+- Cursor: delete the `XCURSOR_THEME=jarvis-blank` line from `~/.config/labwc/environment`, `rm -r ~/.local/share/icons/jarvis-blank`.
+- UI server: `systemctl --user disable --now jarvis-ui; rm ~/.config/systemd/user/jarvis-ui.service; systemctl --user daemon-reload`.
+- Files: `rm ~/.local/bin/jarvis-kiosk.sh; rm -r ~/jarvis/ui/dist ~/.config/jarvis-ui-chromium`.

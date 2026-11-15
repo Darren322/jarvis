@@ -1,0 +1,8 @@
+# ~/.config/labwc/autostart. labwc reads this file INSTEAD of /etc/xdg/labwc/autostart,
+# so the first four lines are a copy of the system file (panel, desktop, display
+# profile, XDG autostart). Keep them in step with it. The last line is Jarvis.
+/usr/bin/lwrespawn /usr/bin/pcmanfm-pi &
+/usr/bin/lwrespawn /usr/bin/wf-panel-pi &
+/usr/bin/kanshi &
+/usr/bin/lxsession-xdg-autostart
+$HOME/.local/bin/jarvis-kiosk.sh &

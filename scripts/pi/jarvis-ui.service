@@ -1,0 +1,15 @@
+# systemd USER service: serves the built Jarvis UI to Chromium (jarvis-ui spec D4).
+# Installed to ~/.config/systemd/user/ by scripts/deploy-ui.sh; enable once with
+#   systemctl --user enable --now jarvis-ui.service
+# Port 8766 must match DEFAULT_UI_PORT in src/config/orb.rs and the URL in
+# scripts/pi/jarvis-kiosk.sh. %h is the home directory.
+[Unit]
+Description=Jarvis UI static file server (127.0.0.1:8766)
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 8766 --bind 127.0.0.1 --directory %h/jarvis/ui/dist
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

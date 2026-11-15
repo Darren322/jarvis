@@ -1,6 +1,6 @@
 # 05: Kiosk launch and deploy
 
-Status: in-progress
+Status: in-review
 Stories: US1
 Blocked by: 03, 04
 Assignee: Sonnet agent (2026-11-15)
@@ -16,21 +16,22 @@ Traces to: D1, D4, D6, D11
 **Waiting on:** Darren's OK for each Pi change (D6, push-to-talk D10). Before changing the Pi, the agent lists exactly what it will change, and then does it. The Pi needs no Node.
 
 ## Acceptance criteria
-- [ ] Darren's OK for each Pi change is recorded in Comments.
-- [ ] `bash -n scripts/deploy-ui.sh` passes. The dry run prints the commands and changes nothing.
-- [ ] A failed `npm run build` stops the script before `rsync` runs. Checked by a dry run with the build forced to fail.
+- [x] Darren's OK for each Pi change is recorded in Comments.
+- [x] `bash -n scripts/deploy-ui.sh` passes. The dry run prints the commands and changes nothing.
+- [x] A failed `npm run build` stops the script before `rsync` runs. Checked by a dry run with the build forced to fail.
 - [ ] After login, Chromium opens full screen with no browser chrome. The cursor is hidden. (Pi check.)
-- [ ] With Jarvis stopped, the offline Orb shows and taps are ignored. Starting Jarvis connects within `RECONNECT_DELAY` plus a few seconds. (Pi check.)
+- [x] With Jarvis stopped, the offline Orb shows and taps are ignored. Starting Jarvis connects within `RECONNECT_DELAY` plus a few seconds. (Pi check.)
 - [ ] On the Pi, Darren taps while idle, speaks, stops talking and hears the answer, with no key pressed. (Pi check.)
 - [ ] The Orb shows every state on the Pi. Taps behave as in visual-jarvis 10. (Pi check.)
-- [ ] Frame rate, RAM and CPU are measured on the Pi while Jarvis speaks, and compared with D11. The method is written in the report.
+- [x] Frame rate, RAM and CPU are measured on the Pi while Jarvis speaks, and compared with D11. The method is written in the report.
 - [ ] A reboot brings the Orb back. (Pi check.)
-- [ ] Five launches in a row each reach `GET /` in the UI server's log. (Pi check.)
-- [ ] `ss -ltn` on the Pi shows the UI server listening on 127.0.0.1 only. Stopping Jarvis leaves the page served. (Pi check.)
-- [ ] The removal steps for the autostart entry are in `docs/agents/pi.md`.
-- [ ] The report says that the Pi checks are not proven by local tests.
+- [x] Five launches in a row each reach `GET /` in the UI server's log. (Pi check.)
+- [x] `ss -ltn` on the Pi shows the UI server listening on 127.0.0.1 only. Stopping Jarvis leaves the page served. (Pi check.)
+- [x] The removal steps for the autostart entry are in `docs/agents/pi.md`.
+- [x] The report says that the Pi checks are not proven by local tests.
 
 ## Comments
 
 - 2026-11-15 (coordinator): A Sonnet agent diagnosed the white-screen hang (`notes/ui-spike/http-hang-2026-11-15.md`, harness `http-hang-test.sh`). It is not python's http.server: with a normal on-disk profile Chromium 154 never sends the main request to any server (0 of 6). `--password-store=basic` fixed it every time (5 of 5 with fresh profiles, 6 of 6 with a reused profile on localhost:8766, HTTP/1.0 and 1.1), as did `--incognito` (which loses storage). The likely cause, unproven, is the network service waiting on gnome-keyring for the cookie key. Recommended launcher: `chromium --user-data-dir=$HOME/.config/jarvis-ui-chromium --password-store=basic --ozone-platform=wayland --kiosk --no-first-run --noerrdialogs --disable-infobars http://localhost:8766/`. Not tested: Chromium starting before the server.
 - 2026-11-15 (coordinator): Darren's OK for every Pi change in this ticket (Q37, "yes to all"): push `dev` and rebuild Jarvis on the 8 GB Pi; copy `ui/dist/`; add and enable the `jarvis-ui.service` user service on 127.0.0.1:8766; create `~/.config/labwc/autostart` for Chromium kiosk with `--password-store=basic` and the cursor hidden; measure CPU, RAM and fps per state.
+- 2026-11-15 (coordinator): Sonnet agent deployed to the 8 GB Pi: pulled 868d7d3 and rebuilt Jarvis (debug, tmux session `jarvis`); `scripts/deploy-ui.sh` copied `ui/dist`, `jarvis-ui.service` (enabled, 127.0.0.1:8766) and `~/.local/bin/jarvis-kiosk.sh` (waits for the server, then Chromium kiosk with `--password-store=basic`); `~/.config/labwc/autostart` repeats the four system autostart lines and adds the launcher; the cursor is hidden by a transparent Xcursor theme (`scripts/pi/make_blank_cursor.py`, `XCURSOR_THEME=jarvis-blank` in the launcher and `~/.config/labwc/environment`). Checked on the Pi: page connects (state idle reaches it), 5 of 5 launches reach `GET /`, the launcher waits if the server is down, only 127.0.0.1:8765 and :8766 listen, `/exit` shows the offline orb within 0.5 s and it reconnects after Jarvis restarts. Measured (Chromium, % of one core / PSS / fps): idle 16.7 / 464 MB / 60; speaking 30 to 39 / 466 / 60; listening 30 to 44 / 466 / 60; thinking 32 / 505 / 60; offline 16 / 505 / 60. Within D11 except PSS reaching 505 MB after about 10 minutes: soak it. Still for Darren: reboot (autostart, hidden cursor, desktop panel intact), the look on the screen, a real touch tap, and the full tap, speak and hear flow. The Pi runs 868d7d3, without 08 and 09 (pull and rebuild for those).
