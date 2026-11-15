@@ -1,9 +1,9 @@
 # 09: show_panel tool and close phrases
 
-Status: ready-for-agent
+Status: in-progress
 Stories: US2, US3
 Blocked by: 03, 07
-Assignee: unassigned
+Assignee: Sonnet agent (2026-11-15)
 Owns: `src/tools/show_panel.rs` (new); `src/tools/mod.rs` (the `show_panel` registration and its `ALLOWED_TOOLS` entry); `src/features/panel/` (new: the panel state and its timer); `src/features/control/command.rs` and the other `src/features/control/` files that the close command needs; `tests/unit/tools/show_panel_tests.rs`; `tests/unit/features/panel/`; `tests/unit/features/control/`
 Traces to: D2, D8
 

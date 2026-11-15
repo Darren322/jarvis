@@ -1,9 +1,9 @@
 # 08: Stats source
 
-Status: ready-for-agent
+Status: in-progress
 Stories: US2
 Blocked by: 03, 07
-Assignee: unassigned
+Assignee: Sonnet agent (2026-11-15)
 Owns: `src/features/stats/` (new); `src/clients/health.rs` (new, the `/health` check only); `tests/unit/features/stats/`; `tests/unit/clients/health_tests.rs`
 Traces to: D7, D11
 

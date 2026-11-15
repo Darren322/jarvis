@@ -90,8 +90,8 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 05 | Kiosk launch and deploy | ready-for-agent | 03, 04 |
 | 06 | Retire jarvis-orb | ready-for-human | 05 |
 | 07 | Panel messages | done | None |
-| 08 | Stats source | ready-for-agent | 03, 07 |
-| 09 | show_panel tool and close phrases | ready-for-agent | 03, 07 |
+| 08 | Stats source | in-progress | 03, 07 |
+| 09 | show_panel tool and close phrases | in-progress | 03, 07 |
 | 10 | Stats Dashboard panel | ready-for-human | 04, 07 |
 | 11 | Camera panel | needs-info | 10 |
 | 12 | Catalog panels | needs-triage | 11 |
