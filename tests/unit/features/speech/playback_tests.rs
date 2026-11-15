@@ -293,3 +293,33 @@ fn the_mixer_is_offered_while_the_player_is_open_and_withdrawn_when_it_is_droppe
         "withdrawn once the player is gone"
     );
 }
+
+#[test]
+fn keep_awake_noise_never_ends_and_stays_near_silent() {
+    let mut noise = keep_awake_noise();
+    let buffer_samples =
+        usize::try_from(KEEP_AWAKE_SAMPLE_RATE_HZ * KEEP_AWAKE_BUFFER_SECONDS).expect("fits usize");
+
+    let heard: Vec<f32> = noise.by_ref().take(buffer_samples * 3).collect();
+
+    assert_eq!(heard.len(), buffer_samples * 3, "it ended early");
+    assert!(heard.iter().all(|sample| {
+        let pcm16 = *sample * 32_768.0;
+        (-75.0..=75.0).contains(&pcm16)
+    }));
+    assert!(heard.iter().any(|sample| *sample != 0.0));
+    assert!(noise.next().is_some());
+}
+
+#[test]
+fn keep_awake_noise_neither_counts_as_playing_nor_lights_the_level() {
+    let (player, mut source) = test_player();
+    let level = player.level();
+    player.mixer.add(keep_awake_noise());
+
+    let heard: Vec<f32> = source.by_ref().take(1_000).collect();
+
+    assert!(heard.iter().any(|sample| *sample != 0.0), "it is mixed in");
+    assert!(!player.is_playing());
+    assert_eq!(level.level(), 0.0);
+}

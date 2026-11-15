@@ -7,7 +7,7 @@ use std::{
 };
 
 use rodio::{
-    Player,
+    Player, Source,
     buffer::SamplesBuffer,
     cpal::{
         self,
@@ -27,6 +27,10 @@ use super::{
 const OUTPUT_CHANNELS: u16 = 1;
 pub(crate) const WAKE_NOISE_DURATION: std::time::Duration = std::time::Duration::from_millis(700);
 const WAKE_NOISE_PCM16_LIMIT: i16 = 75;
+/// Rate of the keep-awake noise buffer; the mixer resamples it to the device.
+const KEEP_AWAKE_SAMPLE_RATE_HZ: u32 = 16_000;
+/// Length of the keep-awake noise buffer, which is repeated without end.
+const KEEP_AWAKE_BUFFER_SECONDS: u32 = 1;
 
 #[derive(Debug, Error)]
 pub(crate) enum PlaybackError {
@@ -43,6 +47,11 @@ pub(crate) enum PlaybackError {
 }
 
 /// One persistent output stream plus the queue of the answer being played.
+///
+/// While the stream is open, near-silent noise plays on it continuously. The USB
+/// speaker mutes itself in silence and swallows the start of the next sound
+/// (measured 2026-11-15: a 420 ms cue was heard for about 290 ms after 5 s of
+/// digital silence, against about 450 ms after near-silent noise).
 ///
 /// An answer's chunks share one rodio `Player`, so rodio's own source queue plays them
 /// back to back without gaps. The wake noise is queued once, when the queue is created.
@@ -102,6 +111,8 @@ impl AudioPlayer {
         sink.log_on_drop(false);
 
         let mixer = sink.mixer().clone();
+        // The mixer owns this source, so it stops when the stream is dropped.
+        mixer.add(keep_awake_noise());
         let mut player = Self::from_mixer(mixer, sink, device_failed);
         player.level = PlaybackLevel::publishing_to(level);
         player.offer_mixer_on(cue_mixer);
@@ -230,8 +241,22 @@ fn wake_noise_sample_count(sample_rate: SampleRate) -> usize {
     usize::try_from(sample_rate.hz() * millis / 1_000).expect("usize is at least 32 bits")
 }
 
+/// Near-silent noise that never ends, to keep the speaker from muting itself.
+///
+/// It is added to the mixer directly, not through `PlaybackLevel`, so the level
+/// meter stays at 0 and `is_playing` ignores it.
+fn keep_awake_noise() -> impl Source + Send + 'static {
+    let rate = SampleRate::new(KEEP_AWAKE_SAMPLE_RATE_HZ).expect("16,000 Hz is an accepted rate");
+    let count =
+        usize::try_from(rate.hz() * KEEP_AWAKE_BUFFER_SECONDS).expect("usize is at least 32 bits");
+    samples_buffer(noise_samples(count), rate.for_rodio()).repeat_infinite()
+}
+
 fn wake_noise(sample_rate: SampleRate) -> Vec<f32> {
-    let count = wake_noise_sample_count(sample_rate);
+    noise_samples(wake_noise_sample_count(sample_rate))
+}
+
+fn noise_samples(count: usize) -> Vec<f32> {
     let mut samples = Vec::with_capacity(count);
     // A fixed non-cryptographic sequence is enough to produce unobtrusive audio noise.
     let mut state = 0x9E37_79B9_u32;

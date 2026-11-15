@@ -20,6 +20,12 @@ const MAX_CUE_MILLIS: u32 = 2_000;
 const EXPECTED_CHANNELS: u16 = 1;
 const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
 const CUE_COUNT: usize = 6;
+/// A cue is cut from a longer sound, so its first sample is rarely zero and would
+/// click; this ramps it up from silence.
+const FADE_IN_MILLIS: u32 = 5;
+/// The same slice would also stop dead at its last sample; a longer ramp down lets
+/// it die away instead of sounding cut off.
+const FADE_OUT_MILLIS: u32 = 40;
 
 /// A moment that has its own sound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,7 +160,37 @@ fn decode(path: &Path, volume: f32) -> Result<CueSound, CueError> {
     if samples.is_empty() {
         return Err(CueError::Empty);
     }
+    fade_edges(&mut samples, rate);
     Ok(CueSound { samples, rate })
+}
+
+/// Ramps `samples` up linearly over [`FADE_IN_MILLIS`] and down over
+/// [`FADE_OUT_MILLIS`]. Each ramp is capped at half the cue, so a very short cue
+/// is faded without the ramps overlapping; the length never changes.
+fn fade_edges(samples: &mut [f32], rate: SampleRate) {
+    let half = samples.len() / 2;
+    let fade_in = fade_samples(rate, FADE_IN_MILLIS).min(half);
+    let fade_out = fade_samples(rate, FADE_OUT_MILLIS).min(half);
+    for (index, sample) in samples[..fade_in].iter_mut().enumerate() {
+        *sample *= ramp(index, fade_in);
+    }
+    let len = samples.len();
+    for (index, sample) in samples[len - fade_out..].iter_mut().rev().enumerate() {
+        *sample *= ramp(index, fade_out);
+    }
+}
+
+/// Samples in `millis` at `rate`.
+fn fade_samples(rate: SampleRate, millis: u32) -> usize {
+    // At most 48,000 * 40 / 1,000 = 1,920, so neither step overflows a u32.
+    usize::try_from(rate.hz() * millis / 1_000).expect("usize is at least 32 bits")
+}
+
+/// The gain `step` samples into a ramp of `length` samples: 0 at step 0, rising
+/// to just under 1 at the last step.
+fn ramp(step: usize, length: usize) -> f32 {
+    // Both are at most 1,920 (see `fade_samples`), so they convert to f32 exactly.
+    step as f32 / length as f32
 }
 
 /// Plays cues through whichever audio output is open right now.
