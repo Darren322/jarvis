@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
 dotenvy = "0.15.7"
 earshot = "=1.2.2"
 futures-util = "=0.3.34"
@@ -28,11 +29,16 @@ tokio-rusqlite = { version = "=0.8.0", features = ["bundled"] }
 [dev-dependencies]
 rig-agent = { version = "=0.42.0", features = ["test-utils"] }
 tokio = { version = "1.53.1", features = ["test-util"] }
+tokio-tungstenite = "=0.29.0"
 wiremock = "0.6.5"
 
 [[test]]
 name = "binary_integration"
 path = "tests/integration/cli/workflow_tests.rs"
+
+[[test]]
+name = "orb_websocket_integration"
+path = "tests/integration/orb/websocket_tests.rs"
 
 [workspace]
 members = ["crates/*"]

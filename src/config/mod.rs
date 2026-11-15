@@ -7,13 +7,14 @@ mod tts;
 
 use std::{
     env, io,
+    num::ParseIntError,
     path::{Path, PathBuf},
 };
 
 pub use cues::{CueConfig, CueVolume};
 pub use embedding::EmbeddingConfig;
 pub use local_llm::LocalLlmConfig;
-pub use orb::OrbConfig;
+pub use orb::{OrbConfig, OriginError};
 pub use speech_to_text::SpeechToTextConfig;
 pub use tts::{OptionalTtsConfig, TtsConfig, TtsEngine};
 
@@ -44,6 +45,20 @@ pub enum ConfigError {
     CurrentDir(#[source] io::Error),
     #[error("{name} is required because other speech-to-text settings are set")]
     SpeechToTextIncomplete { name: &'static str },
+    #[error("JARVIS_ORB_PORT must be a port from 1 to 65535, not {value:?}")]
+    OrbPort {
+        value: String,
+        #[source]
+        source: ParseIntError,
+    },
+    #[error(
+        "JARVIS_ORB_ALLOWED_ORIGINS entry {value:?} is not an origin like http://localhost:8766"
+    )]
+    OrbOrigin {
+        value: String,
+        #[source]
+        source: OriginError,
+    },
 }
 
 impl AppConfig {
@@ -67,7 +82,7 @@ impl AppConfig {
             archive_path,
             tts: OptionalTtsConfig::from_env(&current_dir),
             speech_to_text,
-            orb: OrbConfig::from_env(&current_dir),
+            orb: OrbConfig::from_env(&current_dir)?,
             cues: CueConfig::from_env(&current_dir),
         })
     }

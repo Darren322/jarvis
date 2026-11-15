@@ -1,35 +1,60 @@
-use super::*;
+use std::{net::SocketAddr, path::Path, time::Duration};
+
+use futures_util::{SinkExt, StreamExt};
+use orb_protocol::MAX_LINE_BYTES;
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
-    net::unix::{OwnedReadHalf, OwnedWriteHalf},
-    time::Instant,
+    net::{
+        UnixStream,
+        unix::{OwnedReadHalf, OwnedWriteHalf},
+    },
+    time::{Instant, timeout},
 };
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, client_async, connect_async,
+    tungstenite::{self, Message, client::IntoClientRequest, http::HeaderValue},
+};
+
+use super::*;
 
 /// Long enough for anything the server will ever send; the clock is paused, so
 /// waiting it out costs nothing.
-const WAIT: Duration = Duration::from_secs(2);
-const TAP_LINE: &[u8] = b"{\"type\":\"tap\"}\n";
+pub(super) const WAIT: Duration = Duration::from_secs(2);
+pub(super) const TAP_LINE: &[u8] = b"{\"type\":\"tap\"}\n";
 /// Levels sent while one orb is not reading: enough to overfill its socket buffer.
-const PILED_UP_LEVELS: usize = 20_000;
+/// Times the browser waits `WAIT` for a frame before it counts as not coming.
+const READ_ATTEMPTS: usize = 3;
+pub(super) const PILED_UP_LEVELS: usize = 20_000;
+
+/// The one origin the test server allows, as the UI's would be.
+pub(super) const ALLOWED_ORIGIN: &str = "http://localhost:8766";
 
 /// What a test holds while the server runs beside it.
-struct Served<'a> {
-    path: &'a Path,
-    states: &'a StateFeed,
-    mic: &'a watch::Sender<f32>,
-    taps: &'a mut mpsc::Receiver<Tap>,
+pub(super) struct Served<'a> {
+    pub(super) path: &'a Path,
+    pub(super) address: SocketAddr,
+    pub(super) states: &'a StateFeed,
+    pub(super) mic: &'a watch::Sender<f32>,
+    pub(super) taps: &'a mut mpsc::Receiver<Tap>,
+    pub(super) handle: &'a mut OrbHandle,
 }
 
 /// Runs `body` beside a server on a socket in a temporary directory, which is
-/// removed (socket and all) when the `TempDir` drops.
-async fn serving<T>(body: impl AsyncFnOnce(Served<'_>) -> T) -> T {
+/// removed (socket and all) when the `TempDir` drops, and on a free localhost port.
+pub(super) async fn serving<T>(body: impl AsyncFnOnce(Served<'_>) -> T) -> T {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("orb.sock");
     let states = StateFeed::new();
     let (mic, mic_level) = watch::channel(0.0);
     let (tap_sender, mut taps) = mpsc::channel(TAP_QUEUE);
-    let server = OrbServer::bind(&path).unwrap();
+    let websocket = WebSocketEndpoint::bind(0).unwrap();
+    let address = websocket.local_addr().unwrap();
+    let (server, mut handle) = OrbServer::new(
+        UnixEndpoint::bind(&path).unwrap(),
+        websocket,
+        vec![ALLOWED_ORIGIN.to_owned()],
+    );
     let feeds = OrbFeeds {
         states: &states,
         mic_level,
@@ -38,9 +63,11 @@ async fn serving<T>(body: impl AsyncFnOnce(Served<'_>) -> T) -> T {
     };
     let served = Served {
         path: &path,
+        address,
         states: &states,
         mic: &mic,
         taps: &mut taps,
+        handle: &mut handle,
     };
     tokio::select! {
         never = server.serve(feeds) => match never {},
@@ -56,7 +83,7 @@ struct Orb {
 
 /// What the orb's next read gave.
 #[derive(Debug, PartialEq)]
-enum Read {
+pub(super) enum Read {
     Message(ToOrb),
     /// Nothing arrived within `WAIT`.
     Quiet,
@@ -86,12 +113,12 @@ impl Orb {
     }
 }
 
-fn state(state: OrbState) -> Read {
+pub(super) fn state(state: OrbState) -> Read {
     Read::Message(ToOrb::State { state })
 }
 
 /// A valid tap padded with spaces to exactly `len` bytes before its newline.
-fn padded_tap(len: usize) -> Vec<u8> {
+pub(super) fn padded_tap(len: usize) -> Vec<u8> {
     let mut line = b"{\"type\":\"tap\"}".to_vec();
     line.resize(len, b' ');
     line.push(b'\n');
@@ -402,56 +429,229 @@ async fn an_orb_that_stops_reading_is_closed_and_the_others_carry_on() {
     .await;
 }
 
+fn request(address: SocketAddr, origin: Option<&str>) -> tungstenite::handshake::client::Request {
+    let mut request = format!("ws://{address}/").into_client_request().unwrap();
+    if let Some(origin) = origin {
+        request
+            .headers_mut()
+            .insert("Origin", HeaderValue::from_str(origin).unwrap());
+    }
+    request
+}
+
+/// A stand-in for the UI in Chromium.
+pub(super) struct Browser {
+    socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+}
+
+impl Browser {
+    pub(super) async fn connect(address: SocketAddr) -> Self {
+        Self::try_connect(address).await.unwrap()
+    }
+
+    /// Connects from the allowed origin, as the UI does.
+    pub(super) async fn try_connect(address: SocketAddr) -> Result<Self, tungstenite::Error> {
+        Self::try_connect_from(address, Some(ALLOWED_ORIGIN)).await
+    }
+
+    /// Connects with the given `Origin` header, or none.
+    pub(super) async fn try_connect_from(
+        address: SocketAddr,
+        origin: Option<&str>,
+    ) -> Result<Self, tungstenite::Error> {
+        let (socket, _) = connect_async(request(address, origin)).await?;
+        Ok(Self { socket })
+    }
+
+    /// Connects over a socket the test has set up.
+    pub(super) async fn over(stream: tokio::net::TcpStream, address: SocketAddr) -> Self {
+        let (socket, _) = client_async(
+            request(address, Some(ALLOWED_ORIGIN)),
+            MaybeTlsStream::Plain(stream),
+        )
+        .await
+        .unwrap();
+        Self { socket }
+    }
+
+    /// The next frame, or `None` when nothing came in `READ_ATTEMPTS` waits.
+    ///
+    /// With the clock paused, the runtime may jump ahead before the system has
+    /// handed a frame that is already on its way over the loopback connection to
+    /// the client. Asking again then gets it; asking again when nothing is coming
+    /// only costs virtual time.
+    async fn next_frame(&mut self) -> Option<Option<Result<Message, tungstenite::Error>>> {
+        for _ in 0..READ_ATTEMPTS {
+            if let Ok(frame) = timeout(WAIT, self.socket.next()).await {
+                return Some(frame);
+            }
+        }
+        None
+    }
+
+    /// Every message must be one JSON object with no newline.
+    pub(super) async fn read(&mut self) -> Read {
+        loop {
+            match self.next_frame().await {
+                None => return Read::Quiet,
+                Some(Some(Ok(Message::Text(text)))) => {
+                    assert!(!text.contains('\n'), "{text:?} carries a newline");
+                    return Read::Message(ToOrb::decode(text.as_str()).unwrap());
+                }
+                Some(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+                Some(Some(Ok(other))) => panic!("unexpected frame {other:?}"),
+                Some(Some(Err(_)) | None) => return Read::Closed,
+            }
+        }
+    }
+
+    /// Like `read`, but a close frame, which the server sends when it stops, also
+    /// counts as closed.
+    pub(super) async fn read_until_closed(&mut self) -> Read {
+        loop {
+            match self.next_frame().await {
+                None => return Read::Quiet,
+                Some(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => return Read::Closed,
+                Some(Some(Ok(Message::Text(text)))) => {
+                    return Read::Message(ToOrb::decode(text.as_str()).unwrap());
+                }
+                Some(Some(Ok(_))) => {}
+            }
+        }
+    }
+
+    pub(super) async fn send(&mut self, text: impl Into<tungstenite::Utf8Bytes>) {
+        self.send_frame(Message::Text(text.into())).await;
+    }
+
+    pub(super) async fn send_frame(&mut self, frame: Message) {
+        self.socket.send(frame).await.unwrap();
+    }
+}
+
+fn level(value: f32, source: LevelSource) -> ToOrb {
+    ToOrb::Level {
+        level: Level::new(value).unwrap(),
+        source,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_state_change_reaches_a_unix_orb_and_a_websocket_client_alike() {
+    serving(async |served| {
+        let mut unix = Orb::connect(served.path).await;
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(unix.read().await, state(OrbState::Idle));
+        assert_eq!(browser.read().await, state(OrbState::Idle));
+
+        for assistant in [AssistantState::Thinking, AssistantState::Speaking] {
+            served.states.publish(assistant);
+            assert_eq!(unix.read().await, state(orb_state(assistant)));
+            assert_eq!(browser.read().await, state(orb_state(assistant)));
+        }
+        // Speech is not configured here, so the level is silence, from the same source.
+        let expected = Read::Message(level(0.0, LevelSource::Speech));
+        assert_eq!(unix.read().await, expected);
+        assert_eq!(browser.read().await, expected);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tap_from_either_door_goes_to_the_same_tap_queue() {
+    serving(async |served| {
+        let mut unix = Orb::connect(served.path).await;
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(unix.read().await, state(OrbState::Idle));
+        assert_eq!(browser.read().await, state(OrbState::Idle));
+
+        unix.send(TAP_LINE).await;
+        assert_eq!(timeout(WAIT, served.taps.recv()).await, Ok(Some(Tap)));
+        browser.send(r#"{"type":"tap"}"#).await;
+        assert_eq!(timeout(WAIT, served.taps.recv()).await, Ok(Some(Tap)));
+        // A tap is not something a feature has to hear about as well.
+        assert!(served.handle.from_orb.try_recv().is_err());
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_message_from_a_feature_reaches_every_orb_on_both_doors_and_is_remembered() {
+    serving(async |served| {
+        let mut unix = Orb::connect(served.path).await;
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(unix.read().await, state(OrbState::Idle));
+        assert_eq!(browser.read().await, state(OrbState::Idle));
+
+        let message = ToOrb::State {
+            state: OrbState::Thinking,
+        };
+        served.handle.to_orb.send(message).await.unwrap();
+        assert_eq!(unix.read().await, Read::Message(message));
+        assert_eq!(browser.read().await, Read::Message(message));
+
+        // An orb that connects later is told the state the feature set.
+        let mut late = Browser::connect(served.address).await;
+        assert_eq!(late.read().await, state(OrbState::Thinking));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn stopping_the_server_closes_the_websocket_clients_and_frees_the_port() {
+    let mut browser = None;
+    let address = serving(async |served| {
+        let mut connected = Browser::connect(served.address).await;
+        assert_eq!(connected.read().await, state(OrbState::Idle));
+        browser = Some(connected);
+        served.address
+    })
+    .await;
+    let mut browser = browser.unwrap();
+    assert_eq!(browser.read_until_closed().await, Read::Closed);
+    // Nobody is listening on the port any more.
+    assert!(Browser::try_connect(address).await.is_err());
+}
+
 #[tokio::test]
-async fn the_socket_is_for_its_owner_only_and_is_removed_with_the_server() {
+async fn a_port_already_in_use_stops_both_doors_and_reports_it_once() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("orb.sock");
-    let server = OrbServer::bind(&path).unwrap();
-    let mode = fs::metadata(&path).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, SOCKET_MODE);
+    let occupant = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = occupant.local_addr().unwrap().port();
+    let config = OrbConfig {
+        socket_path: dir.path().join("orb.sock"),
+        port: std::num::NonZeroU16::new(port).unwrap(),
+        allowed_origins: vec![ALLOWED_ORIGIN.to_owned()],
+    };
+
+    let Err(error) = OrbServer::bind(&config) else {
+        panic!("the port is taken");
+    };
+    assert!(matches!(error, OrbError::WebSocketBind { port: bound, .. } if bound == port));
+    // Nothing of the failed server is left: no socket file, and the other
+    // program still has its port.
+    assert!(!config.socket_path.exists());
+    assert!(occupant.local_addr().is_ok());
+
+    // Once the port is free the same configuration serves.
+    drop(occupant);
+    let (server, _handle) = OrbServer::bind(&config).unwrap();
+    assert!(config.socket_path.exists());
     drop(server);
-    assert!(!path.exists());
 }
 
-#[tokio::test]
-async fn a_stale_socket_file_is_replaced() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("orb.sock");
-    // A listener that is gone leaves its file behind, as a killed Jarvis would.
-    drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-    assert!(path.exists());
+#[tokio::test(start_paused = true)]
+async fn a_panel_closed_from_a_websocket_client_reaches_the_handle_and_not_the_tap_queue() {
+    serving(async |served| {
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(browser.read().await, state(OrbState::Idle));
 
-    let server = OrbServer::bind(&path).unwrap();
-    assert!(UnixStream::connect(&path).await.is_ok());
-    drop(server);
-}
-
-#[tokio::test]
-async fn a_socket_someone_is_serving_is_left_alone() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("orb.sock");
-    let first = OrbServer::bind(&path).unwrap();
-    assert!(matches!(OrbServer::bind(&path), Err(OrbError::InUse(_))));
-    // The refused second server must not have removed the first one's file.
-    assert!(path.exists());
-    drop(first);
-}
-
-#[tokio::test]
-async fn a_file_that_is_not_a_socket_is_never_deleted() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("notes.txt");
-    fs::write(&path, "keep me").unwrap();
-    assert!(matches!(
-        OrbServer::bind(&path),
-        Err(OrbError::NotASocket(_))
-    ));
-    assert_eq!(fs::read_to_string(&path).unwrap(), "keep me");
-}
-
-#[tokio::test]
-async fn a_socket_in_a_missing_directory_is_reported() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("missing").join("orb.sock");
-    assert!(matches!(OrbServer::bind(&path), Err(OrbError::Bind { .. })));
+        browser.send(r#"{"type":"panel_closed"}"#).await;
+        assert_eq!(
+            timeout(WAIT, served.handle.from_orb.recv()).await,
+            Ok(Some(FromOrb::PanelClosed {}))
+        );
+        assert!(served.taps.try_recv().is_err());
+    })
+    .await;
 }

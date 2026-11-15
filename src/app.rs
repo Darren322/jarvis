@@ -223,11 +223,12 @@ impl App {
         speech
     }
 
-    /// Opens the orb's socket. The orb is optional, so a socket that cannot be
-    /// opened is a warning and Jarvis runs without it.
+    /// Opens the orb's socket and WebSocket port. The orb is optional, so one that
+    /// cannot be opened is a warning and Jarvis runs without it.
     fn open_orb(&self) -> Option<OrbServer> {
-        match OrbServer::bind(&self.orb_config.socket_path) {
-            Ok(orb) => Some(orb),
+        match OrbServer::bind(&self.orb_config) {
+            // No feature uses the handle yet.
+            Ok((orb, _handle)) => Some(orb),
             Err(error) => {
                 eprintln!(
                     "Warning: the orb screen is unavailable: {}",

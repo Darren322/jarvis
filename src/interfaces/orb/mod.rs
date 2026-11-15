@@ -1,8 +1,12 @@
-//! The orb's side door into Jarvis: a Unix socket the `jarvis-orb` screen connects to.
+//! The orb's side door into Jarvis: the screen that shows what Jarvis is doing.
 //!
 //! Jarvis is the server. It sends the assistant's state on every change and a
 //! loudness about 30 times a second while listening or speaking, and it reads
-//! taps. One JSON message per line (`orb-protocol`).
+//! taps. Messages are `orb-protocol` JSON. Two doors lead in, and both carry the
+//! same messages from the same source (the [`hub`]):
+//!
+//! - [`websocket`]: the UI in Chromium, on `127.0.0.1`, for allowed origins only.
+//! - [`unix`]: the macroquad `jarvis-orb`, until jarvis-ui ticket 06 retires it.
 //!
 //! This interface shares only `features/` with the terminal: it is handed a
 //! [`StateFeed`] observer, two loudness readers and the sending half of a tap
@@ -10,40 +14,41 @@
 //! means is decided by whoever reads that queue, from the real state
 //! (`features::control::tap_action`); here a tap is only passed on.
 //!
+//! Features that need the orb for more than state and loudness (panels) use the
+//! [`OrbHandle`]: they send any `ToOrb` and read any `FromOrb` other than a tap,
+//! without this module learning what the messages mean.
+//!
 //! The orb is optional. No orb connected, an orb that disconnects, and an orb
 //! that sends rubbish are all normal and silent: orb input is untrusted, and the
-//! only thing it can cause is one `Tap` in a bounded queue.
+//! only thing it can cause is one `Tap` in a bounded queue or one event in a
+//! bounded handle queue.
 
-use std::{
-    convert::Infallible,
-    fs, io,
-    os::unix::fs::{FileTypeExt, PermissionsExt},
-    path::{Path, PathBuf},
-    time::Duration,
-};
+mod hub;
+mod unix;
+mod websocket;
 
-use futures_util::{StreamExt, stream::FuturesUnordered};
-use orb_protocol::{FromOrb, Level, LevelSource, MAX_LINE_BYTES, OrbState, ToOrb};
+use std::{convert::Infallible, io, path::PathBuf, time::Duration};
+
+use orb_protocol::{FromOrb, Level, LevelSource, OrbState, ToOrb};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{
-        UnixListener, UnixStream,
-        unix::{OwnedReadHalf, OwnedWriteHalf},
-    },
     sync::{mpsc, watch},
-    time::{MissedTickBehavior, timeout},
+    time::MissedTickBehavior,
 };
 
-use crate::features::{
-    control::Tap,
-    listening::LEVEL_INTERVAL,
-    speech::LevelReceiver,
-    state::{AssistantState, StateFeed, StateObserver},
+use self::{hub::Hub, unix::UnixEndpoint, websocket::WebSocketEndpoint};
+use crate::{
+    config::OrbConfig,
+    features::{
+        control::Tap,
+        listening::LEVEL_INTERVAL,
+        speech::LevelReceiver,
+        state::{AssistantState, StateFeed, StateObserver},
+    },
 };
 
-/// Orbs served at once. One screen is expected; the spare slots let a restarted
-/// orb connect before its old connection is noticed as gone.
+/// Orbs served at once on each door. One screen is expected; the spare slots let
+/// a restarted orb connect before its old connection is noticed as gone.
 const MAX_CONNECTIONS: usize = 4;
 /// How long one message may take to write before the orb counts as stuck and its
 /// connection is closed. The orb reconnects by itself.
@@ -54,8 +59,13 @@ const ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Taps waiting to be handled. A tap is a request to act now, so a second one
 /// arriving before the first is handled adds nothing and is dropped.
 pub(crate) const TAP_QUEUE: usize = 1;
-/// Only the user may connect: read and write for the owner, nothing for others.
-const SOCKET_MODE: u32 = 0o600;
+/// Messages from features waiting to be sent to the orbs. A feature that sends
+/// faster than the hub takes them waits.
+const TO_ORB_QUEUE: usize = 16;
+/// Messages from the orbs (other than taps) waiting for a feature to read them.
+/// When a feature is not reading, the newest are dropped: the orb must never be
+/// able to make Jarvis wait.
+const FROM_ORB_QUEUE: usize = 16;
 
 #[derive(Debug, Error)]
 pub(crate) enum OrbError {
@@ -81,6 +91,12 @@ pub(crate) enum OrbError {
         #[source]
         source: io::Error,
     },
+    #[error("could not listen on 127.0.0.1:{port} (is another program using it?)")]
+    WebSocketBind {
+        port: u16,
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// What the server shows the orb and where its taps go.
@@ -93,84 +109,143 @@ pub(crate) struct OrbFeeds<'a> {
     pub(crate) taps: mpsc::Sender<Tap>,
 }
 
-/// The bound socket. Dropping it (or the `serve` future) closes every
-/// connection and removes the socket file.
-pub(crate) struct OrbServer {
-    listener: UnixListener,
-    _file: SocketFile,
+/// How a feature talks to the orbs, apart from state, loudness and taps.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no feature sends to or hears from the orb yet")
+)]
+pub(crate) struct OrbHandle {
+    /// Sent to every connected orb as an event: in order, and not dropped while
+    /// an orb has room. Sending waits when the queue to the hub is full.
+    pub(crate) to_orb: mpsc::Sender<ToOrb>,
+    /// What the orbs send that is not a tap. Dropped when full, never waited for.
+    pub(crate) from_orb: mpsc::Receiver<FromOrb>,
 }
 
-/// Removes the socket file when the server goes away.
-struct SocketFile(PathBuf);
+/// Where what an orb sends goes.
+#[derive(Clone)]
+struct Inbox {
+    taps: mpsc::Sender<Tap>,
+    events: mpsc::Sender<FromOrb>,
+}
 
-impl Drop for SocketFile {
-    fn drop(&mut self) {
-        // Already gone is fine; nothing useful can be done about any other failure.
-        let _ = fs::remove_file(&self.0);
+impl Inbox {
+    /// Passes one message from an orb on. Never waits. A full queue means the same
+    /// thing is already waiting; a closed one means nobody acts on it. Neither is
+    /// the orb's problem.
+    ///
+    /// Taps are told apart from the rest with `matches!`, so a new kind of message
+    /// from the orb reaches the handle without this module changing.
+    fn deliver(&self, message: FromOrb) {
+        if matches!(message, FromOrb::Tap {}) {
+            let _ = self.taps.try_send(Tap);
+        } else {
+            let _ = self.events.try_send(message);
+        }
     }
+}
+
+/// Both doors, bound. Dropping it (or the `serve` future) closes every
+/// connection, removes the socket file and frees the port.
+pub(crate) struct OrbServer {
+    unix: UnixEndpoint,
+    websocket: WebSocketEndpoint,
+    /// The origins the WebSocket accepts (see `OrbConfig::allowed_origins`).
+    allowed_origins: Vec<String>,
+    /// The other end of [`OrbHandle::to_orb`].
+    messages: mpsc::Receiver<ToOrb>,
+    /// The other end of [`OrbHandle::from_orb`].
+    events: mpsc::Sender<FromOrb>,
 }
 
 impl OrbServer {
-    /// Opens the socket at `path`, for the owner only.
-    ///
-    /// A socket file left by a Jarvis that did not shut down cleanly is removed
-    /// first. A live one (something accepts connections on it) is left alone and
-    /// reported, and so is any file that is not a socket: this never deletes
-    /// something it did not create. Must be called inside the Tokio runtime.
-    pub(crate) fn bind(path: &Path) -> Result<Self, OrbError> {
-        match fs::symlink_metadata(path) {
-            Ok(metadata) if !metadata.file_type().is_socket() => {
-                return Err(OrbError::NotASocket(path.to_owned()));
-            }
-            Ok(_) => {
-                // A local connect answers at once: accepted, or refused when stale.
-                if std::os::unix::net::UnixStream::connect(path).is_ok() {
-                    return Err(OrbError::InUse(path.to_owned()));
-                }
-                fs::remove_file(path).map_err(|source| OrbError::RemoveStale {
-                    path: path.to_owned(),
-                    source,
-                })?;
-            }
-            // Nothing there (or not visible): binding reports any real problem.
-            Err(_) => {}
-        }
-        let listener = UnixListener::bind(path).map_err(|source| OrbError::Bind {
-            path: path.to_owned(),
-            source,
-        })?;
-        let file = SocketFile(path.to_owned());
-        fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE)).map_err(|source| {
-            OrbError::Restrict {
-                path: path.to_owned(),
-                source,
-            }
-        })?;
-        Ok(Self {
-            listener,
-            _file: file,
-        })
+    /// Opens the Unix socket and the WebSocket port. If either cannot be opened
+    /// neither is served, so that the failure is reported once and Jarvis runs
+    /// without an orb rather than with half of one. Must be called inside the
+    /// Tokio runtime.
+    pub(crate) fn bind(config: &OrbConfig) -> Result<(Self, OrbHandle), OrbError> {
+        let unix = UnixEndpoint::bind(&config.socket_path)?;
+        let websocket = WebSocketEndpoint::bind(config.port.get())?;
+        Ok(Self::new(unix, websocket, config.allowed_origins.clone()))
     }
 
-    /// Serves orbs until dropped. It never completes and never fails: a connection
-    /// that breaks is closed and the next one is accepted.
+    fn new(
+        unix: UnixEndpoint,
+        websocket: WebSocketEndpoint,
+        allowed_origins: Vec<String>,
+    ) -> (Self, OrbHandle) {
+        let (to_orb, messages) = mpsc::channel(TO_ORB_QUEUE);
+        let (events, from_orb) = mpsc::channel(FROM_ORB_QUEUE);
+        let server = Self {
+            unix,
+            websocket,
+            allowed_origins,
+            messages,
+            events: events.clone(),
+        };
+        (server, OrbHandle { to_orb, from_orb })
+    }
+
+    /// Serves orbs until dropped. It never completes and never fails.
     ///
-    /// Every connection runs inside this future (no spawned tasks), so dropping it
-    /// at any `.await` closes them all and loses nothing: the server holds no
-    /// state of its own.
+    /// Everything runs inside this future (the WebSocket's connections are tasks
+    /// of `axum`, but they end with the hub, which dies with this future), so
+    /// dropping it at any `.await` closes them all and loses nothing.
     pub(crate) async fn serve(self, feeds: OrbFeeds<'_>) -> Infallible {
-        let mut connections = FuturesUnordered::new();
-        loop {
-            tokio::select! {
-                accepted = self.listener.accept() => match accepted {
-                    // Over the limit the stream is dropped, which closes it.
-                    Ok((stream, _)) if connections.len() < MAX_CONNECTIONS => {
-                        connections.push(serve_orb(stream, &feeds));
-                    }
-                    Ok(_) => {}
-                    Err(_) => tokio::time::sleep(ACCEPT_RETRY_DELAY).await,
-                },
-                Some(()) = connections.next(), if !connections.is_empty() => {}
+        let Self {
+            unix,
+            websocket,
+            allowed_origins,
+            messages,
+            events,
+        } = self;
+        let states = feeds.states.observe();
+        let hub = Hub::new(orb_state(states.current()));
+        let inbox = Inbox {
+            taps: feeds.taps.clone(),
+            events,
+        };
+        // All three never complete. `biased` makes the hub hear of a state change
+        // before it accepts an orb that connects at the same moment, so that the
+        // orb is told the newest state first rather than the one before.
+        tokio::select! {
+            biased;
+            never = publish_everything(&hub, states, messages, &feeds) => match never {},
+            never = unix.serve(&hub, &inbox) => match never {},
+            never = websocket.serve(hub.handle(), inbox.clone(), allowed_origins) => match never {},
+        }
+    }
+}
+
+/// Feeds the hub: every state change, the features' messages, and a loudness on
+/// each tick while there is something to hear.
+async fn publish_everything(
+    hub: &Hub,
+    mut states: StateObserver,
+    mut messages: mpsc::Receiver<ToOrb>,
+    feeds: &OrbFeeds<'_>,
+) -> Infallible {
+    let mut ticks = tokio::time::interval(LEVEL_INTERVAL);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            // Messages in the order they were made: features, state, then loudness.
+            biased;
+            // `None` means every handle sender is gone; the branch then stays off.
+            Some(message) = messages.recv() => hub.publish(message),
+            state = states.next() => hub.publish(ToOrb::State { state: orb_state(state) }),
+            _ = ticks.tick() => {
+                let Some(source) = level_source(states.current()) else {
+                    continue;
+                };
+                let level = match source {
+                    LevelSource::Mic => *feeds.mic_level.borrow(),
+                    LevelSource::Speech => feeds
+                        .speech_level
+                        .as_ref()
+                        .map_or(0.0, LevelReceiver::level),
+                };
+                hub.publish(ToOrb::Level { level: Level::clamped(level), source });
             }
         }
     }
@@ -192,127 +267,6 @@ fn level_source(state: AssistantState) -> Option<LevelSource> {
         AssistantState::Listening => Some(LevelSource::Mic),
         AssistantState::Speaking => Some(LevelSource::Speech),
         AssistantState::Idle | AssistantState::Transcribing | AssistantState::Thinking => None,
-    }
-}
-
-/// One orb, from its first byte to its last. Returns when the orb goes away or
-/// stops reading.
-async fn serve_orb(stream: UnixStream, feeds: &OrbFeeds<'_>) {
-    let (read, mut write) = stream.into_split();
-    let mut lines = OrbLines::new(read);
-    let mut states: StateObserver = feeds.states.observe();
-    let mut ticks = tokio::time::interval(LEVEL_INTERVAL);
-    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    let state = orb_state(states.current());
-    if send(&mut write, ToOrb::State { state }).await.is_err() {
-        return;
-    }
-    loop {
-        let message = tokio::select! {
-            // The user's tap first, then the state it may depend on, then loudness.
-            biased;
-            line = lines.next() => match line {
-                Ok(Incoming::Message(FromOrb::Tap {})) => {
-                    // Full means a tap is already waiting; closed means nobody acts
-                    // on taps. Neither is the orb's problem.
-                    let _ = feeds.taps.try_send(Tap);
-                    continue;
-                }
-                Ok(Incoming::Rejected) => continue,
-                Ok(Incoming::Closed) | Err(_) => return,
-            },
-            state = states.next() => ToOrb::State { state: orb_state(state) },
-            _ = ticks.tick() => {
-                let Some(source) = level_source(states.current()) else {
-                    continue;
-                };
-                let level = match source {
-                    LevelSource::Mic => *feeds.mic_level.borrow(),
-                    LevelSource::Speech => feeds
-                        .speech_level
-                        .as_ref()
-                        .map_or(0.0, LevelReceiver::level),
-                };
-                ToOrb::Level { level: Level::clamped(level), source }
-            }
-        };
-        if send(&mut write, message).await.is_err() {
-            return;
-        }
-    }
-}
-
-/// The orb did not take a message: it is gone, or stuck.
-struct OrbGone;
-
-async fn send(write: &mut OwnedWriteHalf, message: ToOrb) -> Result<(), OrbGone> {
-    // Every `ToOrb` is far under the line limit, so encoding cannot fail; if it
-    // ever did, closing the connection is the safe answer.
-    let line = message.encode().map_err(|_| OrbGone)?;
-    match timeout(WRITE_TIMEOUT, write.write_all(line.as_bytes())).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) | Err(_) => Err(OrbGone),
-    }
-}
-
-/// What one line from the orb turned out to be.
-enum Incoming {
-    Message(FromOrb),
-    /// Too long, not UTF-8, not JSON, or not a known message: ignored.
-    Rejected,
-    Closed,
-}
-
-/// Reads the orb's lines, holding at most `MAX_LINE_BYTES` of any of them.
-struct OrbLines {
-    reader: BufReader<OwnedReadHalf>,
-    line: Vec<u8>,
-    /// The current line is over the limit; its bytes are skipped up to the newline.
-    discarding: bool,
-}
-
-impl OrbLines {
-    fn new(read: OwnedReadHalf) -> Self {
-        Self {
-            reader: BufReader::new(read),
-            line: Vec::with_capacity(MAX_LINE_BYTES),
-            discarding: false,
-        }
-    }
-
-    /// The next line. Safe to drop at any `.await`: a partly read line stays in
-    /// `self` and the next call carries on with it.
-    async fn next(&mut self) -> io::Result<Incoming> {
-        loop {
-            let available = self.reader.fill_buf().await?;
-            if available.is_empty() {
-                return Ok(Incoming::Closed);
-            }
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let content = newline.unwrap_or(available.len());
-            if !self.discarding {
-                if self.line.len() + content > MAX_LINE_BYTES {
-                    self.line.clear();
-                    self.discarding = true;
-                } else {
-                    self.line.extend_from_slice(&available[..content]);
-                }
-            }
-            let consumed = newline.map_or(content, |index| index + 1);
-            self.reader.consume(consumed);
-            if newline.is_none() {
-                continue;
-            }
-            if std::mem::take(&mut self.discarding) {
-                return Ok(Incoming::Rejected);
-            }
-            let message = std::str::from_utf8(&self.line)
-                .ok()
-                .and_then(|line| FromOrb::decode(line).ok());
-            self.line.clear();
-            return Ok(message.map_or(Incoming::Rejected, Incoming::Message));
-        }
     }
 }
 
