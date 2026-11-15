@@ -147,6 +147,13 @@ Split or add structure when one of these triggers is hit, and not before:
 - Keep `[dependencies]` sorted. Test-only features (such as `tokio/test-util`) go in `[dev-dependencies]`.
 - Prefer the pinned libraries' supported APIs over custom loops, wrappers, or traits made "for flexibility". Rig owns the model loop, tool dispatch, and correlation; don't reimplement them.
 
+## UI (TypeScript)
+
+- The screen UI is a React, TypeScript and Vite app in `ui/` (spec: `docs/specs/jarvis-ui/spec.md`, ADR 0001). It holds no logic: it renders what Jarvis sends and reports taps.
+- Run from `ui/`: `npm run build` (typecheck, Vite build to `ui/dist/`, then a check that `dist/index.html` has no root-absolute `src`/`href`), `npm run typecheck`, `npm run lint`, `npm test` (Vitest, tests in `ui/tests/`). `scripts/verify.sh` runs the last three; it runs `npm ci` only if `ui/node_modules` is missing.
+- Every npm package needs Darren's approval and an exact version (no `^` or `~`; `ui/.npmrc` sets `save-exact`). Commit `package-lock.json`. `ui/dist/` and `ui/node_modules/` are git-ignored.
+- Node runs on the Mac only. The Pi gets only the built `ui/dist/`.
+
 ## Domain rules
 
 - **Policy.** `JarvisPolicyHook` enforces two model turns at most, one tool call at most, tools only on the first turn, and stops on truncated or unknown finish reasons. Model request limits and tool attempt limits are separate; keep both.

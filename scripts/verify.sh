@@ -35,6 +35,15 @@ if grep -rnE '\.unwrap\(\)|\bunsafe\b|draw_text' --include='*.rs' src crates/*/s
 fi
 echo "none"
 
+if [[ -d ui ]]; then
+    [[ -d ui/node_modules ]] || step npm ci --prefix ui
+    step npm run --prefix ui typecheck
+    step npm run --prefix ui lint
+    step npm test --prefix ui
+else
+    echo "ui/ not found: skipping UI checks"
+fi
+
 if [[ -n "$repeat_pattern" ]]; then
     printf '\n== %s x%s\n' "$repeat_pattern" "$repeat_count"
     for run in $(seq 1 "$repeat_count"); do
