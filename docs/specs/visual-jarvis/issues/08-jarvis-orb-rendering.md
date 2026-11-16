@@ -1,6 +1,6 @@
 # 08: `jarvis-orb` rendering
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3, US7
 Blocked by: 01, 03
 Assignee: Claude
@@ -29,3 +29,5 @@ Owns: crates/jarvis-orb/Cargo.toml, crates/jarvis-orb/src/main.rs, crates/jarvis
 - **Mac, re-run today:** `cargo fmt --all --check`, `check`, `clippy -D warnings` and `test` with `--locked --offline --workspace`, `git diff --check`: clean. 285 + 1 root, 7 `orb-protocol`, 18 `jarvis-orb` tests.
 - **Pi (8 GB), run by Claude over SSH:** the release binary in `~/jarvis/target/release/` (built there on 2026-11-12, 1.5 MB) ran `--demo --fps --seconds 31` on `wayland-0`: 60.0 FPS in every one-second window after the first, longest frame 16.91 ms, 3.7% of one core, 78 MiB, exit 0, nothing on stderr. No socket code exists yet, so "socket missing" is true by construction.
 - **Only the Pi screen proves (Darren's eye, criteria 3 and 5):** that it is full screen with no cursor, that the six looks are distinct and good-looking, and that the orb is original. Run: `cd ~/jarvis && ./target/release/jarvis-orb --demo` (Escape quits; a tap steps to the next look).
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed. Superseded: `crates/jarvis-orb` is deleted by jarvis-ui 06, and the Orb is drawn by `ui/` (jarvis-ui 04).

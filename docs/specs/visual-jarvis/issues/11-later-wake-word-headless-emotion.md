@@ -1,6 +1,6 @@
 # 11: Later: wake word, headless Jarvis, emotion colour
 
-Status: needs-triage
+Status: wontfix
 Stories: US8, US9, US10
 Blocked by: 10
 Assignee: unassigned
@@ -16,3 +16,5 @@ Owns: None until triaged
 - [ ] Each story is triaged, designed and split into tickets, or marked `wontfix`.
 
 ## Comments
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Not built here. The wake word is in the roadmap ("Wake word and speech detection"); headless Jarvis and the mood colour are added to the roadmap's Later table.

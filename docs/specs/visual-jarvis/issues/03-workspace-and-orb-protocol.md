@@ -1,6 +1,6 @@
 # 03: The workspace and the `orb-protocol` crate
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3, US4
 Blocked by: None
 Assignee: Darren
@@ -32,3 +32,5 @@ Add a line encoder and decoder that fail with a typed error derived with `thiser
 - **Not checked:** the aarch64 build. The Mac has no `aarch64-unknown-linux-gnu` target installed and nothing was installed for it. The crate is plain serde code; the first Pi build after a pull proves it.
 
 2026-11-14 (Claude): Darren approved `serde_json` as a normal dependency of `orb-protocol`, so the second criterion is met as built (serde, `serde_json` and `thiserror`). The aarch64 build is proven: `jarvis-orb`, which depends on `orb-protocol`, was built in release mode on the 8 GB Pi on 2026-11-12 and ran there today.
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed as `19d1b8e`. The workspace and `crates/orb-protocol` are still in use (the screen UI speaks it over the WebSocket).

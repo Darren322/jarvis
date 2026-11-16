@@ -1,6 +1,6 @@
 # 07: The Jarvis orb interface
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3, US4, US5, US6
 Blocked by: 03, 04, 05, 06
 Assignee: Claude
@@ -36,3 +36,5 @@ Decide and record the socket path (in a new `JARVIS_ORB_SOCKET` setting resolved
 - **Existing tests:** unchanged except for one added argument (`Taps::none()`) at eight call sites.
 - **Verified by Claude on the Mac:** `cargo fmt --all --check`, `check`, `clippy -D warnings` and `test` with `--locked --offline --workspace`, and `git diff --check`: clean. Root unit tests 299 to 337, 1 integration, 7 `orb-protocol`, 19 `jarvis-orb`. Spot-checks: the line limit off by one failed the boundary test; a tap that listens without the silence stop failed its test (it ran to the 15 s cap). The tap tests ran 25 times in a row without a failure.
 - **Only the Pi can prove:** the socket under `/run/user/1000` and its permissions there, levels from the real microphone and speaker at 30 Hz, a real tap ending a real recording on silence, the wait between a tap and `[listening]`, and all of it together with `jarvis-orb` (ticket 09). Nothing was run against a real model, microphone or screen.
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed as `7b0e585`. The tap handling, state feed and levels are still in use; the Unix socket server was replaced by the WebSocket (jarvis-ui 03) and removed by jarvis-ui 06.

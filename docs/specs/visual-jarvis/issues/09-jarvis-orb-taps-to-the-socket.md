@@ -1,6 +1,6 @@
 # 09: `jarvis-orb` taps and the socket link
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3, US4, US6, US7
 Blocked by: 07, 08
 Assignee: Claude (Sonnet agent)
@@ -24,3 +24,5 @@ Owns: crates/jarvis-orb/src/link.rs, crates/jarvis-orb/src/input.rs, crates/jarv
 - **Verified by Claude on the Mac:** read `link.rs`, `input.rs` and the `main.rs` diff. `cargo fmt --all --check`, `check`, `clippy -D warnings` and `test` with `--locked --offline --workspace`, and `git diff --check`: clean, three runs in a row. 337 root unit tests, 1 integration, 7 `orb-protocol`, 19 look tests, 11 link tests, 1 input test. The agent reports both boundary spot-checks failed as they should (line limit, click window).
 - **Only the Pi touchscreen and a real Jarvis prove:** that one finger tap gives exactly one `Tap` (on the Pi a tap arrives only as a left click; the touch path is untested on a real device), that a tap starts, sends or drops the right thing in a running Jarvis, that live levels move the orb smoothly, that the orb reconnects within about 3 s of a Jarvis restart, that both programs resolve the same socket under `/run/user/1000`, and the frame rate with the link thread running. None of this has been run.
 - **Known limit:** dropping the `Link` waits for its thread; if a connect were ever stuck on a full listener backlog, quitting the orb would wait for it.
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed as `b32c38f`. Superseded: `crates/jarvis-orb` is deleted by jarvis-ui 06; taps now come from `ui/` over the WebSocket.

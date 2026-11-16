@@ -1,6 +1,6 @@
 # 06: VAD stop signal
 
-Status: in-review
+Status: done
 Stories: US5
 Blocked by: 02, 04
 Assignee: Claude (Sonnet agent)
@@ -25,3 +25,5 @@ Owns: src/features/listening/vad.rs, tests/unit/features/listening/vad_tests.rs
 - **aarch64:** `earshot =1.2.2` built on the 8 GB Pi on 2026-11-14 inside the ticket 02 harness (4.9 s, `--locked`). The `jarvis` crate with this change has not been built on the Pi; the first build after a pull proves it.
 - **What the real mic and room may still change:** the tests use clean synthetic speech and digital zeros. Noise that earshot scores as speech for 96 ms arms the stop, and voices in the room (a TV) keep it from ever seeing silence, so the tap and the 15 s cap end those recordings (seen on Darren's `noise1` clip). A pause longer than a second ends the recording mid-sentence (his pause clips measured 1568 and 3040 ms). The real stop lands 1008 ms after the last speech frame plus up to one read (128 ms).
 - **For ticket 07:** call `Recorder::tap()` for a fresh receiver at the start of each listen, so the detector never sees audio left over from an earlier recording; then remove the two `expect` markers (`speech_ended` and its re-export in `mod.rs`).
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed as `7f2fb96`; in use (Darren's tap, speak and hear runs on the Pi on 2026-11-16 ended on silence with no key).

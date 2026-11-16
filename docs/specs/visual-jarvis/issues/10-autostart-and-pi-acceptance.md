@@ -1,6 +1,6 @@
 # 10: Autostart, full screen and Pi acceptance
 
-Status: ready-for-human
+Status: wontfix
 Stories: US1, US2, US3, US4, US5, US6, US7
 Blocked by: 09
 Assignee: unassigned
@@ -18,3 +18,5 @@ Owns: scripts/orb/**, docs/ORB_DEPLOYMENT.md
 - [ ] The way to remove the autostart entry is documented. The Status of tickets 01 to 09 is checked and the spec's Resume line updated.
 
 ## Comments
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Replaced by jarvis-ui 05 (Chromium kiosk autostart and the Pi acceptance), which Darren signed off on 2026-11-16. Not observed there either: a reboot, and each tap case one by one (while speaking, thinking, transcribing).

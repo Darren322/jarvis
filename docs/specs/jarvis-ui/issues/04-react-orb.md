@@ -1,6 +1,6 @@
 # 04: React Orb
 
-Status: in-review
+Status: done
 Stories: US1
 Blocked by: 02
 Assignee: Opus agent (2026-11-15)
@@ -20,18 +20,18 @@ Traces to: D2, D4, D5, D11
 - The Orb takes a size and a position as props, so ticket 10 can move it to a corner without changing its look.
 
 ## Acceptance criteria
-- [ ] Each of the five states maps to a distinct look. The mapping is a pure function and a test checks that all five differ.
-- [ ] The level clamps to 0 and 1. Tested at -0.01, 0, 1 and 1.01.
-- [ ] 100 level messages cause no React re-render. The test counts renders.
-- [ ] No `fetch`, no polling and no `setInterval` for data in `ui/src/orb/` or `ui/src/link/`. Only the reconnect timer exists.
-- [ ] After a disconnect, the next attempt starts after exactly `RECONNECT_DELAY`. Nothing happens before it. Attempts continue. Tested with fake timers.
-- [ ] Offline, the Orb draws the offline look and sends no Tap.
-- [ ] A tap while connected sends exactly one Tap. A tap while connecting or offline sends nothing.
-- [ ] Malformed or unknown messages are ignored and the connection stays open.
-- [ ] The Orb renders at two sizes from the same state, with no change to the state mapping.
-- [ ] The loop uses `requestAnimationFrame`. The 60 fps target is measured on the Pi in ticket 05. Local tests do not prove it.
-- [ ] Darren judges the look on the Pi (ticket 05). No test claims that the look is right.
-- [ ] `scripts/verify.sh` passes.
+- [x] Each of the five states maps to a distinct look. The mapping is a pure function and a test checks that all five differ.
+- [x] The level clamps to 0 and 1. Tested at -0.01, 0, 1 and 1.01.
+- [x] 100 level messages cause no React re-render. The test counts renders.
+- [x] No `fetch`, no polling and no `setInterval` for data in `ui/src/orb/` or `ui/src/link/`. Only the reconnect timer exists.
+- [x] After a disconnect, the next attempt starts after exactly `RECONNECT_DELAY`. Nothing happens before it. Attempts continue. Tested with fake timers.
+- [x] Offline, the Orb draws the offline look and sends no Tap.
+- [x] A tap while connected sends exactly one Tap. A tap while connecting or offline sends nothing.
+- [x] Malformed or unknown messages are ignored and the connection stays open.
+- [x] The Orb renders at two sizes from the same state, with no change to the state mapping.
+- [x] The loop uses `requestAnimationFrame`. The 60 fps target is measured on the Pi in ticket 05. Local tests do not prove it.
+- [x] Darren judges the look on the Pi (ticket 05). No test claims that the look is right.
+- [x] `scripts/verify.sh` passes.
 
 ## Comments
 
@@ -39,3 +39,4 @@ Traces to: D2, D4, D5, D11
 - 2026-11-15 (coordinator): Run 3 measured `thinking-orbs@0.3.2` on the 8 GB Pi: stock component stretched from 64 px, 65 to 68% of one core; driven through `thinking-orbs/engine` on a 400 px canvas, 29 to 48%; ~490 to 525 MB PSS; ~60 fps (min 55). Over the 25% rule, but Darren accepted it ("i think its fine no? ... its only 1 core"). Installed in `ui/` at exactly 0.3.2 (licence MIT checked). D5, D11 and ADR 0001 updated; budget now about 50% of one core. Drawing path: engine on our own full-size canvas, dots tuned for 400 px, D1 touches as a WebGL2 layer, 30 fps idle cap from the animator.
 - 2026-11-15 (coordinator): Opus agent built the renderer: the `thinking-orbs` engine on a centred 2D canvas (own batched painter, at most 24 fills a frame) in front of a WebGL2 layer with the D1 core, rays, HUD arcs and glyph rings (6 instanced draws, static buffers). The WebGL layer sits behind the dots, not above as briefed, because a glow on top washed the dots out; awaiting Darren's OK. Modes: offline globe (grey), idle web, listening wave, transcribing globe scan, thinking braid, speaking ring; listening and speaking follow the level. Side-by-side sheet: `notes/ui-spike/orb-shots/compare.png`. Coordinator looked at it, stubbed `getContext` in `ui/tests/App.test.tsx`, and ran `scripts/verify.sh`: all checks passed (102 UI tests). Not proven: CPU, memory and look on the Pi (ticket 05).
 - 2026-11-15 (coordinator): Darren approved the glow behind the dots (Q36, "yes to all") and asked to commit and deploy. The look on the Pi is judged in ticket 05.
+- 2026-11-16 (coordinator): Darren saw the Orb on the Pi and signed it off ("Ticket 5 is good", after two tap, speak and hear runs on the screen). Criteria ticked from the tests in `ui/tests/orb/` and `ui/tests/link/` (each criterion has a named test; `scripts/verify.sh` passed on 2026-11-15) and from ticket 05's Pi measurement (60 fps in every state). Committed as `868d7d3`. Done.

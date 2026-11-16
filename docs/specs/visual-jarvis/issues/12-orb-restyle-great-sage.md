@@ -1,6 +1,6 @@
 # 12: Restyle the orb towards the Great Sage look
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3, US7
 Blocked by: 08
 Assignee: Claude
@@ -36,3 +36,5 @@ Keep from ticket 08: the `View` and `Look` split (`look.rs` pure, `orb.rs` drawi
 - **Not done:** Claude has not read all 1,119 lines of the restyled `orb.rs`, only the parts it changed. Not built or run on the Pi, so the frame rate there and the look on the 5 inch screen are open. Darren has not seen it.
 
 2026-11-14 (Claude, later): committed as `2b934d4` and pushed; the Pi checkout is at `a5763ab` and the whole workspace builds there in release mode (2 min). On the 8 GB Pi the restyled orb ran `--demo --fps --seconds 31`: 60.0 FPS in every one-second window, longest frame 16.95 ms, 4.6% of one core, 78 MiB, exit 0. Darren saw it on the Pi screen and said "the orb looks good". Still open: Claude has not looked at the offline, listening and transcribing snapshots of the final version, and has not read all of `orb.rs`.
+
+- 2026-11-16 (coordinator): Closed with the epic (Darren, 2026-11-16: "You may also close the ticket"). Committed as `2b934d4`. Superseded: the macroquad look is deleted with `crates/jarvis-orb`; the React Orb (jarvis-ui 04, D5) carries the look on.

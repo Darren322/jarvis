@@ -48,6 +48,7 @@ Work through these in order. Each step ends with a commit and a short note of wh
 
    Later, only if needed: idle-time fact extraction, which stores model-written facts (untrusted) linked to their turns. Push-to-talk transcripts flow into the same memory, so settle the first step soon after 15A.
 5. **Second tool: read one calendar (8A).** Add it to `ALLOWED_TOOLS`. The first tool that *writes* (8B, create an event) also introduces per-tool permission levels with explicit, content-bound user approval.
+6. **A fresh conversation after 30 minutes of quiet.** Asked for by Darren on 2026-11-16. Today the history is only cut by size (12 exchanges or 6 KiB), so a question asked tomorrow still carries tonight's last exchanges. When a prompt arrives 30 minutes or more after the last answer, Jarvis starts a new conversation first. No timer runs while it is quiet, nothing in the archive or memory is deleted, and the Gemma prompt cache needs no time limit of its own (it holds one prompt per slot and is capped by `--cache-ram`). Ticket: [fast-memory 09](specs/fast-memory/issues/09-fresh-conversation-after-quiet.md).
 
 ## Later (named, in rough order)
 
@@ -58,9 +59,23 @@ Work through these in order. Each step ends with a commit and a short note of wh
 | 11A–C | Camera: one clip → one live Tapo C100 stream → observations delivered to Rust | 6 |
 | 12A | Facial recognition, offline: enroll Darren only, evaluate matching | 11A, usable imagery |
 | 12B | Opt-in household recognition in shadow mode | 11C, 12A |
+| 12C | Voice recognition, offline: enroll Darren only, evaluate matching | 12A, room on the Hailo-10H beside speech-to-text |
+| 12D | Per-person spaces: Jarvis recalls only the memories of the person it has authenticated; MASTER (Darren) can recall everyone's | 12B, 12C, a grilling session |
 | 9 | One explicitly permitted cloud request | 4C, privacy opt-in |
+| 15C | Headless Jarvis: run without a terminal (probably a systemd user service), with errors in the journal and a way to start and stop it (was visual-jarvis US9) | The screen UI in daily use |
+| 15D | The Orb's colour shows Jarvis's mood: blue calm, gold engaged, red angry (was visual-jarvis US10) | A mood signal from Jarvis; the React Orb |
 
-**Facial recognition constraints.** Detection, alignment and embeddings run on the 16 GB Pi; evaluate OpenCV YuNet + SFace first. Matching uses an in-memory gallery of a handful of people, so no extra vector service is needed. Enrollment templates and sightings are stored in SQLite, and un-enrolling must delete them transactionally. Always allow "unknown" and "ambiguous". A face match may personalize a greeting. It never authenticates a speaker, unlocks anything, approves a write or reveals private data. Enrollment requires each person's agreement, and face data never leaves the LAN.
+**Recognition constraints (rewritten 2026-11-16 at Darren's request).** Voice and face recognition run on the AI HAT (the Hailo-10H on the 16 GB Pi), not on the CPU. The Hailo also runs speech-to-text, so the first step of 12A is to check which detection and embedding models it can run beside Whisper. OpenCV is the glue around it (camera frames, face alignment and cropping, comparing embeddings), since OpenCV itself cannot run a model on the Hailo. As seen on 2026-11-16 (web search, not yet tried): an ArcFace MobileFaceNet embedding model is listed for the Hailo-10H, but no Hailo-10H build of a face detector (SCRFD) was found, so detection may start as OpenCV's YuNet on the CPU, which is small. A speaker (voice) embedding model for the Hailo is unchecked. OpenCV YuNet + SFace wholly on the CPU stays the baseline to compare against. Matching uses an in-memory gallery of a handful of people, so no extra vector service is needed. Enrollment templates and sightings are stored in SQLite, and un-enrolling must delete them transactionally. Always allow "unknown" and "ambiguous". Enrollment requires each person's agreement, and voice and face data never leave the LAN.
+
+**Recognizing is not authenticating.** This replaces the earlier rule that a face match "never authenticates a speaker, unlocks anything ... or reveals private data".
+- *Recognized* (a voice match or a face match alone): Jarvis knows who it is probably talking to. That may personalize a greeting and anything that is not private. It reveals no private memory.
+- *Authenticated*: stronger evidence that the recognized person is really there. Only then does Jarvis recall that person's own memories. Proposed, to settle by grilling before 12D: voice and face matching the same enrolled person at the same moment, lasting until the conversation goes quiet.
+- *MASTER* (Darren) can recall everyone's memories, so it needs one step more. Proposed: a PIN on the touchscreen once per session.
+- Unknown or ambiguous gets the most restricted space, never a guess.
+- The person is decided by Jarvis's own recognition code and passed to storage as trusted caller context; storage filters by owner in SQL. The model, a transcript and recalled memory can never name whose memories are read (the "model output is untrusted" principle is unchanged).
+- One database: memories, sources and turns gain an owner, and everything stored before 12D belongs to Darren. No per-person database files.
+- Authentication never approves a write or an action by itself; roadmap 8B's explicit approval still applies.
+- When 12D starts, the Trust rule in `AGENTS.md` ("recognition results ... never ... establish identity") is rewritten with it. Until then it describes the code as it is.
 
 ## Someday (not planned)
 

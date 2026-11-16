@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 04 and 07 to 09 are done; 05 is in review and live on the 8 GB Pi (Jarvis 868d7d3 in tmux `jarvis`, `jarvis-ui.service`, Chromium kiosk). First: with Darren, reboot the Pi and run 05's open checks (autostart, hidden cursor, the look in all five states, a real tap, tap-speak-hear), then a one-hour memory soak, then pull 907bf89 on the Pi. Next ticket: 10 (stats Dashboard UI, Opus agent). Handoff: `notes/HANDOFF_2026-11-15c.md`.
+Resume here: 01 to 10 are done (Darren signed off the Orb, the kiosk and the Dashboard on the Pi on 2026-11-16; a reboot has still never been observed there). The 8 GB Pi runs the UI with the Dashboard and a Jarvis binary built from ticket 06's change before it was committed, so `./run.sh` there rebuilds old code until `dev` is pushed and pulled. In progress: 13 (a `close_panel` tool, because "You may close the panel" reached a model with no way to close one). Waiting for Darren's answers: 14 (storage on the Dashboard). Then 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage).
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -86,12 +86,14 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 01 | Record the UI runtime decision | done | None |
 | 02 | UI scaffold | done | None |
 | 03 | WebSocket transport | done | None |
-| 04 | React Orb | in-review | 02 |
-| 05 | Kiosk launch and deploy | in-review | 03, 04 |
-| 06 | Retire jarvis-orb | ready-for-human | 05 |
+| 04 | React Orb | done | 02 |
+| 05 | Kiosk launch and deploy | done | 03, 04 |
+| 06 | Retire jarvis-orb | done | 05 |
 | 07 | Panel messages | done | None |
 | 08 | Stats source | done | 03, 07 |
 | 09 | show_panel tool and close phrases | done | 03, 07 |
-| 10 | Stats Dashboard panel | ready-for-human | 04, 07 |
+| 10 | Stats Dashboard panel | done | 04, 07 |
 | 11 | Camera panel | needs-info | 10 |
 | 12 | Catalog panels | needs-triage | 11 |
+| 13 | Close a Panel by saying it any way | in-progress | 09 |
+| 14 | Storage on the stats Dashboard | needs-info | 10 |
