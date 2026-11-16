@@ -12,7 +12,6 @@ use crate::{
     clients::local_llm::LocalLlm,
     config::LocalLlmConfig,
     features::assistant::{Assistant, CallUsage},
-    tools::system_status_tool::SystemStatusTool,
 };
 
 async fn request_bodies(server: &MockServer) -> Vec<Value> {
@@ -83,12 +82,11 @@ fn local_assistant(origin: &str) -> (LocalLlm, Assistant) {
     };
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
     let assistant = Assistant::new(
-        AgentBuilder::new(local_llm.model())
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(local_llm.model()),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     (local_llm, assistant)
 }
@@ -221,7 +219,7 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     let first_tools = first_request["tools"]
         .as_array()
         .expect("first request should offer the system status tool");
-    assert_eq!(first_tools.len(), 2);
+    assert_eq!(first_tools.len(), 3);
     assert_eq!(
         first_tools[0],
         rig_core::serde_json::json!({
@@ -239,7 +237,9 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     );
 
     let second_request = &request_bodies[1];
-    assert!(second_request.get("tools").is_none());
+    // On the wire the second request lists the same tools as the first, so the
+    // server's cached prompt still matches; "none" is what forbids a call.
+    assert_eq!(second_request["tools"], first_request["tools"]);
     assert_eq!(second_request["tool_choice"], "none");
     assert_eq!(second_request["max_tokens"], 1024);
 

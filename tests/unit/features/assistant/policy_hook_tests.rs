@@ -76,6 +76,9 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
             .tool(crate::tools::show_panel::ShowPanelTool::new(
                 crate::features::panel::channel().0,
             ))
+            .tool(crate::tools::close_panel::ClosePanelTool::new(
+                crate::features::panel::channel().0,
+            ))
             .build(),
     );
     let result = assistant.respond("Check the system status.", &[]).await;
@@ -151,10 +154,13 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
         panic!("expected exactly two model requests");
     };
     let offered: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
-    assert_eq!(offered, ["system_status", "show_panel"]);
+    assert_eq!(offered, ["system_status", "show_panel", "close_panel"]);
     assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
     assert_eq!(first.max_tokens, Some(1024));
-    assert!(second.tools.is_empty());
+    // The same tools again, so the prompt starts the same and stays cached;
+    // the tool choice is what forbids a second call.
+    let offered_again: Vec<_> = second.tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(offered_again, offered);
     assert_eq!(second.tool_choice, Some(ToolChoice::None));
     assert_result_correlates_with_call(second);
 }
@@ -247,7 +253,11 @@ async fn a_failed_tool_consumes_its_attempt_and_still_gets_one_final_answer() {
         ToolStageOutcome::Error
     ));
     assert_eq!((outcome.executions, outcome.requests.len()), (1, 2));
-    assert!(outcome.requests[1].tools.is_empty());
+    assert_eq!(
+        outcome.requests[1].tools.len(),
+        outcome.requests[0].tools.len()
+    );
+    assert_eq!(outcome.requests[1].tool_choice, Some(ToolChoice::None));
     assert_result_correlates_with_call(&outcome.requests[1]);
 }
 
@@ -290,6 +300,9 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         .tool(crate::tools::show_panel::ShowPanelTool::new(
             crate::features::panel::channel().0,
         ))
+        .tool(crate::tools::close_panel::ClosePanelTool::new(
+            crate::features::panel::channel().0,
+        ))
         .build();
 
     let result = Assistant::new(agent)
@@ -303,6 +316,6 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
-    assert_eq!(offered, ["system_status", "show_panel"]);
+    assert_eq!(offered, ["system_status", "show_panel", "close_panel"]);
     assert_eq!(requests.len(), 1);
 }

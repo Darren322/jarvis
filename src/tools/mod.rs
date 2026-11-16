@@ -1,3 +1,4 @@
+pub mod close_panel;
 pub mod show_panel;
 pub mod system_status;
 pub mod system_status_tool;
@@ -10,6 +11,7 @@ use rig_core::serde_json::{self, Value};
 use serde::de::DeserializeOwned;
 
 use crate::features::panel::PanelHandle;
+use close_panel::ClosePanelTool;
 use show_panel::ShowPanelTool;
 use system_status_tool::SystemStatusTool;
 
@@ -61,13 +63,15 @@ pub(crate) fn register(
 ) -> AgentBuilder<WithBuilderTools> {
     builder
         .tool(SystemStatusTool)
-        .tool(ShowPanelTool::new(panels))
+        .tool(ShowPanelTool::new(panels.clone()))
+        .tool(ClosePanelTool::new(panels))
 }
 
 /// Every tool the policy offers to the model and accepts calls for.
 pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[
     ToolRule::for_tool::<SystemStatusTool>(),
     ToolRule::for_tool::<ShowPanelTool>(),
+    ToolRule::for_tool::<ClosePanelTool>(),
 ];
 
 pub(crate) fn allowed_tool(name: &str) -> Option<&'static ToolRule> {

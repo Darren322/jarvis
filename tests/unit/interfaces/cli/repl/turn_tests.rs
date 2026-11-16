@@ -34,7 +34,6 @@ use crate::{
         input::{InputReader, Taps},
         presentation::AssistantPresenter,
     },
-    tools::system_status_tool::SystemStatusTool,
 };
 
 use super::*;
@@ -259,12 +258,11 @@ async fn run_request(
     let model = MockCompletionModel::from_stream_turns([model_turn]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -622,12 +620,11 @@ async fn a_failed_model_run_cancels_speech_without_speaking_the_rest() {
 #[tokio::test]
 async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
     let assistant = Assistant::new(
-        AgentBuilder::new(MockCompletionModel::from_stream_turns([answer_turn()]))
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(MockCompletionModel::from_stream_turns([answer_turn()])),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -923,12 +920,11 @@ async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_s
     };
     let (started, dropped) = (Arc::clone(&model.started), Arc::clone(&model.dropped));
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));

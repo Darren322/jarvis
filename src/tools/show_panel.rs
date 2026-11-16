@@ -33,7 +33,10 @@ impl Tool for ShowPanelTool {
     fn description(&self) -> String {
         "Shows a panel on the screen. Use it when the user asks to see something, for example \
          \"bring up the stats\" or \"show me the system stats\". The panel `stats` shows the \
-         Pi's CPU, temperature, memory and whether the language and embedding servers are up."
+         Pi's CPU, temperature, memory and whether the language and embedding servers are up. \
+         A panel closes by itself after a short while, and the user can close it without \
+         telling you, so call this tool every time the user asks for a panel, even if you \
+         showed it earlier. Never say a panel is shown unless this tool has just succeeded."
             .to_string()
     }
 
@@ -59,7 +62,9 @@ impl Tool for ShowPanelTool {
     ) -> Result<Self::Output, Self::Error> {
         self.panels.show(args.panel).await?;
         Ok(match args.panel {
-            PanelName::Stats => "The stats panel is now shown on the screen.".to_owned(),
+            PanelName::Stats => {
+                "The stats panel is now shown on the screen. It will close by itself.".to_owned()
+            }
         })
     }
 }

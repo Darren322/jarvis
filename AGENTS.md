@@ -158,7 +158,7 @@ Split or add structure when one of these triggers is hit, and not before:
 
 ## Domain rules
 
-- **Policy.** `JarvisPolicyHook` enforces two model turns at most, one tool call at most, tools only on the first turn, and stops on truncated or unknown finish reasons. Model request limits and tool attempt limits are separate; keep both.
+- **Policy.** `JarvisPolicyHook` enforces two model turns at most, one tool call at most, tool calls only on the first turn, and stops on truncated or unknown finish reasons. The second request still lists the tools, with tool choice `none`: dropping the list changes the start of the prompt and empties the server's prompt cache (fast-memory 10). Model request limits and tool attempt limits are separate; keep both.
 - **Adding a tool.** Everything lives in `src/tools/`; `App` calls `tools::register` once.
   1. Implement `rig_agent::tool::Tool` with a typed `Args` struct carrying `#[serde(deny_unknown_fields)]`.
   2. Add `.tool(T)` to `tools::register`.

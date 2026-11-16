@@ -81,7 +81,10 @@ async fn calling_the_tool_shows_the_panel_and_tells_the_model() {
         .await
         .expect("the panel task is running");
 
-    assert_eq!(output, "The stats panel is now shown on the screen.");
+    assert_eq!(
+        output,
+        "The stats panel is now shown on the screen. It will close by itself."
+    );
     assert_eq!(
         shown_to_orb.recv().await,
         Some(ToOrb::ShowPanel {

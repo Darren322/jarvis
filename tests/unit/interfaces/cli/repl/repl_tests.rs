@@ -40,7 +40,6 @@ use crate::{
         state::AssistantState,
     },
     storage::{ArchiveOutcome, ConversationArchive, MemoryEligibility},
-    tools::system_status_tool::SystemStatusTool,
 };
 
 use super::super::input::Taps;
@@ -79,12 +78,11 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -199,12 +197,11 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -318,12 +315,11 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -421,12 +417,11 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         MockStreamEvent::final_response(Usage::new()),
     ]]);
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -645,12 +640,11 @@ async fn harness() -> Harness {
         MockStreamEvent::final_response(Usage::new()),
     ]]);
     let assistant = Assistant::new(
-        AgentBuilder::new(model.clone())
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model.clone()),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
@@ -1670,12 +1664,11 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
     }));
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let database = archive_dir.path().join("conversation.sqlite3");
@@ -1769,12 +1762,11 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
     }));
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
     let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));

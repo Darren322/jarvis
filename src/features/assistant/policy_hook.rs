@@ -27,9 +27,13 @@ impl AgentHook for JarvisPolicyHook {
                 CompletionCallAction::patch(patch)
             }
 
+            // The second request still lists the tools, so its prompt starts
+            // exactly like the first one and the server reuses its cache
+            // (fast-memory 10: without the list, every tool run re-read the whole
+            // conversation, about 10 s). `ToolChoice::None` is what forbids a call.
             2 => {
                 let patch = RequestPatch::new()
-                    .active_tools(Vec::<String>::new())
+                    .active_tools(ALLOWED_TOOLS.iter().map(|rule| rule.name))
                     .tool_choice(ToolChoice::None);
                 CompletionCallAction::patch(patch)
             }

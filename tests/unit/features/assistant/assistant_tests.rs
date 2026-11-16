@@ -106,12 +106,11 @@ fn assert_incomplete_model(stage: &ModelStage, turn: usize) {
 async fn assistant_text_run_returns_success_report_without_tools() {
     let model =
         MockCompletionModel::from_stream_turns([streamed_text("JARVIS ONLINE", Usage::new())]);
-    let agent = AgentBuilder::new(model)
-        .tool(SystemStatusTool)
-        .tool(crate::tools::show_panel::ShowPanelTool::new(
-            crate::features::panel::channel().0,
-        ))
-        .build();
+    let agent = crate::tools::register(
+        AgentBuilder::new(model),
+        crate::features::panel::channel().0,
+    )
+    .build();
     let assistant = Assistant::new(agent);
 
     let run = assistant
@@ -148,12 +147,11 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
 
     let first = assistant
@@ -185,12 +183,11 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
 
 #[tokio::test(start_paused = true)]
 async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
-    let agent = AgentBuilder::new(PendingCompletionModel)
-        .tool(SystemStatusTool)
-        .tool(crate::tools::show_panel::ShowPanelTool::new(
-            crate::features::panel::channel().0,
-        ))
-        .build();
+    let agent = crate::tools::register(
+        AgentBuilder::new(PendingCompletionModel),
+        crate::features::panel::channel().0,
+    )
+    .build();
     let assistant = Assistant::new(agent);
     let (delta_tx, _delta_rx) = mpsc::channel(2);
 
@@ -211,12 +208,11 @@ async fn provider_prompt_failure_reports_incomplete_model_stage_and_keeps_error_
         MockCompletionModel::from_stream_turns([vec![MockStreamEvent::error("provider failed")]]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
 
     let error = assistant
@@ -384,12 +380,11 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     ]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let earlier_history = vec![
         Message::user("older question"),
@@ -440,8 +435,8 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     assert!(requests[0].documents.is_empty());
     assert!(requests[1].documents.is_empty());
     assert_eq!(requests[0].max_tokens, Some(1024));
-    assert_eq!(requests[0].tools.len(), 2);
-    assert!(requests[1].tools.is_empty());
+    assert_eq!(requests[0].tools.len(), 3);
+    assert_eq!(requests[1].tools.len(), 3);
     let memory_message = Message::User {
         content: vec![UserContent::document(
             document.to_string(),
@@ -523,12 +518,11 @@ async fn streaming_policy_rejection_still_records_the_completed_model_call() {
     ]]);
     let model_handle = model.clone();
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let (delta_tx, _delta_rx) = mpsc::channel(4);
 
@@ -557,12 +551,11 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
         MockStreamEvent::error("stream broke"),
     ]]);
     let assistant = Assistant::new(
-        AgentBuilder::new(model)
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     );
     let (delta_tx, mut delta_rx) = mpsc::channel(4);
 
@@ -635,13 +628,11 @@ fn wire_assistant(server: &MockServer) -> Assistant {
     };
     let local_llm = LocalLlm::new(&config).expect("LocalLlm should build");
     Assistant::new(
-        AgentBuilder::new(local_llm.model())
-            .preamble("system prompt")
-            .tool(SystemStatusTool)
-            .tool(crate::tools::show_panel::ShowPanelTool::new(
-                crate::features::panel::channel().0,
-            ))
-            .build(),
+        crate::tools::register(
+            AgentBuilder::new(local_llm.model()).preamble("system prompt"),
+            crate::features::panel::channel().0,
+        )
+        .build(),
     )
 }
 
