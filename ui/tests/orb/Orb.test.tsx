@@ -232,5 +232,25 @@ describe('size and position', () => {
     });
     const style = host().style;
     expect([style.left, style.top, style.width, style.height]).toEqual(['620px', '300px', '160px', '160px']);
+    expect(style.borderRadius).toBe('');
+  });
+
+  test('a round Orb is clipped to the circle inside its area', async () => {
+    const sockets = socketFactory();
+    const link = new JarvisLink({ createSocket: sockets.create });
+    await act(async () => {
+      root.render(
+        <Orb
+          source={link}
+          onTap={link.tap}
+          size={CORNER}
+          position={{ left: 12, top: 12 }}
+          round
+          createRenderer={() => null}
+        />,
+      );
+    });
+    const style = host().style;
+    expect([style.borderRadius, style.overflow]).toEqual(['50%', 'hidden']);
   });
 });

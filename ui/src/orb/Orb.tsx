@@ -37,6 +37,8 @@ export interface OrbProps {
   readonly size: OrbSize;
   /** Top-left corner in CSS pixels, relative to the nearest positioned ancestor. */
   readonly position: OrbPosition;
+  /** Clips the drawing to the circle inside the area, for a small Orb whose outer rings would otherwise be cut straight by its square. Default: the whole area. */
+  readonly round?: boolean;
   readonly createRenderer: CreateOrbRenderer;
   /** Default: `requestAnimationFrame`. */
   readonly frames?: FrameScheduler;
@@ -46,7 +48,7 @@ export interface OrbProps {
  * The animated figure that shows Jarvis's state. It renders once per prop
  * change; every animation frame runs outside React, in its own loop.
  */
-export function Orb({ source, onTap, size, position, createRenderer, frames = animationFrames }: OrbProps) {
+export function Orb({ source, onTap, size, position, round = false, createRenderer, frames = animationFrames }: OrbProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sizeRef = useRef(size);
 
@@ -100,6 +102,7 @@ export function Orb({ source, onTap, size, position, createRenderer, frames = an
         width: size.width,
         height: size.height,
         overflow: 'hidden',
+        borderRadius: round ? '50%' : undefined,
         touchAction: 'none',
         outline: 'none',
       }}

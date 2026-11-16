@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import { encodeFromOrb, parseToOrb } from '../../src/link/protocol';
 
 // Wire examples from the doc comments in crates/orb-protocol/src/lib.rs.
@@ -19,7 +19,6 @@ test.each([
 
 test.each([
   'not json',
-  '{"type":"show_panel","panel":"stats"}',
   '{"type":"State","state":"idle"}',
   '{"type":"state","state":"Idle"}',
   '{"type":"level","level":"0.5","source":"mic"}',
@@ -29,6 +28,103 @@ test.each([
   expect(parseToOrb(text)).toBeNull();
 });
 
-test('a Tap is encoded as the Rust side expects', () => {
-  expect(encodeFromOrb({ type: 'tap' })).toBe('{"type":"tap"}');
+test.each([
+  [{ type: 'tap' }, '{"type":"tap"}'],
+  [{ type: 'panel_closed' }, '{"type":"panel_closed"}'],
+] as const)('%o is encoded as the Rust side expects', (message, text) => {
+  expect(encodeFromOrb(message)).toBe(text);
+});
+
+describe('panel messages', () => {
+  test.each([
+    ['{"type":"show_panel","panel":"stats"}', { type: 'show_panel', panel: 'stats' }],
+    ['{"type":"hide_panel"}', { type: 'hide_panel' }],
+  ])('%s parses', (text, message) => {
+    expect(parseToOrb(text)).toEqual(message);
+  });
+
+  test.each([
+    '{"type":"show_panel","panel":"camera"}',
+    '{"type":"show_panel","panel":"Stats"}',
+    '{"type":"show_panel"}',
+    '{"type":"show_panel","panel":"stats","extra":1}',
+    '{"type":"hide_panel","panel":"stats"}',
+  ])('%s is ignored', (text) => {
+    expect(parseToOrb(text)).toBeNull();
+  });
+});
+
+describe('stats', () => {
+  /** The wire example from crates/orb-protocol, with fields replaced or removed. */
+  function stats(changes: Record<string, unknown> = {}, without: readonly string[] = []): string {
+    const record: Record<string, unknown> = {
+      type: 'stats',
+      cpu_percent: 12.5,
+      temperature_c: 55.0,
+      ram_used_bytes: 2,
+      ram_total_bytes: 8,
+      llama: 'up',
+      bge: 'down',
+      ...changes,
+    };
+    for (const key of without) {
+      delete record[key];
+    }
+    return JSON.stringify(record);
+  }
+
+  test('the wire example parses into a reading', () => {
+    expect(
+      parseToOrb(
+        '{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}',
+      ),
+    ).toEqual({
+      type: 'stats',
+      stats: { cpuPercent: 12.5, temperatureC: 55, ramUsedBytes: 2, ramTotalBytes: 8, llama: 'up', bge: 'down' },
+    });
+  });
+
+  test('an absent temperature parses as no reading, not 0', () => {
+    expect(parseToOrb(stats({}, ['temperature_c']))).toMatchObject({ stats: { temperatureC: null } });
+  });
+
+  test.each([
+    // [field, value, accepted]
+    ['cpu_percent', -0.01, false],
+    ['cpu_percent', 0, true],
+    ['cpu_percent', 100, true],
+    ['cpu_percent', 100.01, false],
+    ['cpu_percent', null, false],
+    ['cpu_percent', '12', false],
+    ['temperature_c', -5, true],
+    ['temperature_c', 0, true],
+    ['temperature_c', null, false],
+    ['temperature_c', '55', false],
+    ['ram_used_bytes', -1, false],
+    ['ram_used_bytes', 0, true],
+    ['ram_used_bytes', 1.5, false],
+    ['ram_used_bytes', '2', false],
+    ['ram_total_bytes', -1, false],
+    ['ram_total_bytes', 0, true],
+    ['ram_total_bytes', 8_464_105_472, true],
+    ['ram_total_bytes', 8.5, false],
+    ['llama', 'up', true],
+    ['llama', 'down', true],
+    ['llama', 'Up', false],
+    ['llama', true, false],
+    ['bge', 'unknown', false],
+  ])('%s of %o is accepted: %s', (field, value, accepted) => {
+    expect(parseToOrb(stats({ [field]: value })) !== null).toBe(accepted);
+  });
+
+  test.each(['cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'])(
+    'a reading without %s is ignored',
+    (field) => {
+      expect(parseToOrb(stats({}, [field]))).toBeNull();
+    },
+  );
+
+  test('a reading with an extra field is ignored', () => {
+    expect(parseToOrb(stats({ fan_rpm: 1200 }))).toBeNull();
+  });
 });

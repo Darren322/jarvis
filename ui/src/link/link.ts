@@ -2,16 +2,20 @@
  * The UI's connection to Jarvis: one WebSocket on localhost.
  *
  * Jarvis is the server. The link connects, reads ToOrb messages into a small
- * store and sends a Tap when asked. It holds no logic about what a tap means
- * (jarvis-ui D2). The store is read by the Orb's frame loop directly, so the
- * loudness (about 30 messages a second) never goes through React state.
+ * store and sends a Tap or a PanelClosed when asked. It holds no logic about
+ * what a tap means (jarvis-ui D2). The store has two parts:
+ * - the display (state and level), read by the Orb's frame loop directly, so
+ *   the loudness (about 30 messages a second) never goes through React state;
+ * - the Panel (which one shows, and its latest reading), which React reads with
+ *   `useSyncExternalStore`. Only Panel messages notify its subscribers.
  *
  * Nothing polls: the only timer is the reconnect timer, started when a
  * connection closes or fails.
  */
 
 import { applyMessage, CONNECTED, type Display, OFFLINE } from './display';
-import { encodeFromOrb, parseToOrb } from './protocol';
+import { applyPanelMessage, NO_PANEL, type PanelView } from './panel';
+import { encodeFromOrb, type FromOrb, type PanelName, parseToOrb, type Stats } from './protocol';
 
 /**
  * The port of Jarvis's WebSocket. It must match `DEFAULT_PORT` (8765, the
@@ -63,10 +67,24 @@ export interface OrbSource {
   readonly display: Display;
 }
 
+/** What the Panel host reads, through React. */
+export interface PanelSource {
+  /** Calls `listener` after every change to `shownPanel` or `stats`; returns the unsubscribe. */
+  readonly subscribePanel: (listener: () => void) => () => void;
+  /** The Panel Jarvis asked for, or `null`. */
+  readonly shownPanel: PanelName | null;
+  /** The Dashboard's latest reading; `null` before the first one and while no Panel shows. */
+  readonly stats: Stats | null;
+  /** Darren tapped outside the Panel: tell Jarvis once and hide it here. */
+  readonly closePanel: () => void;
+}
+
 const browserSocket: CreateSocket = (url) => new WebSocket(url);
 
-export class JarvisLink implements OrbSource {
+export class JarvisLink implements OrbSource, PanelSource {
   #display: Display = OFFLINE;
+  #panel: PanelView = NO_PANEL;
+  readonly #panelListeners = new Set<() => void>();
   #status: LinkStatus = 'offline';
   #socket: SocketLike | null = null;
   #retry: ReturnType<typeof setTimeout> | null = null;
@@ -86,6 +104,22 @@ export class JarvisLink implements OrbSource {
   get status(): LinkStatus {
     return this.#status;
   }
+
+  get shownPanel(): PanelName | null {
+    return this.#panel.kind === 'none' ? null : this.#panel.kind;
+  }
+
+  get stats(): Stats | null {
+    return this.#panel.kind === 'stats' ? this.#panel.reading : null;
+  }
+
+  /** An arrow function, so `useSyncExternalStore` can be given it as it is. */
+  readonly subscribePanel = (listener: () => void): (() => void) => {
+    this.#panelListeners.add(listener);
+    return () => {
+      this.#panelListeners.delete(listener);
+    };
+  };
 
   /** Starts connecting. Does nothing if already started. */
   start(): void {
@@ -111,14 +145,39 @@ export class JarvisLink implements OrbSource {
    * nothing while connecting or offline. An arrow function, so it can be passed
    * as an event handler.
    */
-  readonly tap = (): boolean => {
+  readonly tap = (): boolean => this.#send({ type: 'tap' });
+
+  /**
+   * Hides the shown Panel and sends one PanelClosed; Jarvis answers nothing, so
+   * hiding it here is what closes it on screen. Returns false and does nothing
+   * when no Panel shows. A Panel shows only while connected (a drop hides it).
+   */
+  readonly closePanel = (): boolean => {
+    if (this.#panel.kind === 'none') {
+      return false;
+    }
+    this.#setPanel(NO_PANEL);
+    return this.#send({ type: 'panel_closed' });
+  };
+
+  #send(message: FromOrb): boolean {
     const socket = this.#socket;
     if (this.#status !== 'connected' || socket === null) {
       return false;
     }
-    socket.send(encodeFromOrb({ type: 'tap' }));
+    socket.send(encodeFromOrb(message));
     return true;
-  };
+  }
+
+  #setPanel(next: PanelView): void {
+    if (next === this.#panel) {
+      return;
+    }
+    this.#panel = next;
+    for (const listener of [...this.#panelListeners]) {
+      listener();
+    }
+  }
 
   #connect(): void {
     this.#retry = null;
@@ -142,8 +201,18 @@ export class JarvisLink implements OrbSource {
         return;
       }
       const message = parseToOrb(event.data);
-      if (message !== null) {
-        this.#display = applyMessage(this.#display, message);
+      switch (message?.type) {
+        case undefined:
+          return;
+        case 'state':
+        case 'level':
+          this.#display = applyMessage(this.#display, message);
+          return;
+        case 'show_panel':
+        case 'hide_panel':
+        case 'stats':
+          this.#setPanel(applyPanelMessage(this.#panel, message));
+          return;
       }
     };
     // A failed connection fires `error` and then `close`, so only `close` acts.
@@ -153,12 +222,13 @@ export class JarvisLink implements OrbSource {
     };
   }
 
-  /** Forgets the socket (closing it if open) and shows offline. */
+  /** Forgets the socket (closing it if open), shows offline and hides the Panel. */
   #drop(): void {
     const socket = this.#socket;
     this.#socket = null;
     this.#status = 'offline';
     this.#display = OFFLINE;
+    this.#setPanel(NO_PANEL);
     if (socket !== null) {
       socket.onopen = null;
       socket.onmessage = null;

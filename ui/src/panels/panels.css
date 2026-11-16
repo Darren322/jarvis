@@ -1,0 +1,218 @@
+/*
+ * The Panels' look: a thin-lined HUD on black that matches the Orb. Colours
+ * come from `palette.ts` as custom properties on `.panel`. System fonts only:
+ * the Pi is offline. Nothing here animates in a loop (jarvis-ui D11): the Panel
+ * fades in once and a meter eases to each new reading.
+ */
+
+/* Catches a tap anywhere outside the Panel and the Orb. */
+.panel-outside {
+  position: fixed;
+  inset: 0;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.panel {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 22px 28px 26px;
+  border: 1px solid var(--panel-line);
+  background: var(--panel-fill);
+  color: var(--panel-ink);
+  font-family: var(--panel-font, system-ui, 'Piboto', 'Roboto', 'Noto Sans', 'DejaVu Sans', sans-serif);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  cursor: default;
+  animation: panel-in 160ms ease-out;
+}
+
+/* HUD corner brackets over the frame's top-left and bottom-right corners. */
+.panel::before,
+.panel::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: 0 solid var(--panel-accent);
+  pointer-events: none;
+}
+
+.panel::before {
+  top: -1px;
+  left: -1px;
+  border-top-width: 2px;
+  border-left-width: 2px;
+}
+
+.panel::after {
+  right: -1px;
+  bottom: -1px;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A section title with a thin rule running to a note on the right. */
+.panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--panel-accent);
+}
+
+.panel-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--panel-line);
+}
+
+.panel-heading-note {
+  font-weight: 500;
+  color: var(--panel-label);
+}
+
+.panel-label {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--panel-label);
+}
+
+.dashboard-group {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dashboard-metrics,
+.dashboard-services {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 40px;
+  margin: 0;
+}
+
+.dashboard-metrics {
+  row-gap: 24px;
+}
+
+.dashboard-metric {
+  min-width: 0;
+}
+
+.dashboard-metric-wide {
+  grid-column: 1 / -1;
+}
+
+/* No specificity, so each part's own margin below wins. */
+:where(.dashboard-metrics, .dashboard-services) dd {
+  margin: 0;
+}
+
+/* The figure and its unit share one baseline; the line keeps its height when the value is a word or the waiting mark. */
+.dashboard-value {
+  font-size: 68px;
+  font-weight: 300;
+  line-height: 76px;
+  height: 76px;
+  white-space: nowrap;
+}
+
+.dashboard-figure {
+  letter-spacing: -0.02em;
+}
+
+.dashboard-unit {
+  margin-left: 6px;
+  font-size: 28px;
+  color: var(--panel-ink-dim);
+}
+
+.dashboard-word {
+  font-size: 30px;
+  font-weight: 400;
+  color: var(--panel-ink-dim);
+}
+
+.dashboard-meter {
+  position: relative;
+  height: 3px;
+  margin-top: 4px;
+  background: var(--panel-track);
+}
+
+.dashboard-meter > span {
+  position: absolute;
+  inset: 0;
+  background: var(--panel-reading);
+  transform: scaleX(var(--fill, 0));
+  transform-origin: left center;
+  transition: transform 400ms ease-out;
+}
+
+.dashboard-service dt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dashboard-marker {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--panel-line);
+}
+
+.dashboard-service-up .dashboard-marker {
+  border-color: var(--panel-reading);
+  background: var(--panel-reading);
+  box-shadow: 0 0 8px var(--panel-reading);
+}
+
+.dashboard-service-down .dashboard-marker {
+  border-color: var(--panel-alert);
+}
+
+.dashboard-health {
+  margin-top: 6px;
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 36px;
+}
+
+.dashboard-service-down .dashboard-health {
+  color: var(--panel-alert);
+}
+
+.dashboard-service-waiting .dashboard-health {
+  color: var(--panel-ink-dim);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+
+  .dashboard-meter > span {
+    transition: none;
+  }
+}

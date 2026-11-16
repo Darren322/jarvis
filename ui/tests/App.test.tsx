@@ -35,3 +35,35 @@ test('the app renders the Jarvis main landmark without a real connection', async
     root.unmount();
   });
 });
+
+test('the app opens one connection, shared by the Orb and the Panel', async () => {
+  const opened: SilentWebSocket[] = [];
+  vi.stubGlobal(
+    'WebSocket',
+    class extends SilentWebSocket {
+      constructor() {
+        super();
+        opened.push(this);
+      }
+    },
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(<App />);
+  });
+  expect(opened).toHaveLength(1);
+  const socket = opened[0] as unknown as { onopen: () => void; onmessage: (event: MessageEvent) => void };
+  await act(async () => {
+    socket.onopen();
+    socket.onmessage(new MessageEvent('message', { data: '{"type":"show_panel","panel":"stats"}' }));
+  });
+  expect(container.querySelector('section[aria-label="Stats"]')).not.toBeNull();
+  const orb = container.querySelector<HTMLElement>('[aria-label="Jarvis orb: tap to talk"]');
+  expect([orb?.style.width, orb?.style.height]).toEqual(['160px', '160px']);
+  await act(async () => {
+    root.unmount();
+  });
+});

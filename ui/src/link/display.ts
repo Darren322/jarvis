@@ -3,7 +3,7 @@
  * Ported from `Display` in `crates/jarvis-orb/src/link.rs`.
  */
 
-import type { OrbState, ToOrb } from './protocol';
+import type { OrbMessage, OrbState } from './protocol';
 
 /** Offline carries no state and no level, so they cannot disagree with the connection. */
 export type Display =
@@ -26,7 +26,7 @@ function clampUnit(value: number): number {
  * to 1. Offline ignores everything. Returns `display` itself when nothing
  * changes.
  */
-export function applyMessage(display: Display, message: ToOrb): Display {
+export function applyMessage(display: Display, message: OrbMessage): Display {
   if (display.kind === 'offline') {
     return display;
   }

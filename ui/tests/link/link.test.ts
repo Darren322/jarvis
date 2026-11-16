@@ -3,6 +3,12 @@ import { JARVIS_PORT, JARVIS_URL, JarvisLink, RECONNECT_DELAY } from '../../src/
 import { latest, socketFactory } from './fakeSocket';
 
 const TAP = '{"type":"tap"}';
+const PANEL_CLOSED = '{"type":"panel_closed"}';
+const SHOW_STATS = '{"type":"show_panel","panel":"stats"}';
+const HIDE_PANEL = '{"type":"hide_panel"}';
+const STATS =
+  '{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}';
+const READING = { cpuPercent: 12.5, temperatureC: 55, ramUsedBytes: 2, ramTotalBytes: 8, llama: 'up', bge: 'down' };
 
 function connectedLink() {
   const factory = socketFactory();
@@ -109,9 +115,10 @@ describe('messages', () => {
       'null',
       '42',
       '{}',
-      '{"type":"show_panel","panel":"stats"}',
-      '{"type":"hide_panel"}',
+      '{"type":"show_panel","panel":"camera"}',
+      '{"type":"hide_panel","panel":"stats"}',
       '{"type":"stats","cpu":12}',
+      STATS.replace('12.5', '100.01'),
       '{"type":"state","state":"dancing"}',
       '{"type":"state"}',
       '{"type":"state","state":"idle","extra":1}',
@@ -125,11 +132,125 @@ describe('messages', () => {
       socket.receive(message);
     }
     expect(link.display).toBe(before);
+    expect(link.shownPanel).toBeNull();
     expect(link.status).toBe('connected');
     expect(socket.closeCalls).toBe(0);
     expect(sockets).toHaveLength(1);
     socket.receive('{"type":"level","level":0.4,"source":"speech"}');
     expect(link.display).toEqual({ kind: 'online', state: 'speaking', level: 0.4 });
+  });
+});
+
+describe('the Panel', () => {
+  test('Panel messages reach the Panel and leave the display alone', () => {
+    const { link, sockets } = connectedLink();
+    const socket = latest(sockets);
+    socket.receive('{"type":"state","state":"speaking"}');
+    const display = link.display;
+    expect([link.shownPanel, link.stats]).toEqual([null, null]);
+    socket.receive(SHOW_STATS);
+    expect([link.shownPanel, link.stats]).toEqual(['stats', null]);
+    socket.receive(STATS);
+    expect([link.shownPanel, link.stats]).toEqual(['stats', READING]);
+    socket.receive(HIDE_PANEL);
+    expect([link.shownPanel, link.stats]).toEqual([null, null]);
+    expect(link.display).toBe(display);
+  });
+
+  test('a dropped connection hides the Panel and drops the reading', () => {
+    const { link, sockets } = connectedLink();
+    latest(sockets).receive(SHOW_STATS);
+    latest(sockets).receive(STATS);
+    latest(sockets).fail();
+    expect([link.shownPanel, link.stats]).toEqual([null, null]);
+  });
+
+  test('stop hides the Panel', () => {
+    const { link, sockets } = connectedLink();
+    latest(sockets).receive(SHOW_STATS);
+    link.stop();
+    expect(link.shownPanel).toBeNull();
+  });
+
+  test('each Panel change notifies subscribers once', () => {
+    const { link, sockets } = connectedLink();
+    const listener = vi.fn();
+    link.subscribePanel(listener);
+    const socket = latest(sockets);
+    socket.receive(SHOW_STATS);
+    expect(listener).toHaveBeenCalledTimes(1);
+    socket.receive(STATS);
+    socket.receive(STATS);
+    expect(listener).toHaveBeenCalledTimes(3);
+    socket.receive(HIDE_PANEL);
+    expect(listener).toHaveBeenCalledTimes(4);
+  });
+
+  test('state and level messages, dropped readings and repeats never notify Panel subscribers', () => {
+    const { link, sockets } = connectedLink();
+    const socket = latest(sockets);
+    const listener = vi.fn();
+    link.subscribePanel(listener);
+    socket.receive(STATS);
+    socket.receive(HIDE_PANEL);
+    socket.receive(SHOW_STATS);
+    listener.mockClear();
+    socket.receive(SHOW_STATS);
+    for (const state of ['listening', 'speaking']) {
+      socket.receive(JSON.stringify({ type: 'state', state }));
+      for (let index = 1; index <= 100; index += 1) {
+        socket.receive(JSON.stringify({ type: 'level', level: index / 100, source: 'speech' }));
+      }
+    }
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('an unsubscribed listener hears nothing more', () => {
+    const { link, sockets } = connectedLink();
+    const listener = vi.fn();
+    const unsubscribe = link.subscribePanel(listener);
+    unsubscribe();
+    latest(sockets).receive(SHOW_STATS);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test('closing the Panel sends exactly one PanelClosed and hides it here', () => {
+    const { link, sockets } = connectedLink();
+    const socket = latest(sockets);
+    socket.receive(SHOW_STATS);
+    socket.receive(STATS);
+    const listener = vi.fn();
+    link.subscribePanel(listener);
+    expect(link.closePanel()).toBe(true);
+    expect(socket.sent).toEqual([PANEL_CLOSED]);
+    expect([link.shownPanel, link.stats]).toEqual([null, null]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // A second close finds no Panel and sends nothing.
+    expect(link.closePanel()).toBe(false);
+    expect(socket.sent).toEqual([PANEL_CLOSED]);
+  });
+
+  test('closing with no Panel shown sends nothing', () => {
+    const { link, sockets } = connectedLink();
+    expect(link.closePanel()).toBe(false);
+    expect(latest(sockets).sent).toEqual([]);
+  });
+
+  test('a reading after a local close is dropped until Jarvis shows the Panel again', () => {
+    const { link, sockets } = connectedLink();
+    const socket = latest(sockets);
+    socket.receive(SHOW_STATS);
+    link.closePanel();
+    socket.receive(STATS);
+    expect([link.shownPanel, link.stats]).toEqual([null, null]);
+  });
+
+  test('a Tap while the Panel shows sends one Tap and leaves the Panel open', () => {
+    const { link, sockets } = connectedLink();
+    latest(sockets).receive(SHOW_STATS);
+    expect(link.tap()).toBe(true);
+    expect(latest(sockets).sent).toEqual([TAP]);
+    expect(link.shownPanel).toBe('stats');
   });
 });
 

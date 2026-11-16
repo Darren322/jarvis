@@ -5,11 +5,15 @@
  * Jarvis to the UI (ToOrb):
  *   {"type":"state","state":"thinking"}
  *   {"type":"level","level":0.25,"source":"mic"}
+ *   {"type":"show_panel","panel":"stats"}
+ *   {"type":"hide_panel"}
+ *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}
  * The UI to Jarvis (FromOrb):
  *   {"type":"tap"}
+ *   {"type":"panel_closed"}
  *
- * Other message types (such as the panel messages of jarvis-ui ticket 07) parse
- * to `null` here, so the Orb ignores them.
+ * Parsing is as strict as the Rust decoder (`deny_unknown_fields`, `CpuPercent`):
+ * anything else parses to `null` and is ignored.
  */
 
 /** What Jarvis is doing. Mirrors `orb_protocol::OrbState`. */
@@ -18,16 +22,54 @@ export type OrbState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'spe
 /** Whose loudness a level is. Mirrors `orb_protocol::LevelSource`. */
 export type LevelSource = 'speech' | 'mic';
 
-/** Jarvis to the UI. Mirrors `orb_protocol::ToOrb` (the variants the Orb uses). */
-export type ToOrb =
+/** A Panel the UI can show. Mirrors `orb_protocol::PanelName`. */
+export type PanelName = 'stats';
+
+/** Whether a service answered its last health check. Mirrors `orb_protocol::ServiceHealth`. */
+export type ServiceHealth = 'up' | 'down';
+
+/** One reading of the Pi's health, as `ToOrb::Stats` carries it. */
+export interface Stats {
+  /** 0 to 100 inclusive. */
+  readonly cpuPercent: number;
+  /** `null` when the Pi has no sensor reading (the wire omits the key); never 0 for "unknown". */
+  readonly temperatureC: number | null;
+  /** A non-negative integer. */
+  readonly ramUsedBytes: number;
+  /** A non-negative integer. */
+  readonly ramTotalBytes: number;
+  readonly llama: ServiceHealth;
+  readonly bge: ServiceHealth;
+}
+
+/** The messages that drive the Orb: read by its frame loop, never by React. */
+export type OrbMessage =
   | { readonly type: 'state'; readonly state: OrbState }
   | { readonly type: 'level'; readonly level: number; readonly source: LevelSource };
 
+/** The messages that open, fill and close a Panel. */
+export type PanelMessage =
+  | { readonly type: 'show_panel'; readonly panel: PanelName }
+  | { readonly type: 'hide_panel' }
+  | { readonly type: 'stats'; readonly stats: Stats };
+
+/** Jarvis to the UI. Mirrors `orb_protocol::ToOrb`. */
+export type ToOrb = OrbMessage | PanelMessage;
+
 /** The UI to Jarvis. Mirrors `orb_protocol::FromOrb`. */
-export type FromOrb = { readonly type: 'tap' };
+export type FromOrb = { readonly type: 'tap' } | { readonly type: 'panel_closed' };
+
+/** The highest CPU percent `orb_protocol::CpuPercent` accepts. */
+export const MAX_CPU_PERCENT = 100;
 
 const ORB_STATES: readonly string[] = ['idle', 'listening', 'transcribing', 'thinking', 'speaking'];
 const LEVEL_SOURCES: readonly string[] = ['speech', 'mic'];
+const PANEL_NAMES: readonly string[] = ['stats'];
+const SERVICE_HEALTHS: readonly string[] = ['up', 'down'];
+
+const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'] as const;
+/** The one optional key of any message: a Pi without a sensor reading omits it. */
+const TEMPERATURE_KEY = 'temperature_c';
 
 function isOrbState(value: unknown): value is OrbState {
   return typeof value === 'string' && ORB_STATES.includes(value);
@@ -37,17 +79,68 @@ function isLevelSource(value: unknown): value is LevelSource {
   return typeof value === 'string' && LEVEL_SOURCES.includes(value);
 }
 
+function isPanelName(value: unknown): value is PanelName {
+  return typeof value === 'string' && PANEL_NAMES.includes(value);
+}
+
+function isServiceHealth(value: unknown): value is ServiceHealth {
+  return typeof value === 'string' && SERVICE_HEALTHS.includes(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** A `u64` on the Rust side. */
+function isByteCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** A finite number from 0 to `MAX_CPU_PERCENT` inclusive, as `CpuPercent::new` accepts. */
+function isCpuPercent(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0 && value <= MAX_CPU_PERCENT;
+}
+
 /** True when `record` has exactly these keys, as the Rust side's `deny_unknown_fields` requires. */
 function hasExactKeys(record: object, keys: readonly string[]): boolean {
   const own = Object.keys(record);
   return own.length === keys.length && keys.every((key) => own.includes(key));
 }
 
+function parseStats(record: Record<string, unknown>): PanelMessage | null {
+  const hasTemperature = Object.hasOwn(record, TEMPERATURE_KEY);
+  const keys = hasTemperature ? [...STATS_KEYS, TEMPERATURE_KEY] : STATS_KEYS;
+  const temperature = record[TEMPERATURE_KEY];
+  if (
+    !hasExactKeys(record, keys) ||
+    !isCpuPercent(record.cpu_percent) ||
+    (hasTemperature && !isFiniteNumber(temperature)) ||
+    !isByteCount(record.ram_used_bytes) ||
+    !isByteCount(record.ram_total_bytes) ||
+    !isServiceHealth(record.llama) ||
+    !isServiceHealth(record.bge)
+  ) {
+    return null;
+  }
+  return {
+    type: 'stats',
+    stats: {
+      cpuPercent: record.cpu_percent,
+      temperatureC: isFiniteNumber(temperature) ? temperature : null,
+      ramUsedBytes: record.ram_used_bytes,
+      ramTotalBytes: record.ram_total_bytes,
+      llama: record.llama,
+      bge: record.bge,
+    },
+  };
+}
+
 /**
  * Reads one message from Jarvis. Returns `null` for anything that is not a
- * well-formed ToOrb the Orb understands: not JSON, not an object, an unknown
- * type, a missing or extra field, or a level that is not a finite number. A
- * finite level outside 0 to 1 is kept as sent; the reader clamps it.
+ * well-formed ToOrb: not JSON, not an object, an unknown type or Panel name, a
+ * missing or extra field, a level that is not a finite number, or a Stats
+ * reading out of range. A finite level outside 0 to 1 is kept as sent; the
+ * display clamps it.
  */
 export function parseToOrb(text: string): ToOrb | null {
   let value: unknown;
@@ -69,13 +162,21 @@ export function parseToOrb(text: string): ToOrb | null {
     case 'level':
       if (
         hasExactKeys(record, ['type', 'level', 'source']) &&
-        typeof record.level === 'number' &&
-        Number.isFinite(record.level) &&
+        isFiniteNumber(record.level) &&
         isLevelSource(record.source)
       ) {
         return { type: 'level', level: record.level, source: record.source };
       }
       return null;
+    case 'show_panel':
+      if (hasExactKeys(record, ['type', 'panel']) && isPanelName(record.panel)) {
+        return { type: 'show_panel', panel: record.panel };
+      }
+      return null;
+    case 'hide_panel':
+      return hasExactKeys(record, ['type']) ? { type: 'hide_panel' } : null;
+    case 'stats':
+      return parseStats(record);
     default:
       return null;
   }
