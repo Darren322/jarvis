@@ -1,6 +1,6 @@
-//! The messages Jarvis and `jarvis-orb` exchange over their Unix socket.
+//! The messages Jarvis and the screen UI (`ui/`) exchange over their WebSocket.
 //!
-//! One JSON object per line. Jarvis sends [`ToOrb`]; the orb sends [`FromOrb`].
+//! One JSON object per message. Jarvis sends [`ToOrb`]; the UI sends [`FromOrb`].
 //! This crate knows nothing about Jarvis or about drawing: each side maps its own
 //! types to these.
 

@@ -1,19 +1,9 @@
-use std::{
-    env,
-    ffi::OsString,
-    num::NonZeroU16,
-    path::{Path, PathBuf},
-};
+use std::{env, ffi::OsString, num::NonZeroU16};
 
 use thiserror::Error;
 
-use super::{ConfigError, resolve_from};
+use super::ConfigError;
 
-const SOCKET_VAR: &str = "JARVIS_ORB_SOCKET";
-const RUNTIME_DIR_VAR: &str = "XDG_RUNTIME_DIR";
-const SOCKET_FILE_NAME: &str = "jarvis-orb.sock";
-/// Where the socket goes without a runtime directory, relative to the working directory.
-const FALLBACK_SOCKET_PATH: &str = "data/jarvis-orb.sock";
 const PORT_VAR: &str = "JARVIS_ORB_PORT";
 /// The WebSocket port when `JARVIS_ORB_PORT` is not set. It must match the port
 /// constant in `ui/src/link/` (jarvis-ui ticket 04).
@@ -44,8 +34,6 @@ pub enum OriginError {
 /// Where Jarvis serves the orb screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrbConfig {
-    /// The Unix socket `jarvis-orb` connects to. Absolute.
-    pub socket_path: PathBuf,
     /// The localhost port of the WebSocket the UI connects to: `JARVIS_ORB_PORT`,
     /// else 8765. Never 0: 0 would mean "any port", and the UI has to know which.
     pub port: NonZeroU16,
@@ -58,49 +46,17 @@ pub struct OrbConfig {
 }
 
 impl OrbConfig {
-    pub(super) fn from_env(current_dir: &Path) -> Result<Self, ConfigError> {
-        Self::from_values(
-            env::var_os(SOCKET_VAR),
-            env::var_os(RUNTIME_DIR_VAR),
-            env::var_os(PORT_VAR),
-            env::var_os(ORIGINS_VAR),
-            current_dir,
-        )
+    pub(super) fn from_env() -> Result<Self, ConfigError> {
+        Self::from_values(env::var_os(PORT_VAR), env::var_os(ORIGINS_VAR))
     }
 
-    /// Picks the socket path, first match wins:
-    ///
-    /// 1. `JARVIS_ORB_SOCKET`, resolved against the working directory.
-    /// 2. `$XDG_RUNTIME_DIR/jarvis-orb.sock`: a per-user directory in memory, mode
-    ///    0700, emptied at logout and reboot, so no other user can reach the socket
-    ///    and no stale file survives a restart. A relative value is not a valid
-    ///    runtime directory and is skipped.
-    /// 3. `data/jarvis-orb.sock` under the working directory, for a session with no
-    ///    runtime directory (a Mac, some non-login shells).
-    ///
     /// An empty value counts as unset.
     ///
     /// The port is `JARVIS_ORB_PORT` (1 to 65535, else [`ConfigError::OrbPort`])
     /// or the default. The origins are `JARVIS_ORB_ALLOWED_ORIGINS` (every entry
     /// valid, else [`ConfigError::OrbOrigin`]) or the default.
-    fn from_values(
-        socket: Option<OsString>,
-        runtime_dir: Option<OsString>,
-        port: Option<OsString>,
-        origins: Option<OsString>,
-        current_dir: &Path,
-    ) -> Result<Self, ConfigError> {
+    fn from_values(port: Option<OsString>, origins: Option<OsString>) -> Result<Self, ConfigError> {
         let set = |value: Option<OsString>| value.filter(|value| !value.is_empty());
-        let socket_path = if let Some(socket) = set(socket) {
-            resolve_from(current_dir, PathBuf::from(socket))
-        } else if let Some(runtime_dir) = set(runtime_dir)
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-        {
-            runtime_dir.join(SOCKET_FILE_NAME)
-        } else {
-            current_dir.join(FALLBACK_SOCKET_PATH)
-        };
         let port = match set(port) {
             None => DEFAULT_PORT,
             Some(value) => {
@@ -122,7 +78,6 @@ impl OrbConfig {
             Some(value) => parse_origins(&value.to_string_lossy())?,
         };
         Ok(Self {
-            socket_path,
             port,
             allowed_origins,
         })

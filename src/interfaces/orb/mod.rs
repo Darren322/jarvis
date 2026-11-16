@@ -2,11 +2,9 @@
 //!
 //! Jarvis is the server. It sends the assistant's state on every change and a
 //! loudness about 30 times a second while listening or speaking, and it reads
-//! taps. Messages are `orb-protocol` JSON. Two doors lead in, and both carry the
-//! same messages from the same source (the [`hub`]):
-//!
-//! - [`websocket`]: the UI in Chromium, on `127.0.0.1`, for allowed origins only.
-//! - [`unix`]: the macroquad `jarvis-orb`, until jarvis-ui ticket 06 retires it.
+//! taps. Messages are `orb-protocol` JSON. One door leads in, the [`websocket`]
+//! for the UI in Chromium, on `127.0.0.1` and for allowed origins only. Every
+//! client it serves gets the same messages from the same source (the [`hub`]).
 //!
 //! This interface shares only `features/` with the terminal: it is handed a
 //! [`StateFeed`] observer, two loudness readers and the sending half of a tap
@@ -24,10 +22,9 @@
 //! bounded handle queue.
 
 mod hub;
-mod unix;
 mod websocket;
 
-use std::{convert::Infallible, io, path::PathBuf, time::Duration};
+use std::{convert::Infallible, io, time::Duration};
 
 use orb_protocol::{FromOrb, Level, LevelSource, OrbState, ToOrb};
 use thiserror::Error;
@@ -36,7 +33,7 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
-use self::{hub::Hub, unix::UnixEndpoint, websocket::WebSocketEndpoint};
+use self::{hub::Hub, websocket::WebSocketEndpoint};
 use crate::{
     config::OrbConfig,
     features::{
@@ -47,15 +44,12 @@ use crate::{
     },
 };
 
-/// Orbs served at once on each door. One screen is expected; the spare slots let
+/// Orbs served at once. One screen is expected; the spare slots let
 /// a restarted orb connect before its old connection is noticed as gone.
 const MAX_CONNECTIONS: usize = 4;
 /// How long one message may take to write before the orb counts as stuck and its
 /// connection is closed. The orb reconnects by itself.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
-/// Pause after a failed `accept` (for example, out of file descriptors), so a
-/// persistent failure cannot spin.
-const ACCEPT_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Taps waiting to be handled. A tap is a request to act now, so a second one
 /// arriving before the first is handled adds nothing and is dropped.
 pub(crate) const TAP_QUEUE: usize = 1;
@@ -69,28 +63,6 @@ const FROM_ORB_QUEUE: usize = 16;
 
 #[derive(Debug, Error)]
 pub(crate) enum OrbError {
-    #[error("{} exists and is not a socket", .0.display())]
-    NotASocket(PathBuf),
-    #[error("another program is already serving {}", .0.display())]
-    InUse(PathBuf),
-    #[error("could not remove the stale socket {}", path.display())]
-    RemoveStale {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not open the socket {}", path.display())]
-    Bind {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not restrict the socket {} to its owner", path.display())]
-    Restrict {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
     #[error("could not listen on 127.0.0.1:{port} (is another program using it?)")]
     WebSocketBind {
         port: u16,
@@ -141,10 +113,9 @@ impl Inbox {
     }
 }
 
-/// Both doors, bound. Dropping it (or the `serve` future) closes every
-/// connection, removes the socket file and frees the port.
+/// The WebSocket door, bound. Dropping it (or the `serve` future) closes every
+/// connection and frees the port.
 pub(crate) struct OrbServer {
-    unix: UnixEndpoint,
     websocket: WebSocketEndpoint,
     /// The origins the WebSocket accepts (see `OrbConfig::allowed_origins`).
     allowed_origins: Vec<String>,
@@ -155,25 +126,17 @@ pub(crate) struct OrbServer {
 }
 
 impl OrbServer {
-    /// Opens the Unix socket and the WebSocket port. If either cannot be opened
-    /// neither is served, so that the failure is reported once and Jarvis runs
-    /// without an orb rather than with half of one. Must be called inside the
-    /// Tokio runtime.
+    /// Opens the WebSocket port. If it cannot be opened the failure is reported
+    /// and Jarvis runs without an orb. Must be called inside the Tokio runtime.
     pub(crate) fn bind(config: &OrbConfig) -> Result<(Self, OrbHandle), OrbError> {
-        let unix = UnixEndpoint::bind(&config.socket_path)?;
         let websocket = WebSocketEndpoint::bind(config.port.get())?;
-        Ok(Self::new(unix, websocket, config.allowed_origins.clone()))
+        Ok(Self::new(websocket, config.allowed_origins.clone()))
     }
 
-    fn new(
-        unix: UnixEndpoint,
-        websocket: WebSocketEndpoint,
-        allowed_origins: Vec<String>,
-    ) -> (Self, OrbHandle) {
+    fn new(websocket: WebSocketEndpoint, allowed_origins: Vec<String>) -> (Self, OrbHandle) {
         let (to_orb, messages) = mpsc::channel(TO_ORB_QUEUE);
         let (events, from_orb) = mpsc::channel(FROM_ORB_QUEUE);
         let server = Self {
-            unix,
             websocket,
             allowed_origins,
             messages,
@@ -189,7 +152,6 @@ impl OrbServer {
     /// dropping it at any `.await` closes them all and loses nothing.
     pub(crate) async fn serve(self, feeds: OrbFeeds<'_>) -> Infallible {
         let Self {
-            unix,
             websocket,
             allowed_origins,
             messages,
@@ -201,14 +163,13 @@ impl OrbServer {
             taps: feeds.taps.clone(),
             events,
         };
-        // All three never complete. `biased` makes the hub hear of a state change
+        // Both never complete. `biased` makes the hub hear of a state change
         // before it accepts an orb that connects at the same moment, so that the
         // orb is told the newest state first rather than the one before.
         tokio::select! {
             biased;
             never = publish_everything(&hub, states, messages, &feeds) => match never {},
-            never = unix.serve(&hub, &inbox) => match never {},
-            never = websocket.serve(hub.handle(), inbox.clone(), allowed_origins) => match never {},
+            never = websocket.serve(hub.handle(), inbox, allowed_origins) => match never {},
         }
     }
 }

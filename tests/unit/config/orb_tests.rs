@@ -1,69 +1,9 @@
 use super::*;
 
-fn os(value: &str) -> Option<OsString> {
-    Some(OsString::from(value))
-}
-
-#[test]
-fn the_socket_path_comes_from_the_first_setting_that_is_usable() {
-    let cwd = Path::new("/home/darren/jarvis");
-    // (name, JARVIS_ORB_SOCKET, XDG_RUNTIME_DIR, expected)
-    let cases = [
-        (
-            "an absolute setting is used as it is",
-            os("/tmp/orb.sock"),
-            os("/run/user/1000"),
-            "/tmp/orb.sock",
-        ),
-        (
-            "a relative setting is resolved against the working directory",
-            os("run/orb.sock"),
-            os("/run/user/1000"),
-            "/home/darren/jarvis/run/orb.sock",
-        ),
-        (
-            "no setting: the runtime directory",
-            None,
-            os("/run/user/1000"),
-            "/run/user/1000/jarvis-orb.sock",
-        ),
-        (
-            "an empty setting counts as unset",
-            os(""),
-            os("/run/user/1000"),
-            "/run/user/1000/jarvis-orb.sock",
-        ),
-        (
-            "no runtime directory: under the working directory",
-            None,
-            None,
-            "/home/darren/jarvis/data/jarvis-orb.sock",
-        ),
-        (
-            "an empty runtime directory counts as unset",
-            None,
-            os(""),
-            "/home/darren/jarvis/data/jarvis-orb.sock",
-        ),
-        (
-            "a relative runtime directory is not valid and is skipped",
-            None,
-            os("run/user"),
-            "/home/darren/jarvis/data/jarvis-orb.sock",
-        ),
-    ];
-    for (name, socket, runtime_dir, expected) in cases {
-        let config = OrbConfig::from_values(socket, runtime_dir, None, None, cwd).unwrap();
-        assert_eq!(config.socket_path, Path::new(expected), "{name}");
-    }
-}
-
 #[test]
 fn the_port_is_one_to_65535_and_defaults_to_8765() {
-    let cwd = Path::new("/home/darren/jarvis");
     let port = |value: Option<&str>| {
-        OrbConfig::from_values(None, None, value.map(OsString::from), None, cwd)
-            .map(|config| config.port.get())
+        OrbConfig::from_values(value.map(OsString::from), None).map(|config| config.port.get())
     };
     // (name, JARVIS_ORB_PORT, the port, or None when it is rejected)
     let cases = [
@@ -103,19 +43,12 @@ fn a_port_that_is_not_text_is_rejected() {
     use std::os::unix::ffi::OsStringExt;
 
     let value = OsString::from_vec(vec![0xff, 0xfe]);
-    let result = OrbConfig::from_values(None, None, Some(value), None, Path::new("/"));
+    let result = OrbConfig::from_values(Some(value), None);
     assert!(matches!(result, Err(ConfigError::OrbPort { .. })));
 }
 
 fn origins(value: Option<&str>) -> Result<Vec<String>, ConfigError> {
-    OrbConfig::from_values(
-        None,
-        None,
-        None,
-        value.map(OsString::from),
-        Path::new("/home/darren/jarvis"),
-    )
-    .map(|config| config.allowed_origins)
+    OrbConfig::from_values(None, value.map(OsString::from)).map(|config| config.allowed_origins)
 }
 
 #[test]

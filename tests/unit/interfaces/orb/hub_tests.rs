@@ -38,7 +38,7 @@ async fn a_new_outbox_starts_with_the_state_as_it_is_and_then_follows_the_change
     let hub = Hub::new(OrbState::Idle);
     hub.publish(state(OrbState::Thinking));
 
-    let mut outbox = hub.subscribe();
+    let mut outbox = hub.handle().subscribe().unwrap();
     assert_eq!(outbox.next().await, Ok(state(OrbState::Thinking)));
     assert!(is_quiet(&mut outbox).await);
 
@@ -54,7 +54,7 @@ async fn an_orb_may_be_this_many_events_behind_and_one_more_cuts_it_off() {
     let cases = [(EVENT_QUEUE, true), (EVENT_QUEUE + 1, false)];
     for (published, all_arrive) in cases {
         let hub = Hub::new(OrbState::Idle);
-        let mut outbox = hub.subscribe();
+        let mut outbox = hub.handle().subscribe().unwrap();
         assert_eq!(outbox.next().await, Ok(state(OrbState::Idle)));
         for number in 0..published {
             hub.publish(state_number(number));
@@ -77,7 +77,7 @@ async fn an_orb_that_is_behind_keeps_only_the_newest_levels() {
     let cases = [(LEVEL_QUEUE, 0), (LEVEL_QUEUE + 1, 1)];
     for (published, first_kept) in cases {
         let hub = Hub::new(OrbState::Idle);
-        let mut outbox = hub.subscribe();
+        let mut outbox = hub.handle().subscribe().unwrap();
         assert_eq!(outbox.next().await, Ok(state(OrbState::Idle)));
         for number in 0..published {
             hub.publish(level(number));
@@ -92,7 +92,7 @@ async fn an_orb_that_is_behind_keeps_only_the_newest_levels() {
 #[tokio::test(start_paused = true)]
 async fn a_full_level_queue_does_not_hold_up_the_next_state_change() {
     let hub = Hub::new(OrbState::Idle);
-    let mut outbox = hub.subscribe();
+    let mut outbox = hub.handle().subscribe().unwrap();
     assert_eq!(outbox.next().await, Ok(state(OrbState::Idle)));
     for number in 0..=LEVEL_QUEUE {
         hub.publish(level(number));
@@ -110,8 +110,8 @@ async fn a_full_level_queue_does_not_hold_up_the_next_state_change() {
 #[tokio::test(start_paused = true)]
 async fn each_orb_has_its_own_queues() {
     let hub = Hub::new(OrbState::Idle);
-    let mut behind = hub.subscribe();
-    let mut keeping_up = hub.subscribe();
+    let mut behind = hub.handle().subscribe().unwrap();
+    let mut keeping_up = hub.handle().subscribe().unwrap();
     assert_eq!(behind.next().await, Ok(state(OrbState::Idle)));
     assert_eq!(keeping_up.next().await, Ok(state(OrbState::Idle)));
 

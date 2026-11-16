@@ -5,8 +5,8 @@ Run on the 8 GB Pi from the repo root (stdlib only):
     python3 scripts/pi/bench_first_text.py <jarvis binary> [--empty] [--pause=SECONDS] [prompts.txt]
 
 It copies data/jarvis.sqlite3 to /tmp (or starts from an empty database with
---empty), starts the binary with speech, voice input and the orb socket pointed
-away from the real ones, types the prompts and prints each answer with the
+--empty), starts the binary with speech, voice input and the orb port (8767, so the
+screen does not connect to it) pointed away from the real ones, types the prompts and prints each answer with the
 model's first_text, input and cached_input. The copy is deleted afterwards.
 Prompts are one per line; the default five are the 2026-11-14 baseline.
 Without --pause the prompts are typed all at once and run back to back. With it,
@@ -35,7 +35,7 @@ if not empty:
     source.backup(copy)
     copy.close()
     source.close()
-env = dict(os.environ, JARVIS_ARCHIVE_PATH=database, JARVIS_ORB_SOCKET=scratch + "/orb.sock",
+env = dict(os.environ, JARVIS_ARCHIVE_PATH=database, JARVIS_ORB_PORT="8767",
            JARVIS_TTS_ENGINE="", JARVIS_STT_BASE_URL="", JARVIS_STT_MODEL="", JARVIS_CAPTURE_DEVICE="")
 jarvis = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
 time.sleep(8)  # let the embedder connect, so a search is not keyword-only

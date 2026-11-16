@@ -6,7 +6,7 @@ Read this before any SSH, measurement or deployment step. Any change on a Pi nee
 
 | Host | Login | Role |
 | --- | --- | --- |
-| 8 GB Pi | `darrenrasp@jarvis` | Runs Jarvis (`~/jarvis`, branch `dev`), the microphone, the speaker, the 5 inch screen and `jarvis-orb`. |
+| 8 GB Pi | `darrenrasp@jarvis` | Runs Jarvis (`~/jarvis`, branch `dev`), the microphone, the speaker, the 5 inch screen and the screen UI (Chromium kiosk). |
 | 16 GB Pi | `raspdarren-ai@jarvis-ai` | Runs the models. Reachable only through the 8 GB Pi: `ssh -J darrenrasp@jarvis raspdarren-ai@jarvis-ai`. |
 
 Both use password login; the password is `JARVIS_PASS` in the repo's `.env` on the Mac. Use the wrapper so it never appears on a command line:
@@ -41,17 +41,15 @@ Measured: Gemma reads about 58 prompt tokens a second, so every 58 uncached toke
 
 ## Jarvis on the 8 GB Pi
 
-- Darren starts it with `./run.sh`, which runs `cargo check --locked` and then `cargo run --locked`: a **debug** build. `target/release/` is only used by `jarvis-orb` and by benchmarks.
-- The orb: `./target/release/jarvis-orb` (linked to Jarvis by default; `--demo` for the stand-alone demo). It needs `XDG_RUNTIME_DIR=/run/user/1000` and `WAYLAND_DISPLAY=wayland-0` when started over SSH, and it takes over the screen.
-- The orb socket is `/run/user/1000/jarvis-orb.sock`.
+- Darren starts it with `./run.sh`, which runs `cargo check --locked` and then `cargo run --locked`: a **debug** build. `target/release/` is only used by benchmarks.
+- The Orb is drawn by the screen UI (see "The screen UI" below), which reaches Jarvis on the WebSocket at 127.0.0.1:8765. The macroquad `jarvis-orb` and its Unix socket were removed by jarvis-ui ticket 06.
 - Jarvis prints its timing lines (`Model stage: ... first_text=... cached_input=...`, `Speech diagnostics ... time_to_first_audio=...`) to the terminal only. To see a real run's timings, ask Darren to paste them.
 
 ## Measuring without touching Darren's data
 
-All three run on the 8 GB Pi from `~/jarvis` and need only Python's standard library:
+Both run on the 8 GB Pi from `~/jarvis` and need only Python's standard library:
 
 - `python3 scripts/pi/bench_first_text.py <binary> [--empty] [--pause=SECONDS] [prompts.txt]`: the wait for the first word per question, on a copy of the database. `--pause` leaves Jarvis idle between questions, which a cache warm-up needs. Use questions the server has not seen since its last restart: a repeated conversation is answered from the server's cache and looks faster than it is. The 2026-11-14 baseline is in `docs/specs/fast-memory/issues/01-search-only-on-demand.md`.
-- `python3 scripts/pi/orb_smoke.py`: the orb socket, a tap and mic levels against the real Jarvis; sends nothing to the model.
 - `python3 scripts/pi/stt_timing.py`: speech-to-text latency.
 
 To benchmark a change that is not pushed, build it beside the checkout instead of in it:

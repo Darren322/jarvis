@@ -87,15 +87,11 @@ impl Hub {
         }
         let _ = shared.events.send(message);
     }
-
-    /// A new orb's queues. Its first message is the current state.
-    pub(super) fn subscribe(&self) -> Outbox {
-        Outbox::new(&lock(&self.shared))
-    }
 }
 
 impl HubHandle {
-    /// Like [`Hub::subscribe`], or `None` once the hub is gone.
+    /// A new orb's queues, or `None` once the hub is gone. Its first message is
+    /// the current state.
     pub(super) fn subscribe(&self) -> Option<Outbox> {
         let shared = self.shared.upgrade()?;
         Some(Outbox::new(&lock(&shared)))

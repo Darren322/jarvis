@@ -216,7 +216,7 @@ impl App {
         let mut input = BufReader::new(stdin);
         let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
         // The orb and the cues run beside the REPL in this task and end with it:
-        // dropping `serve_orb` closes its connections and removes the socket file.
+        // dropping `serve_orb` closes its connections and frees the port.
         tokio::select! {
             result = run_input_loop(
                 &self.assistant,
@@ -283,7 +283,7 @@ impl App {
         speech
     }
 
-    /// Opens the orb's socket and WebSocket port. The orb is optional, so one that
+    /// Opens the orb's WebSocket port. The orb is optional, so one that
     /// cannot be opened is a warning and Jarvis runs without it.
     fn open_orb(&self) -> Option<(OrbServer, OrbHandle)> {
         match OrbServer::bind(&self.orb_config) {

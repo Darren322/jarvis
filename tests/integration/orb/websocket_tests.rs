@@ -48,7 +48,6 @@ async fn start_jarvis(port: u16, directory: &tempfile::TempDir) -> (Child, MockS
         )
         .env("JARVIS_EMBEDDING_BASE_URL", embeddings.uri() + "/v1")
         .env("JARVIS_EMBEDDING_MODEL", "integration-embedding-model")
-        .env("JARVIS_ORB_SOCKET", directory.path().join("orb.sock"))
         .env("JARVIS_ORB_PORT", port.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

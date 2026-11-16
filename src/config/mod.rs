@@ -91,7 +91,7 @@ impl AppConfig {
             archive_path,
             tts: OptionalTtsConfig::from_env(&current_dir),
             speech_to_text,
-            orb: OrbConfig::from_env(&current_dir)?,
+            orb: OrbConfig::from_env()?,
             cues: CueConfig::from_env(&current_dir),
             panel: PanelConfig::from_env()?,
         })

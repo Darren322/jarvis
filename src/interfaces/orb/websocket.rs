@@ -7,9 +7,9 @@
 //! the configured ones. A request with no `Origin`, or the opaque `null`, is
 //! refused too: the UI is served from `http://localhost`.
 //!
-//! `axum` runs the HTTP handshake. Unlike the Unix door, each connection is a
-//! task that `axum` spawns, so it can outlive the serve future: it ends as soon
-//! as the hub is gone (see [`Outbox::next`]) or the client leaves.
+//! `axum` runs the HTTP handshake. Each connection is a task that `axum`
+//! spawns, so it can outlive the serve future: it ends as soon as the hub is
+//! gone (see [`Outbox::next`]) or the client leaves.
 
 use std::{
     convert::Infallible,
