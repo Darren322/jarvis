@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 10 are done. 13 (`close_panel` tool, committed `d94f962` with fast-memory 10's cache fix), 14 (storage on the Dashboard) and 15 ("bring up the stats" without the model) are in review: committed on `dev`, not yet on the Pi, not yet tried by Darren. `dev` is not pushed (Claude Code's permission check blocked `git push`; Darren pushes). The 8 GB Pi runs a Jarvis built from a patch (13 without the cache fix) and the UI from ticket 10. First: Darren pushes `dev`; then, with his OK, pull and rebuild on the Pi and run `scripts/deploy-ui.sh` in the same step (14 changes the wire format, so Jarvis and the UI must change together), and he tries "bring up the stats", a free-form close, the storage figure and how fast it all is. Then 11 (camera, needs-info) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 10 are done. 13 (`close_panel` tool), 14 (storage on the Dashboard) and 15 ("bring up the stats" without the model) are in review, pushed and running on the 8 GB Pi since 2026-11-17 (Jarvis at `d26da31` via `./run.sh` in tmux, UI deployed); a typed "bring up the stats" and the storage figure are checked there. First: Darren tries them by voice, closes the Dashboard in his own words, and says whether answers after a tool call are quick now (fast-memory 10); then they are done. Next: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
