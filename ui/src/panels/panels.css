@@ -118,10 +118,6 @@
   min-width: 0;
 }
 
-.dashboard-metric-wide {
-  grid-column: 1 / -1;
-}
-
 /* No specificity, so each part's own margin below wins. */
 :where(.dashboard-metrics, .dashboard-services) dd {
   margin: 0;
@@ -150,6 +146,17 @@
   font-size: 30px;
   font-weight: 400;
   color: var(--panel-ink-dim);
+}
+
+/* Memory and storage share a row: smaller, so "9999 / 9999 GB" fits one column in a wide font. */
+.dashboard-metric-compact .dashboard-value {
+  font-size: 52px;
+  line-height: 60px;
+  height: 60px;
+}
+
+.dashboard-metric-compact .dashboard-unit {
+  font-size: 20px;
 }
 
 .dashboard-meter {

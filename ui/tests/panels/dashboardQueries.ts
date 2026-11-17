@@ -11,6 +11,16 @@ export function valueOf(root: ParentNode, label: string): string {
   return value.textContent ?? '';
 }
 
+/** How full the meter under the value labelled `label` is, as its `--fill`. Fails the test if there is none. */
+export function meterFillOf(root: ParentNode, label: string): string {
+  const term = [...root.querySelectorAll('dt')].find((element) => element.textContent === label);
+  const fill = term?.parentElement?.querySelector<HTMLElement>('.dashboard-meter > span');
+  if (fill === null || fill === undefined) {
+    throw new Error(`no meter is labelled ${label}`);
+  }
+  return fill.style.getPropertyValue('--fill');
+}
+
 /** Every value on the Dashboard by its label, in screen order. */
 export function allValues(root: ParentNode): Record<string, string> {
   return Object.fromEntries(

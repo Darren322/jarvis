@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use orb_protocol::StorageUsage;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -24,6 +25,10 @@ fn reading() -> MachineReading {
         temperature_c: Some(55.0),
         ram_used_bytes: 2,
         ram_total_bytes: 8,
+        storage: Some(StorageUsage {
+            available_bytes: 5,
+            total_bytes: 9,
+        }),
     }
 }
 
@@ -123,6 +128,28 @@ fn a_real_temperature_of_zero_is_kept() {
         panic!("expected Stats");
     };
     assert_eq!(temperature_c, Some(0.0));
+}
+
+#[test]
+fn storage_reaches_the_wire_unchanged_and_absent_storage_sends_none() {
+    let storage = StorageUsage {
+        available_bytes: 207_517_036_544,
+        total_bytes: 251_416_899_584,
+    };
+    for expected in [Some(storage), None] {
+        let message = stats_message(
+            MachineReading {
+                storage: expected,
+                ..reading()
+            },
+            HealthStatus::Up,
+            HealthStatus::Up,
+        );
+        let ToOrb::Stats { storage, .. } = message else {
+            panic!("expected Stats");
+        };
+        assert_eq!(storage, expected);
+    }
 }
 
 #[test]

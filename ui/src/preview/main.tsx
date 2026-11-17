@@ -12,7 +12,8 @@
  * - `panel`: `stats` shows the whole screen as Jarvis would, with the Dashboard
  *   and the Orb in its corner.
  * - `reading`: the Dashboard's reading, one of `READINGS` in `fixtures.ts`:
- *   `typical` (default), `no-temperature`, `waiting`, `service-down`, `widest`.
+ *   `typical` (default), `no-temperature`, `no-storage`, `waiting`, `service-down`,
+ *   `widest`, `widest-unavailable`.
  * - `font`: a CSS font-family for the Panel, to try a wider font than this
  *   machine's system font (the Pi's differs), e.g. `font=Verdana`.
  * - `t`: if set, step the animation to `t` seconds at 60 fps, draw that frame

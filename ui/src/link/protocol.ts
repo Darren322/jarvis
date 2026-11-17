@@ -7,7 +7,8 @@
  *   {"type":"level","level":0.25,"source":"mic"}
  *   {"type":"show_panel","panel":"stats"}
  *   {"type":"hide_panel"}
- *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}
+ *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,
+ *    "storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
  * The UI to Jarvis (FromOrb):
  *   {"type":"tap"}
  *   {"type":"panel_closed"}
@@ -28,6 +29,16 @@ export type PanelName = 'stats';
 /** Whether a service answered its last health check. Mirrors `orb_protocol::ServiceHealth`. */
 export type ServiceHealth = 'up' | 'down';
 
+/**
+ * The space on the 8 GB Pi's root filesystem, as the `storage` object of a
+ * Stats message carries it. Both are non-negative integers; the Dashboard
+ * works out what is used (`total - available`).
+ */
+export interface StorageSpace {
+  readonly availableBytes: number;
+  readonly totalBytes: number;
+}
+
 /** One reading of the Pi's health, as `ToOrb::Stats` carries it. */
 export interface Stats {
   /** 0 to 100 inclusive. */
@@ -38,6 +49,8 @@ export interface Stats {
   readonly ramUsedBytes: number;
   /** A non-negative integer. */
   readonly ramTotalBytes: number;
+  /** `null` when Jarvis could not read the filesystem (the wire omits the key); never 0 for "unknown". */
+  readonly storage: StorageSpace | null;
   readonly llama: ServiceHealth;
   readonly bge: ServiceHealth;
 }
@@ -68,8 +81,11 @@ const PANEL_NAMES: readonly string[] = ['stats'];
 const SERVICE_HEALTHS: readonly string[] = ['up', 'down'];
 
 const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'] as const;
-/** The one optional key of any message: a Pi without a sensor reading omits it. */
+/** Optional in Stats: a Pi without a sensor reading omits it. */
 const TEMPERATURE_KEY = 'temperature_c';
+/** Optional in Stats: omitted when Jarvis could not read the filesystem. */
+const STORAGE_KEY = 'storage';
+const STORAGE_KEYS = ['available_bytes', 'total_bytes'] as const;
 
 function isOrbState(value: unknown): value is OrbState {
   return typeof value === 'string' && ORB_STATES.includes(value);
@@ -107,14 +123,37 @@ function hasExactKeys(record: object, keys: readonly string[]): boolean {
   return own.length === keys.length && keys.every((key) => own.includes(key));
 }
 
+/**
+ * A Stats `storage` object: exactly `available_bytes` and `total_bytes`, both
+ * byte counts. Anything else, `null` included, gives `undefined`.
+ */
+function parseStorage(value: unknown): StorageSpace | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || !hasExactKeys(value, STORAGE_KEYS)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (!isByteCount(record.available_bytes) || !isByteCount(record.total_bytes)) {
+    return undefined;
+  }
+  return { availableBytes: record.available_bytes, totalBytes: record.total_bytes };
+}
+
 function parseStats(record: Record<string, unknown>): PanelMessage | null {
   const hasTemperature = Object.hasOwn(record, TEMPERATURE_KEY);
-  const keys = hasTemperature ? [...STATS_KEYS, TEMPERATURE_KEY] : STATS_KEYS;
+  const hasStorage = Object.hasOwn(record, STORAGE_KEY);
+  const keys = [
+    ...STATS_KEYS,
+    ...(hasTemperature ? [TEMPERATURE_KEY] : []),
+    ...(hasStorage ? [STORAGE_KEY] : []),
+  ];
   const temperature = record[TEMPERATURE_KEY];
+  // An absent key is no reading (`null`); a present but malformed one is `undefined`.
+  const storage = hasStorage ? parseStorage(record[STORAGE_KEY]) : null;
   if (
     !hasExactKeys(record, keys) ||
     !isCpuPercent(record.cpu_percent) ||
     (hasTemperature && !isFiniteNumber(temperature)) ||
+    storage === undefined ||
     !isByteCount(record.ram_used_bytes) ||
     !isByteCount(record.ram_total_bytes) ||
     !isServiceHealth(record.llama) ||
@@ -129,6 +168,7 @@ function parseStats(record: Record<string, unknown>): PanelMessage | null {
       temperatureC: isFiniteNumber(temperature) ? temperature : null,
       ramUsedBytes: record.ram_used_bytes,
       ramTotalBytes: record.ram_total_bytes,
+      storage,
       llama: record.llama,
       bge: record.bge,
     },
@@ -138,8 +178,8 @@ function parseStats(record: Record<string, unknown>): PanelMessage | null {
 /**
  * Reads one message from Jarvis. Returns `null` for anything that is not a
  * well-formed ToOrb: not JSON, not an object, an unknown type or Panel name, a
- * missing or extra field, a level that is not a finite number, or a Stats
- * reading out of range. A finite level outside 0 to 1 is kept as sent; the
+ * missing or extra field (in a Stats `storage` object too), a level that is
+ * not a finite number, or a Stats reading out of range. A finite level outside 0 to 1 is kept as sent; the
  * display clamps it.
  */
 export function parseToOrb(text: string): ToOrb | null {

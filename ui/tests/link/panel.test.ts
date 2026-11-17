@@ -7,6 +7,7 @@ const FIRST: Stats = {
   temperatureC: 55,
   ramUsedBytes: 2,
   ramTotalBytes: 8,
+  storage: null,
   llama: 'up',
   bge: 'down',
 };

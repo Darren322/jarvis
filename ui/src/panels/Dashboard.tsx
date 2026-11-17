@@ -5,8 +5,10 @@ import {
   formatHealth,
   formatPercent,
   formatRam,
+  formatStorage,
   meterFraction,
   type Readout,
+  storageUsedBytes,
   TEMPERATURE_METER_FULL_C,
   UNAVAILABLE,
   WAITING,
@@ -34,8 +36,8 @@ interface MetricProps {
   readonly readout: Readout;
   /** How full the meter under the value is, 0 to 1. */
   readonly fraction: number;
-  /** Spans both columns, for the widest value. */
-  readonly wide?: boolean;
+  /** Drawn smaller, so a "used / total GB" value fits one column. */
+  readonly compact?: boolean;
 }
 
 /** A value with no number in it (a missing reading, or none yet) is drawn small and dim, so it never reads as a figure. */
@@ -44,9 +46,9 @@ function isWord(readout: Readout): boolean {
 }
 
 /** One labelled value with a thin meter under it. The meter repeats the value, so screen readers skip it. */
-function Metric({ label, readout, fraction, wide = false }: MetricProps) {
+function Metric({ label, readout, fraction, compact = false }: MetricProps) {
   return (
-    <div className={wide ? 'dashboard-metric dashboard-metric-wide' : 'dashboard-metric'}>
+    <div className={compact ? 'dashboard-metric dashboard-metric-compact' : 'dashboard-metric'}>
       <dt className="panel-label">{label}</dt>
       <dd className="dashboard-value">
         <span className={isWord(readout) ? 'dashboard-word' : 'dashboard-figure'}>
@@ -75,13 +77,14 @@ function Service({ name, health }: { readonly name: string; readonly health: Ser
 }
 
 /**
- * The stats Dashboard (jarvis-ui D7): CPU, temperature and RAM of the 8 GB Pi,
- * and whether llama and BGE on the 16 GB Pi are up. It draws what it is given
- * and nothing else: no timer and no polling. While it shows, Jarvis sends a
- * new reading about once a second.
+ * The stats Dashboard (jarvis-ui D7): CPU, temperature, RAM and storage of the
+ * 8 GB Pi, and whether llama and BGE on the 16 GB Pi are up. It draws what it
+ * is given and nothing else: no timer and no polling. While it shows, Jarvis
+ * sends a new reading about once a second.
  */
 export function Dashboard({ reading }: DashboardProps) {
   const temperatureC = reading?.temperatureC ?? null;
+  const storage = reading?.storage ?? null;
   return (
     <>
       <div className="dashboard-group" aria-busy={reading === null}>
@@ -99,9 +102,15 @@ export function Dashboard({ reading }: DashboardProps) {
           />
           <Metric
             label="Memory"
-            wide
+            compact
             readout={reading === null ? WAITING_READOUT : formatRam(reading.ramUsedBytes, reading.ramTotalBytes)}
             fraction={reading === null ? 0 : meterFraction(reading.ramUsedBytes, reading.ramTotalBytes)}
+          />
+          <Metric
+            label="Storage"
+            compact
+            readout={reading === null ? WAITING_READOUT : formatStorage(storage)}
+            fraction={storage === null ? 0 : meterFraction(storageUsedBytes(storage), storage.totalBytes)}
           />
         </dl>
       </div>

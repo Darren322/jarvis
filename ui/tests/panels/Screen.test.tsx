@@ -122,6 +122,7 @@ describe('the Orb and the Panel', () => {
       CPU: '13%',
       Temperature: 'Unavailable',
       Memory: '2.3 / 7.9 GB',
+      Storage: 'Unavailable',
       llama: 'Up',
       BGE: 'Down',
     });

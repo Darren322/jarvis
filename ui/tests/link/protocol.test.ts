@@ -63,6 +63,7 @@ describe('stats', () => {
       temperature_c: 55.0,
       ram_used_bytes: 2,
       ram_total_bytes: 8,
+      storage: { available_bytes: 207_517_036_544, total_bytes: 251_416_899_584 },
       llama: 'up',
       bge: 'down',
       ...changes,
@@ -76,13 +77,72 @@ describe('stats', () => {
   test('the wire example parses into a reading', () => {
     expect(
       parseToOrb(
-        '{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}',
+        '{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}',
       ),
     ).toEqual({
       type: 'stats',
-      stats: { cpuPercent: 12.5, temperatureC: 55, ramUsedBytes: 2, ramTotalBytes: 8, llama: 'up', bge: 'down' },
+      stats: {
+        cpuPercent: 12.5,
+        temperatureC: 55,
+        ramUsedBytes: 2,
+        ramTotalBytes: 8,
+        storage: { availableBytes: 207_517_036_544, totalBytes: 251_416_899_584 },
+        llama: 'up',
+        bge: 'down',
+      },
     });
   });
+
+  test('an absent storage parses as no reading, not 0', () => {
+    expect(parseToOrb(stats({}, ['storage']))).toMatchObject({ stats: { storage: null } });
+  });
+
+  test('a reading without both temperature and storage parses', () => {
+    expect(parseToOrb(stats({}, ['temperature_c', 'storage']))).toMatchObject({
+      stats: { temperatureC: null, storage: null },
+    });
+  });
+
+  /** The wire example with its `storage` object's fields replaced or removed. */
+  function storage(changes: Record<string, unknown> = {}, without: readonly string[] = []): string {
+    const object: Record<string, unknown> = { available_bytes: 207_517_036_544, total_bytes: 251_416_899_584, ...changes };
+    for (const key of without) {
+      delete object[key];
+    }
+    return stats({ storage: object });
+  }
+
+  test.each([
+    // [field, value, accepted]
+    ['available_bytes', -1, false],
+    ['available_bytes', 0, true],
+    ['available_bytes', 1.5, false],
+    ['available_bytes', '2', false],
+    ['available_bytes', null, false],
+    ['total_bytes', -1, false],
+    ['total_bytes', 0, true],
+    ['total_bytes', 251_416_899_584, true],
+    ['total_bytes', 8.5, false],
+    ['total_bytes', '8', false],
+    ['total_bytes', null, false],
+  ])('storage %s of %o is accepted: %s', (field, value, accepted) => {
+    expect(parseToOrb(storage({ [field]: value })) !== null).toBe(accepted);
+  });
+
+  test.each(['available_bytes', 'total_bytes'])('a storage object without %s is ignored', (field) => {
+    expect(parseToOrb(storage({}, [field]))).toBeNull();
+  });
+
+  test('a storage object with an extra field is ignored', () => {
+    expect(parseToOrb(storage({ used_bytes: 1 }))).toBeNull();
+  });
+
+  test.each([null, 0, '251416899584', {}, [], [207_517_036_544, 251_416_899_584]])(
+    'a storage of %o is ignored',
+    (value) => {
+      expect(parseToOrb(stats({ storage: value }))).toBeNull();
+    },
+  );
 
   test('an absent temperature parses as no reading, not 0', () => {
     expect(parseToOrb(stats({}, ['temperature_c']))).toMatchObject({ stats: { temperatureC: null } });

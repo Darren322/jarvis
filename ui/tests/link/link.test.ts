@@ -8,7 +8,7 @@ const SHOW_STATS = '{"type":"show_panel","panel":"stats"}';
 const HIDE_PANEL = '{"type":"hide_panel"}';
 const STATS =
   '{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}';
-const READING = { cpuPercent: 12.5, temperatureC: 55, ramUsedBytes: 2, ramTotalBytes: 8, llama: 'up', bge: 'down' };
+const READING = { cpuPercent: 12.5, temperatureC: 55, ramUsedBytes: 2, ramTotalBytes: 8, storage: null, llama: 'up', bge: 'down' };
 
 function connectedLink() {
   const factory = socketFactory();

@@ -1,4 +1,4 @@
-//! The stats Dashboard's data: this Pi's CPU, temperature and RAM, and whether
+//! The stats Dashboard's data: this Pi's CPU, temperature, RAM and root-disk space, and whether
 //! llama and BGE on the 16 GB Pi answer their health checks.
 //!
 //! [`StatsSource::run`] pushes one `ToOrb::Stats` every [`STATS_INTERVAL`] while
@@ -198,13 +198,14 @@ impl<M: Machine> StatsSource<M> {
 }
 
 /// Makes a raw reading valid for the wire: CPU within 0 to 100, no temperature
-/// instead of a bad one, RAM used never above RAM total.
+/// instead of a bad one, storage only when read, RAM used never above RAM total.
 fn stats_message(reading: MachineReading, llama: HealthStatus, bge: HealthStatus) -> ToOrb {
     ToOrb::Stats {
         cpu_percent: CpuPercent::clamped(reading.cpu_percent),
         temperature_c: reading.temperature_c.filter(|celsius| celsius.is_finite()),
         ram_used_bytes: reading.ram_used_bytes.min(reading.ram_total_bytes),
         ram_total_bytes: reading.ram_total_bytes,
+        storage: reading.storage,
         llama: service_health(llama),
         bge: service_health(bge),
     }

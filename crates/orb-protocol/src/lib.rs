@@ -10,16 +10,16 @@ use thiserror::Error;
 /// The longest line either side accepts, in bytes, not counting the newline.
 ///
 /// The size of the widest message this crate encodes: a [`ToOrb::Stats`] with
-/// `u64::MAX` for both RAM fields, both services down, and the widest `f32` text
+/// `u64::MAX` for both RAM fields and both storage fields, both services down, and the widest `f32` text
 /// for CPU and temperature. `serde_json` prints the shortest text that reads back
 /// as the same `f32`: at most 9 significant digits, written without an exponent
 /// from `1e-5` up to `1e16`. That makes the widest CPU text `0.00000123456789`
 /// (16 bytes, CPU is 0 to 100) and the widest temperature `-1234567890000000.0`
 /// (19 bytes). This is a bound by construction, not a value every f32 reaches
-/// (sampled encodings reach 183). A test builds that line, checks it equals this
+/// (sampled encodings stay below it). A test builds that line, checks it equals this
 /// constant, and checks sampled encodings never exceed it. The limit also
 /// bounds how much a reader buffers from a peer that never sends a newline.
-pub const MAX_LINE_BYTES: usize = 188;
+pub const MAX_LINE_BYTES: usize = 274;
 
 /// What Jarvis is doing, as the orb shows it. On the wire: `"idle"`,
 /// `"listening"`, `"transcribing"`, `"thinking"`, `"speaking"`.
@@ -163,6 +163,26 @@ pub enum ServiceHealth {
     Down,
 }
 
+/// The space on one filesystem, in bytes. Both numbers come together or not at
+/// all, so a message never carries half a reading. On the wire:
+/// `{"available_bytes":207517036544,"total_bytes":251416899584}`, both keys
+/// required, no others allowed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageUsage {
+    pub available_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Reads a `storage` value that is present: a JSON `null` is invalid, not "unknown".
+/// Unknown is the key being absent.
+fn present_storage<'de, D>(deserializer: D) -> Result<Option<StorageUsage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    StorageUsage::deserialize(deserializer).map(Some)
+}
+
 /// Jarvis to the orb.
 ///
 /// ```text
@@ -170,7 +190,7 @@ pub enum ServiceHealth {
 /// {"type":"level","level":0.25,"source":"mic"}
 /// {"type":"show_panel","panel":"stats"}
 /// {"type":"hide_panel"}
-/// {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"up","bge":"down"}
+/// {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
 /// ```
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -184,13 +204,19 @@ pub enum ToOrb {
     /// Closes whatever panel is open.
     HidePanel {},
     /// A reading of the Pi's health. A missing temperature sensor is an absent
-    /// `temperature_c`, never 0.
+    /// `temperature_c`, and an unreadable filesystem an absent `storage`, never 0.
     Stats {
         cpu_percent: CpuPercent,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         temperature_c: Option<f32>,
         ram_used_bytes: u64,
         ram_total_bytes: u64,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "present_storage"
+        )]
+        storage: Option<StorageUsage>,
         llama: ServiceHealth,
         bge: ServiceHealth,
     },

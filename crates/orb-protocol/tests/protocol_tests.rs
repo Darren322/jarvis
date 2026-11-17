@@ -1,6 +1,6 @@
 use orb_protocol::{
     CpuPercent, CpuPercentOutOfRange, FromOrb, Level, LevelOutOfRange, LevelSource, MAX_LINE_BYTES,
-    OrbState, PanelName, ProtocolError, ServiceHealth, ToOrb,
+    OrbState, PanelName, ProtocolError, ServiceHealth, StorageUsage, ToOrb,
 };
 
 fn cpu(value: f32) -> CpuPercent {
@@ -13,8 +13,28 @@ fn stats(temperature_c: Option<f32>, llama: ServiceHealth, bge: ServiceHealth) -
         temperature_c,
         ram_used_bytes: 2,
         ram_total_bytes: 8,
+        storage: None,
         llama,
         bge,
+    }
+}
+
+fn disk() -> StorageUsage {
+    StorageUsage {
+        available_bytes: 207_517_036_544,
+        total_bytes: 251_416_899_584,
+    }
+}
+
+fn stats_with_storage(storage: Option<StorageUsage>) -> ToOrb {
+    ToOrb::Stats {
+        cpu_percent: cpu(12.5),
+        temperature_c: Some(55.0),
+        ram_used_bytes: 2,
+        ram_total_bytes: 8,
+        storage,
+        llama: ServiceHealth::Up,
+        bge: ServiceHealth::Down,
     }
 }
 
@@ -35,6 +55,10 @@ fn every_panel_message_has_its_documented_line_and_round_trips() {
         (
             stats(None, ServiceHealth::Down, ServiceHealth::Up),
             r#"{"type":"stats","cpu_percent":12.5,"ram_used_bytes":2,"ram_total_bytes":8,"llama":"down","bge":"up"}"#,
+        ),
+        (
+            stats_with_storage(Some(disk())),
+            r#"{"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}"#,
         ),
     ];
     for (message, wire) in to_orb {
@@ -75,6 +99,56 @@ fn a_missing_temperature_is_absent_on_the_wire_and_never_zero() {
         ToOrb::decode(&zero.encode().expect("encodes")).expect("decodes"),
         zero
     );
+}
+
+#[test]
+fn a_missing_storage_is_absent_on_the_wire_and_decodes_to_none() {
+    let line = stats_with_storage(None).encode().expect("encodes");
+    assert!(!line.contains("storage"), "{line}");
+    assert!(matches!(
+        ToOrb::decode(&line),
+        Ok(ToOrb::Stats { storage: None, .. })
+    ));
+    // A real zero reading stays a zero.
+    let zero = stats_with_storage(Some(StorageUsage {
+        available_bytes: 0,
+        total_bytes: 0,
+    }));
+    assert_eq!(
+        ToOrb::decode(&zero.encode().expect("encodes")).expect("decodes"),
+        zero
+    );
+}
+
+#[test]
+fn storage_needs_both_keys_and_only_whole_non_negative_numbers() {
+    let line = |storage: &str| {
+        format!(
+            r#"{{"type":"stats","cpu_percent":1,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{storage},"llama":"up","bge":"up"}}"#
+        )
+    };
+    assert!(ToOrb::decode(&line(r#"{"available_bytes":1,"total_bytes":2}"#)).is_ok());
+    for rejected in [
+        r#"{"available_bytes":1}"#,
+        r#"{"total_bytes":2}"#,
+        r#"{}"#,
+        r#"{"available_bytes":1,"total_bytes":2,"extra":3}"#,
+        r#"{"available_bytes":-1,"total_bytes":2}"#,
+        r#"{"available_bytes":1,"total_bytes":-2}"#,
+        r#"{"available_bytes":1.5,"total_bytes":2}"#,
+        r#"{"available_bytes":1,"total_bytes":2.5}"#,
+        r#"{"available_bytes":18446744073709551616,"total_bytes":2}"#,
+        "null",
+        "5",
+    ] {
+        assert!(
+            matches!(
+                ToOrb::decode(&line(rejected)),
+                Err(ProtocolError::Invalid(_))
+            ),
+            "{rejected}"
+        );
+    }
 }
 
 #[test]
@@ -159,11 +233,12 @@ fn unknown_panels_extra_fields_and_missing_fields_are_rejected() {
     }
 }
 
-/// The widest Stats line: both RAM fields `u64::MAX`, both services down, and the
+/// The widest Stats line: both RAM fields and both storage fields `u64::MAX`,
+/// both services down, and the
 /// widest `f32` text (9 significant digits, no exponent) for CPU and temperature.
 fn widest_stats_line() -> String {
     format!(
-        r#"{{"type":"stats","cpu_percent":0.00000123456789,"temperature_c":-1234567890000000.0,"ram_used_bytes":{max},"ram_total_bytes":{max},"llama":"down","bge":"down"}}"#,
+        r#"{{"type":"stats","cpu_percent":0.00000123456789,"temperature_c":-1234567890000000.0,"ram_used_bytes":{max},"ram_total_bytes":{max},"storage":{{"available_bytes":{max},"total_bytes":{max}}},"llama":"down","bge":"down"}}"#,
         max = u64::MAX
     )
 }
@@ -200,6 +275,10 @@ fn the_line_limit_is_the_size_of_the_widest_stats_message() {
             temperature_c: Some(raw_temp),
             ram_used_bytes: u64::MAX,
             ram_total_bytes: u64::MAX,
+            storage: Some(StorageUsage {
+                available_bytes: u64::MAX,
+                total_bytes: u64::MAX,
+            }),
             llama: ServiceHealth::Down,
             bge: ServiceHealth::Down,
         };
