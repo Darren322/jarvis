@@ -213,6 +213,9 @@ where
                         idle_work_due = true;
                     }
                     Command::Close => print_notices(&[control::close_panel(panels).await]),
+                    Command::Show(panel) => {
+                        print_notices(&[control::show_panel(panels, panel).await]);
+                    }
                     Command::Help => println!("{}", control::help_text()),
                     Command::Usage(hint) => println!("{hint}"),
                     Command::Reset => {
@@ -319,6 +322,7 @@ fn recall_mode(command: &Command) -> RecallMode {
         | Command::Listen
         | Command::Reset
         | Command::Close
+        | Command::Show(_)
         | Command::Help
         | Command::Memory(_)
         | Command::Usage(_) => RecallMode::Skip,

@@ -1,4 +1,6 @@
-//! The "close it" command: hide the panel on the orb screen.
+//! The panel commands: "bring up the stats" and "close it", without the model.
+
+use orb_protocol::PanelName;
 
 use super::Notice;
 use crate::features::panel::PanelHandle;
@@ -12,6 +14,17 @@ pub(crate) async fn close_panel(panels: &PanelHandle) -> Notice {
     match panels.close().await {
         Ok(()) => Notice::Info("Panel closed.".to_owned()),
         Err(error) => Notice::Warning(format!("could not close the panel: {error}")),
+    }
+}
+
+/// Runs `Command::Show`: shows `panel` (again, if it is already up, which
+/// restarts its timeout) and says what happened. No model is involved.
+pub(crate) async fn show_panel(panels: &PanelHandle, panel: PanelName) -> Notice {
+    match panels.show(panel).await {
+        Ok(()) => Notice::Info(match panel {
+            PanelName::Stats => "Showing the stats.".to_owned(),
+        }),
+        Err(error) => Notice::Warning(format!("could not show the panel: {error}")),
     }
 }
 

@@ -1,3 +1,5 @@
+use orb_protocol::PanelName;
+
 use crate::storage::MemoryId;
 
 /// What one line of user input asks for. Parsed the same way whether it was
@@ -14,6 +16,8 @@ pub(crate) enum Command {
     Memory(MemoryCommand),
     /// "close it" or "hide that": hide the panel on the orb screen. No model call.
     Close,
+    /// "bring up the stats" and its fixed variants: show a panel. No model call.
+    Show(PanelName),
     /// `/recall <question>`: run the question as a prompt with a memory search forced.
     Recall(String),
     /// A recognized command with unusable arguments; holds the usage hint.
@@ -45,6 +49,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/memory rebuild",  "re-embed every memory while idle"),
     ("/reset",           "clear the conversation context and start a new session"),
     ("/listen",          "speak instead of typing; Enter sends what you said"),
+    ("bring up the stats", "show the stats on the screen (\"show the stats\" works too)"),
     ("close it",         "hide the panel on the screen (\"hide that\" works too)"),
     ("/stop",            "stop speaking"),
     ("/help",            "show this list"),
@@ -82,6 +87,9 @@ pub(crate) fn parse(input: String) -> Command {
 
     if is_close_phrase(trimmed) {
         return Command::Close;
+    }
+    if is_show_stats_phrase(trimmed) {
+        return Command::Show(PanelName::Stats);
     }
 
     if let Some(query) = trimmed.strip_prefix("/memories ") {
@@ -145,6 +153,53 @@ fn is_close_phrase(trimmed: &str) -> bool {
     ["close it", "hide that"]
         .iter()
         .any(|close| phrase.eq_ignore_ascii_case(close))
+}
+
+/// The requests for the stats panel that skip the model, after `request_core`.
+/// Anything else ("can I see how the Pi is doing?") is left to the model and its
+/// `show_panel` tool, which costs a model run.
+const SHOW_STATS_PHRASES: &[&str] = &[
+    "bring up the stats",
+    "bring up stats",
+    "bring up the dashboard",
+    "show the stats",
+    "show me the stats",
+    "show stats",
+    "show the dashboard",
+    "show me the dashboard",
+    "open the stats",
+    "open the dashboard",
+];
+
+/// Polite words around a request that do not change it: a leading "please",
+/// "okay" or "jarvis", and a trailing "please" or "again".
+const LEADING_FILLERS: &[&str] = &["please ", "okay ", "ok ", "jarvis "];
+const TRAILING_FILLERS: &[&str] = &[" please", " again"];
+
+/// A request without its case, closing punctuation and polite words, so
+/// "Okay, bring up the stats again please." reads "bring up the stats".
+fn request_core(trimmed: &str) -> String {
+    let mut core = trimmed
+        .trim_end_matches(is_punctuation)
+        .replace(',', "")
+        .to_lowercase();
+    while let Some(rest) = LEADING_FILLERS
+        .iter()
+        .find_map(|filler| core.strip_prefix(filler))
+    {
+        core = rest.trim_start().to_owned();
+    }
+    while let Some(rest) = TRAILING_FILLERS
+        .iter()
+        .find_map(|filler| core.strip_suffix(filler))
+    {
+        core = rest.trim_end().to_owned();
+    }
+    core
+}
+
+fn is_show_stats_phrase(trimmed: &str) -> bool {
+    SHOW_STATS_PHRASES.contains(&request_core(trimmed).as_str())
 }
 
 /// "forget that", optionally followed by punctuation and/or "please".

@@ -1,3 +1,5 @@
+use orb_protocol::PanelName;
+
 use crate::storage::MemoryId;
 
 use super::{COMMANDS, Command, MemoryCommand, help_text, parse};
@@ -26,6 +28,15 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("don't close it yet", Command::Prompt("don't close it yet".into())),
         ("close it now", Command::Prompt("close it now".into())),
         ("hide", Command::Prompt("hide".into())),
+        ("bring up the stats", Command::Show(PanelName::Stats)),
+        ("Bring up the stats.", Command::Show(PanelName::Stats)),
+        ("Okay, bring up the stats again please.", Command::Show(PanelName::Stats)),
+        ("Please show me the dashboard", Command::Show(PanelName::Stats)),
+        ("  OPEN THE STATS!  ", Command::Show(PanelName::Stats)),
+        ("bring up the stats now", Command::Prompt("bring up the stats now".into())),
+        ("don't bring up the stats", Command::Prompt("don't bring up the stats".into())),
+        ("show me the stats for the other pi", Command::Prompt("show me the stats for the other pi".into())),
+        ("Bring up the stats. Bring up the stats.", Command::Prompt("Bring up the stats. Bring up the stats.".into())),
         ("/help", Command::Help),
         ("/memories", memory(MemoryCommand::List(None))),
         ("/memories work project", memory(MemoryCommand::List(Some("work project".into())))),
