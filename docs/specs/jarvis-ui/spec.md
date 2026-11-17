@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 10 are done (Darren signed off the Orb, the kiosk and the Dashboard on the Pi on 2026-11-16; a reboot has still never been observed there). The 8 GB Pi runs the UI with the Dashboard and a Jarvis binary built from ticket 06's change before it was committed, so `./run.sh` there rebuilds old code until `dev` is pushed and pulled. In progress: 13 (a `close_panel` tool, because "You may close the panel" reached a model with no way to close one). Waiting for Darren's answers: 14 (storage on the Dashboard). Then 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage).
+Resume here: 01 to 10 are done. 13 (`close_panel` tool, committed `d94f962` with fast-memory 10's cache fix), 14 (storage on the Dashboard) and 15 ("bring up the stats" without the model) are in review: committed on `dev`, not yet on the Pi, not yet tried by Darren. `dev` is not pushed (Claude Code's permission check blocked `git push`; Darren pushes). The 8 GB Pi runs a Jarvis built from a patch (13 without the cache fix) and the UI from ticket 10. First: Darren pushes `dev`; then, with his OK, pull and rebuild on the Pi and run `scripts/deploy-ui.sh` in the same step (14 changes the wire format, so Jarvis and the UI must change together), and he tries "bring up the stats", a free-form close, the storage figure and how fast it all is. Then 11 (camera, needs-info) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -95,5 +95,6 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 10 | Stats Dashboard panel | done | 04, 07 |
 | 11 | Camera panel | needs-info | 10 |
 | 12 | Catalog panels | needs-triage | 11 |
-| 13 | Close a Panel by saying it any way | in-progress | 09 |
-| 14 | Storage on the stats Dashboard | needs-info | 10 |
+| 13 | Close a Panel by saying it any way | in-review | 09 |
+| 14 | Storage on the stats Dashboard | in-review | 10 |
+| 15 | Bring up the stats without the model | in-review | 09 |
