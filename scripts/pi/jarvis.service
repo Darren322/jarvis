@@ -1,0 +1,23 @@
+# systemd USER service: keeps Jarvis running on the 8 GB Pi and restarts it if it stops.
+# Install once:
+#   cp scripts/pi/jarvis.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now jarvis.service
+#   sudo loginctl enable-linger "$USER"   # start at boot without a login
+# After pulling new code: cargo build --release --locked && systemctl --user restart jarvis
+# Log: journalctl --user-unit jarvis -f
+# Stop it before running ./run.sh by hand: both want port 8765 and the microphone.
+[Unit]
+Description=Jarvis voice assistant (WebSocket 127.0.0.1:8765)
+After=jarvis-ui.service
+
+[Service]
+# Jarvis reads .env from the working directory.
+WorkingDirectory=%h/jarvis
+# The terminal REPL exits when stdin ends, and a service's stdin is empty, so
+# hold stdin open: Jarvis then stops only on a crash or `systemctl --user stop`.
+ExecStart=/bin/sh -c 'tail -f /dev/null | exec %h/jarvis/target/release/jarvis'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
