@@ -1,6 +1,7 @@
 //! Reads the 8 GB Pi's own CPU, temperature, memory and root-disk space through `sysinfo`.
 
 use std::{
+    future::Future,
     path::Path,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -37,7 +38,7 @@ pub(crate) enum MachineError {
 /// Where readings come from. The real one is [`SystemMachine`]; tests use a
 /// scripted one so the one-second cadence is the only thing under test.
 pub(crate) trait Machine: Send + 'static {
-    async fn read(&mut self) -> Result<MachineReading, MachineError>;
+    fn read(&mut self) -> impl Future<Output = Result<MachineReading, MachineError>> + Send;
 }
 
 struct Sensors {

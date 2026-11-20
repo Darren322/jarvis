@@ -10,7 +10,7 @@ use rig_agent::{
 use rig_core::serde_json::{self, Value};
 use serde::de::DeserializeOwned;
 
-use crate::features::panel::PanelHandle;
+use crate::features::{panel::PanelHandle, stats::machine::SystemMachine};
 use close_panel::ClosePanelTool;
 use show_panel::ShowPanelTool;
 use system_status_tool::SystemStatusTool;
@@ -62,14 +62,14 @@ pub(crate) fn register(
     panels: PanelHandle,
 ) -> AgentBuilder<WithBuilderTools> {
     builder
-        .tool(SystemStatusTool)
+        .tool(SystemStatusTool::new())
         .tool(ShowPanelTool::new(panels.clone()))
         .tool(ClosePanelTool::new(panels))
 }
 
 /// Every tool the policy offers to the model and accepts calls for.
 pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[
-    ToolRule::for_tool::<SystemStatusTool>(),
+    ToolRule::for_tool::<SystemStatusTool<SystemMachine>>(),
     ToolRule::for_tool::<ShowPanelTool>(),
     ToolRule::for_tool::<ClosePanelTool>(),
 ];

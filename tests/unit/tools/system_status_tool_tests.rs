@@ -1,12 +1,36 @@
-use rig_agent::tool::Tool;
+use orb_protocol::StorageUsage;
+use rig_agent::tool::{Tool, ToolContext};
 
+use crate::features::stats::machine::{Machine, MachineError, MachineReading};
+use crate::tools::system_status::Figure;
 use crate::tools::system_status_tool::{SystemStatusArgs, SystemStatusTool};
+
+struct Scripted(MachineReading);
+
+impl Machine for Scripted {
+    async fn read(&mut self) -> Result<MachineReading, MachineError> {
+        Ok(self.0)
+    }
+}
+
+fn scripted_tool() -> SystemStatusTool<Scripted> {
+    SystemStatusTool::with_machine(Scripted(MachineReading {
+        cpu_percent: 7.0,
+        temperature_c: None,
+        ram_used_bytes: 1_073_741_824,
+        ram_total_bytes: 2_147_483_648,
+        storage: Some(StorageUsage {
+            available_bytes: 4_000_000_000,
+            total_bytes: 10_000_000_000,
+        }),
+    }))
+}
 
 #[test]
 fn system_status_tool_has_expected_contract() {
-    let tool = SystemStatusTool;
+    let tool = scripted_tool();
 
-    assert_eq!(SystemStatusTool::NAME, "system_status");
+    assert_eq!(SystemStatusTool::<Scripted>::NAME, "system_status");
 
     assert_eq!(
         tool.parameters(),
@@ -18,23 +42,35 @@ fn system_status_tool_has_expected_contract() {
     );
 }
 
-#[tokio::test]
-async fn system_status_tool_returns_status() {
-    let tool = SystemStatusTool;
-    let mut context = rig_agent::tool::ToolContext::new();
+#[test]
+fn the_description_names_every_figure_a_question_may_ask_about() {
+    let description = scripted_tool().description();
 
-    let result = tool.call(&mut context, SystemStatusArgs {}).await.unwrap();
+    for word in [
+        "storage",
+        "disk space",
+        "CPU",
+        "temperature",
+        "memory",
+        "uptime",
+    ] {
+        assert!(description.contains(word), "{word}");
+    }
+}
 
-    assert!(result.total_memory_bytes > 0);
-    assert!(result.used_memory_bytes <= result.total_memory_bytes);
+#[tokio::test(start_paused = true)]
+async fn system_status_tool_returns_the_machines_figures() {
+    let tool = scripted_tool();
+    let mut context = ToolContext::new();
 
-    let json =
-        rig_core::serde_json::to_value(&result).expect("system status should serialize to JSON");
+    let status = tool.call(&mut context, SystemStatusArgs {}).await.unwrap();
 
-    assert!(json.get("source_node").is_some());
-    assert!(json.get("uptime_seconds").is_some());
-    assert!(json.get("total_memory_bytes").is_some());
-    assert!(json.get("used_memory_bytes").is_some());
+    assert_eq!(status.cpu_percent, Figure::Known(7));
+    assert_eq!(status.temperature_c, Figure::Unavailable);
+    assert_eq!(status.memory_used_gb, Figure::Known(1.0));
+    assert_eq!(status.memory_total_gb, Figure::Known(2.0));
+    assert_eq!(status.storage_used_gb, Figure::Known(6));
+    assert_eq!(status.storage_total_gb, Figure::Known(10));
 }
 
 #[test]

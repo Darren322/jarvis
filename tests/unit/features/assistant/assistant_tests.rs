@@ -31,6 +31,7 @@ use crate::{
             AssistantRun, AssistantRunError, CallUsage, ModelStage, RunOutcome, ToolStageOutcome,
         },
     },
+    features::stats::machine::SystemMachine,
     tools::system_status_tool::SystemStatusTool,
 };
 
@@ -368,8 +369,12 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     };
     let model = MockCompletionModel::from_stream_turns(vec![
         vec![
-            MockStreamEvent::tool_call("tool-1", SystemStatusTool::NAME, serde_json::json!({}))
-                .with_call_id("provider-call-1"),
+            MockStreamEvent::tool_call(
+                "tool-1",
+                SystemStatusTool::<SystemMachine>::NAME,
+                serde_json::json!({}),
+            )
+            .with_call_id("provider-call-1"),
             MockStreamEvent::final_response(first_usage),
         ],
         vec![
@@ -512,8 +517,16 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
 #[tokio::test]
 async fn streaming_policy_rejection_still_records_the_completed_model_call() {
     let model = MockCompletionModel::from_stream_turns([[
-        MockStreamEvent::tool_call("tool-1", SystemStatusTool::NAME, serde_json::json!({})),
-        MockStreamEvent::tool_call("tool-2", SystemStatusTool::NAME, serde_json::json!({})),
+        MockStreamEvent::tool_call(
+            "tool-1",
+            SystemStatusTool::<SystemMachine>::NAME,
+            serde_json::json!({}),
+        ),
+        MockStreamEvent::tool_call(
+            "tool-2",
+            SystemStatusTool::<SystemMachine>::NAME,
+            serde_json::json!({}),
+        ),
         MockStreamEvent::final_response(Usage::new()),
     ]]);
     let model_handle = model.clone();
@@ -712,11 +725,15 @@ fn tool_exchange(question: &str, answer: &str) -> Vec<Message> {
             id: None,
             content: vec![AssistantContent::tool_call(
                 "call-1",
-                SystemStatusTool::NAME,
+                SystemStatusTool::<SystemMachine>::NAME,
                 json!({}),
             )],
         },
-        Message::tool_result("call-1", SystemStatusTool::NAME, "all systems nominal"),
+        Message::tool_result(
+            "call-1",
+            SystemStatusTool::<SystemMachine>::NAME,
+            "all systems nominal",
+        ),
         Message::assistant(answer),
     ]
 }

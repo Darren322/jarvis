@@ -226,7 +226,7 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
             "type": "function",
             "function": {
                 "name": "system_status",
-                "description": "Returns the current system status, including hostname, uptime, and memory usage.",
+                "description": "Returns this Pi's current status: storage (disk space) used and total in GB, CPU load in percent, temperature in degrees C, memory used and total in GB, uptime and hostname. Use it for any question about storage, disk space, CPU, temperature, memory, RAM or uptime. A figure the Pi could not read is \"unavailable\"; say so and never guess it.",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -282,18 +282,18 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
             .expect("system status tool result should serialize as JSON text"),
     )
     .expect("system status tool result should contain structured JSON");
-    assert!(status_json.get("source_node").is_some());
-    assert!(status_json["source_node"].is_null() || status_json["source_node"].is_string());
-    assert!(status_json["observed_at_unix_ms"].as_i64().is_some());
+    assert!(status_json.get("hostname").is_some());
+    assert!(status_json["hostname"].is_null() || status_json["hostname"].is_string());
     assert!(status_json["uptime_seconds"].as_u64().is_some());
-    let total_memory_bytes = status_json["total_memory_bytes"]
-        .as_u64()
-        .expect("total_memory_bytes should be an unsigned integer");
-    let used_memory_bytes = status_json["used_memory_bytes"]
-        .as_u64()
-        .expect("used_memory_bytes should be an unsigned integer");
-    assert!(total_memory_bytes > 0);
-    assert!(used_memory_bytes <= total_memory_bytes);
+    // The real machine: a memory total is always readable, and used never exceeds it.
+    let total_memory_gb = status_json["memory_total_gb"]
+        .as_f64()
+        .expect("memory_total_gb should be a number");
+    let used_memory_gb = status_json["memory_used_gb"]
+        .as_f64()
+        .expect("memory_used_gb should be a number");
+    assert!(total_memory_gb > 0.0);
+    assert!(used_memory_gb <= total_memory_gb);
 
     let transcript_tool_result = response
         .response
