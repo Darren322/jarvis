@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 10 are done. 13 (`close_panel` tool), 14 (storage on the Dashboard) and 15 ("bring up the stats" without the model) are in review, pushed and running on the 8 GB Pi since 2026-11-17 (Jarvis at `d26da31` via `./run.sh` in tmux, UI deployed); a typed "bring up the stats" and the storage figure are checked there. First: Darren tries them by voice, closes the Dashboard in his own words, and says whether answers after a tool call are quick now (fast-memory 10); then they are done. Next: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 10 and 13 to 15 are done. On 2026-11-20 Darren tried 13 and 15 by voice on the 8 GB Pi (Jarvis now runs there as the systemd user service `jarvis.service`, release build of `d26da31`) and said they are fine. Next: 16 (`ready-for-agent`): `system_status` returns the Dashboard's figures in the Dashboard's units, so "how much storage do I have?" gets the number on screen. Its proposals P1 to P4 are the coordinator's choices for Darren to overrule; a Sonnet agent at default effort can take it. After that: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -16,6 +16,7 @@ The orb is a macroquad program (`crates/jarvis-orb`) that Jarvis reaches over a 
 3. As Darren, I want to close a Panel by voice ("close it") or by tapping outside it, so that the Orb comes back when I am done.
 4. Later: As Darren, I want to ask for the camera and see its live image, so that I can see what the camera sees.
 5. Later: As Darren, I want to ask Jarvis for a new Panel that it builds from Catalog parts, so that I can get a view I did not plan in advance.
+6. As Darren, I want to ask about the Pi's stats and hear the figures the Dashboard shows, so that Jarvis's answer and the screen never disagree. (Added 2026-11-20, ticket 16.)
 
 ## Solution
 
@@ -95,6 +96,7 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 10 | Stats Dashboard panel | done | 04, 07 |
 | 11 | Camera panel | needs-info | 10 |
 | 12 | Catalog panels | needs-triage | 11 |
-| 13 | Close a Panel by saying it any way | in-review | 09 |
-| 14 | Storage on the stats Dashboard | in-review | 10 |
-| 15 | Bring up the stats without the model | in-review | 09 |
+| 13 | Close a Panel by saying it any way | done | 09 |
+| 14 | Storage on the stats Dashboard | done | 10 |
+| 15 | Bring up the stats without the model | done | 09 |
+| 16 | Jarvis can say the stats it shows | ready-for-agent | 14 |
