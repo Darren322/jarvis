@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 10 and 13 to 15 are done. On 2026-11-20 Darren tried 13 and 15 by voice on the 8 GB Pi (Jarvis now runs there as the systemd user service `jarvis.service`, release build of `d26da31`) and said they are fine. Next: 16 (`ready-for-agent`): `system_status` returns the Dashboard's figures in the Dashboard's units, so "how much storage do I have?" gets the number on screen. Its proposals P1 to P4 are the coordinator's choices for Darren to overrule; a Sonnet agent at default effort can take it. After that: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 10 and 13 to 15 are done. On 2026-11-20 Darren tried 13 and 15 by voice on the 8 GB Pi (Jarvis now runs there as the systemd user service `jarvis.service`, release build of `d26da31`) and said they are fine. Next: 16 (in review since 2026-11-20, integrated uncommitted in `dev`, `scripts/verify.sh` green; waiting for Darren's commit, then a Pi deploy and his voice check): `system_status` returns the Dashboard's figures in the Dashboard's units, so "how much storage do I have?" gets the number on screen. Darren approved P1 to P4. After that: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -99,4 +99,4 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 13 | Close a Panel by saying it any way | done | 09 |
 | 14 | Storage on the stats Dashboard | done | 10 |
 | 15 | Bring up the stats without the model | done | 09 |
-| 16 | Jarvis can say the stats it shows | ready-for-agent | 14 |
+| 16 | Jarvis can say the stats it shows | in-review | 14 |
