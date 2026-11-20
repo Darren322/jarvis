@@ -1,6 +1,6 @@
 # 10: A tool run should not empty the prompt cache
 
-Status: in-review
+Status: done
 Stories: US1
 Blocked by: None
 Assignee: coordinator (2026-11-16)
@@ -29,8 +29,8 @@ So the Panel took about 10 s to appear, and the wait grows with the conversation
 
 ## Acceptance criteria
 - [x] The cause is confirmed or replaced by a measurement, written in Comments.
-- [ ] After a tool run, the next run's first turn reuses the conversation from the cache (`cached_input` close to `input`), measured on the Pi with `scripts/pi/bench_first_text.py` on a script that includes tool calls.
-- [ ] The second turn of a tool run reuses the first turn's prompt from the cache.
+- [x] After a tool run, the next run's first turn reuses the conversation from the cache (`cached_input` close to `input`), measured on the Pi with `scripts/pi/bench_first_text.py` on a script that includes tool calls.
+- [x] The second turn of a tool run reuses the first turn's prompt from the cache.
 - [x] A second tool call is still refused, and tested.
 - [x] `scripts/verify.sh` passes.
 
@@ -50,3 +50,13 @@ So the Panel took about 10 s to appear, and the wait grows with the conversation
   - **Tests changed.** Three tests asserted that the second request had no tools; they now assert it lists the same tools as the first, with choice `none` (hook, assistant, and the wire body in `local_llm_tests.rs`).
   - **Verified.** `scripts/verify.sh`: all checks passed (451 root unit tests).
   - **Not verified.** Jarvis itself on the Pi: the two `cached_input` criteria above need a rebuild there and a run with tool calls (`bench_first_text.py` has no tool-call script yet). Whether Gemma, seeing the tools on the second turn with choice `none`, ever writes tool-call markup as text; if it does, `validate_turn` or the speech path will show it.
+- 2026-11-20 (coordinator): measured with Jarvis itself on the 8 GB Pi (the release build of `d26da31` running as `jarvis.service`), read from `journalctl --user-unit jarvis`, not with `bench_first_text.py`. Darren said "Bring up the panel, please" by voice at 13:13; the model called `show_panel`.
+
+  | Request | `input` | `cached_input` | First text |
+  | --- | --- | --- | --- |
+  | Tool run, turn 1 | 811 | 796 | (tool call) |
+  | Tool run, turn 2 | 854 | 826 | 605 ms |
+  | Next run, turn 1 | 885 | 868 | 445 ms |
+
+  Both cache criteria hold. Gemma wrote no tool-call markup as text on turn 2 ("There you go, master. The system stats are now displayed."). Darren on the quickness by ear: "items 1 to 5 are ok" (item 4).
+  A second tool run at 13:16 (`close_panel`) agrees: turn 2 read 1,007 of 1,026 tokens from the cache. Done.

@@ -1,6 +1,6 @@
 # 14: Storage on the stats Dashboard
 
-Status: in-review
+Status: done
 Stories: US2
 Blocked by: 10
 Assignee: Sonnet agent (protocol and stats source), Opus agent (UI), 2026-11-16
@@ -25,7 +25,7 @@ Traces to: D2, D7, D11
 - [x] `MAX_LINE_BYTES` equals the widest encodable Stats line; tested at that size and one byte over.
 - [x] The Dashboard shows storage in whole GB of 10^9 bytes; tested at 0 used (available equal to total), at nothing available, and at the rounding boundary.
 - [x] A filesystem that cannot be read shows "Unavailable", never 0.
-- [ ] The layout has no overflow at 800x480 with the widest values, by screenshot, then by eye on the Pi. (Screenshots done; the Pi screenshot of real values fits; Darren's eye not yet.)
+- [x] The layout has no overflow at 800x480 with the widest values, by screenshot, then by eye on the Pi. (Screenshots done; the Pi screenshot of real values fits; Darren's eye not yet.)
 - [x] `scripts/verify.sh` passes.
 
 ## Comments
@@ -37,3 +37,4 @@ Traces to: D2, D7, D11
   - **Deploy together.** The UI on the Pi rejects a Stats message with an unknown key, so Jarvis with this change and the UI with it must reach the Pi together, or the Dashboard waits forever.
   - **Not verified.** Anything on the Pi: the real figures against `df -B1 /`, the Pi's font, the 52 px row from a metre.
 - 2026-11-17 (coordinator): `dev` pushed at Darren's request and deployed to the 8 GB Pi in one step: `git pull` to `d26da31`, `cargo build` (21 s), `scripts/deploy-ui.sh`, Jarvis restarted in tmux with `./run.sh`, Chromium restarted with the kiosk launcher. Checked: the screen reconnected (one WebSocket client); typing "bring up the stats" printed "Showing the stats." with no model run (15); a `grim` screenshot (`notes/ui-spike/dashboard-shots/pi-storage-2026-11-17.png`) shows CPU 6%, 55 C, 0.9 / 7.9 GB, Storage 44 / 251 GB, llama and BGE up, nothing cut off (14). `df -B1 /` at the same time: 251,416,899,584 total, 207,441,403,904 available, so 44 GB used, matching. Caution: Jarvis's last line before the restart was `[thinking]`, so a question Darren was asking at that moment may have been cut off. Still for Darren: closing in his own words (13), and how quick answers are after a tool call (fast-memory 10).
+- 2026-11-20 (coordinator): the by-eye check is Darren's report, not a log: "items 1 to 5 are ok" (item 3 was the storage figure fitting on the screen). Done.

@@ -1,6 +1,6 @@
 # 13: Close a Panel by saying it any way
 
-Status: in-review
+Status: done
 Stories: US3
 Blocked by: 09
 Assignee: coordinator (2026-11-16)
@@ -24,7 +24,7 @@ Traces to: D2, D8
 - [x] A streamed run through the real registration and policy hook accepts `close_panel` as the run's one tool call.
 - [x] `registered_tools_match_the_allowed_list` passes with three tools.
 - [x] `scripts/verify.sh` passes.
-- [ ] On the Pi, Darren closes the Dashboard with a sentence that is not a fixed phrase. (Pi check.)
+- [x] On the Pi, Darren closes the Dashboard with a sentence that is not a fixed phrase. (Pi check.)
 
 ## Comments
 - 2026-11-16 (coordinator): built by the coordinator in the main checkout (a small copy of `show_panel`'s shape; Darren was at the Pi waiting); uncommitted.
@@ -35,3 +35,4 @@ Traces to: D2, D8
   - **On the Pi.** Built beside the checkout as before (13.3 s) and Jarvis restarted in tmux at an idle prompt; the screen reconnected. Scratch files removed. Waiting for Darren to close the Dashboard with his own words.
   - **Not fixed here.** The wait before the Panel appears: see fast-memory ticket 10 (a tool run empties the prompt cache).
 - 2026-11-17 (coordinator): `dev` pushed at Darren's request and deployed to the 8 GB Pi in one step: `git pull` to `d26da31`, `cargo build` (21 s), `scripts/deploy-ui.sh`, Jarvis restarted in tmux with `./run.sh`, Chromium restarted with the kiosk launcher. Checked: the screen reconnected (one WebSocket client); typing "bring up the stats" printed "Showing the stats." with no model run (15); a `grim` screenshot (`notes/ui-spike/dashboard-shots/pi-storage-2026-11-17.png`) shows CPU 6%, 55 C, 0.9 / 7.9 GB, Storage 44 / 251 GB, llama and BGE up, nothing cut off (14). `df -B1 /` at the same time: 251,416,899,584 total, 207,441,403,904 available, so 44 GB used, matching. Caution: Jarvis's last line before the restart was `[thinking]`, so a question Darren was asking at that moment may have been cut off. Still for Darren: closing in his own words (13), and how quick answers are after a tool call (fast-memory 10).
+- 2026-11-20 (coordinator): Jarvis on the 8 GB Pi runs as `jarvis.service` (release build of `d26da31`). From `journalctl --user-unit jarvis`: at 13:16:17 Darren said "Okay, close the panel please." by voice; it is not a fixed phrase, so it went to the model, which called `close_panel` (outcome Success) and said "The panel is closed, master." Turn 2 read 1,007 of 1,026 prompt tokens from the cache; first text after 529 ms. Darren: "items 1 to 5 are ok". Done.
