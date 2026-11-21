@@ -1,7 +1,7 @@
 # Jarvis knows the time
 
-Status: active
-Resume here: 01 (the `current_time` tool) is in review since 2026-11-21: integrated uncommitted in `dev`, `scripts/verify.sh` green; next, deploy and Darren's voice check. Darren approved the design and the `jiff` dependency on 2026-11-21.
+Status: done
+Resume here: done on 2026-11-21. 01 (the `current_time` tool, `a87331a`) is on the Pi and Darren checked it by voice.
 
 Written 2026-11-21 from Darren's decisions. Tickets are in `issues/`; their `Status:` lines are the progress record.
 

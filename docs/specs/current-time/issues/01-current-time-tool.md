@@ -1,6 +1,6 @@
 # 01: A `current_time` tool
 
-Status: in-review
+Status: done
 Stories: US1
 Blocked by: None
 Assignee: Sonnet agent (2026-11-21)
@@ -20,7 +20,7 @@ Traces to: D1, D2, D3
 - [x] The tool's name and parameters schema (empty object, `additionalProperties: false`) are tested; unknown arguments are rejected by the tool's `ToolRule`.
 - [x] `registered_tools_match_the_allowed_list` passes with the new tool.
 - [x] No `unwrap()`; `scripts/verify.sh` passes.
-- [ ] On the Pi, "what time is it?" and "what day is it today?" by voice call `current_time` and the spoken answer matches the Pi's clock. (Pi check.)
+- [x] On the Pi, "what time is it?" and "what day is it today?" by voice call `current_time` and the spoken answer matches the Pi's clock. (Pi check.)
 
 ## Comments
 2026-11-21 (coordinator): built by a Sonnet agent in the main checkout; the coordinator read the whole diff, tightened `CurrentTime` and `format_current_time` to `pub(crate)`, and ran `scripts/verify.sh`: all checks passed. Integrated uncommitted in `dev`.
@@ -28,3 +28,5 @@ Traces to: D1, D2, D3
 - **Tests** (5 in `tests/unit/tools/current_time_tests.rs`): one table of 7 instants (Singapore 14:30, midnight, 23:59:59, 2026-12-31 23:59 and 2027-01-01 00:00, `America/St_Johns` at -03:30, `Etc/Unknown`); the exact JSON object; name and schema; the description; the rule accepts `{}` and rejects `{"zone":"UTC"}` and `null`. Spot-check by the agent: `%H.%M` made two tests fail; restored.
 - **Existing tests changed** because four tools are now offered: the tool counts in `local_llm_tests.rs` and `assistant_tests.rs` (3 to 4), and in `policy_hook_tests.rs` the two hand-built agents gain the tool and the expected offered lists gain `current_time` last.
 - **On the Pi (read-only):** `/etc/localtime` links to `/usr/share/zoneinfo/Asia/Singapore` and `TZ` is unset in `jarvis.service`, so jiff should report `Asia/Singapore` there. Not yet run on the Pi; the voice check is open.
+- 2026-11-21 (coordinator): committed as `a87331a` and pushed at Darren's request ("can u deploy it"). Deployed to the 8 GB Pi: Jarvis idle, `git pull` to `5930f83`, `cargo build --release --locked` (52.7 s, jiff compiled), `systemctl --user restart jarvis` at 15:16:51; the service is active. Waiting for Darren's voice check.
+- 2026-11-21 (coordinator): Darren tried it by voice on the Pi: "Ok its good". Done.
