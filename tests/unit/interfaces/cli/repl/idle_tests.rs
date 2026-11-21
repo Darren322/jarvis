@@ -211,8 +211,10 @@ async fn a_fact_noted_while_idle_is_shown_at_once_stored_and_the_turn_examined()
     let (mut typing, mut input) = typed_input();
     let (sender, mut notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
 
-    let read = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter);
+    let read =
+        read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted);
     let driver = async {
         // The notice arrives before anything is typed: it is shown while idle.
         assert_eq!(
@@ -234,6 +236,17 @@ async fn a_fact_noted_while_idle_is_shown_at_once_stored_and_the_turn_examined()
         ["The user's cat is called Miso."]
     );
     assert!(!harness.turn_is_waiting().await);
+    let stored = harness
+        .archive
+        .facts_repository()
+        .list()
+        .await
+        .expect("facts list");
+    assert_eq!(
+        last_noted,
+        Some(stored[0].id),
+        "the noted fact is the focus"
+    );
     // Only Darren's words were sent, and the turn was asked about once.
     assert_eq!(handle.request_count(), 1);
     assert!(!format!("{:?}", handle.requests()[0]).contains("ANSWER-JARVIS-GAVE"));
@@ -248,8 +261,10 @@ async fn a_turn_with_nothing_to_note_shows_nothing() {
     let (mut typing, mut input) = typed_input();
     let (sender, mut notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
 
-    let read = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter);
+    let read =
+        read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted);
     let driver = async {
         while harness.turn_is_waiting().await {
             tokio::task::yield_now().await;
@@ -275,9 +290,11 @@ async fn a_line_typed_during_the_model_run_is_handled_at_once_and_the_turn_is_ex
     let (mut typing, mut input) = typed_input();
     let (sender, mut notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
 
     {
-        let read = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter);
+        let read =
+            read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted);
         tokio::pin!(read);
         // The model has the request and is still working when the line is typed.
         tokio::select! {
@@ -299,7 +316,8 @@ async fn a_line_typed_during_the_model_run_is_handled_at_once_and_the_turn_is_ex
             "FACT: The user's cat is called Miso.",
         )]))
         .await;
-    let read = read_line_during_idle_work(&mut input, Some(&later), &mut presenter);
+    let read =
+        read_line_during_idle_work(&mut input, Some(&later), &mut presenter, &mut last_noted);
     let driver = async {
         assert_eq!(
             notices.recv().await.as_deref(),
@@ -324,9 +342,10 @@ async fn dropping_the_whole_idle_read_during_the_model_run_leaves_the_turn_unexa
     let (_typing, mut input) = typed_input();
     let (sender, _notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
 
     tokio::select! {
-        _ = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter) => {
+        _ = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted) => {
             panic!("the model never answers, so the read is still idle")
         }
         () = started.notified() => {}
@@ -348,8 +367,10 @@ async fn a_failing_model_costs_one_warning_and_one_request_not_a_loop() {
     let (mut typing, mut input) = typed_input();
     let (sender, _notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
 
-    let read = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter);
+    let read =
+        read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted);
     let driver = async {
         while handle.request_count() == 0 {
             tokio::task::yield_now().await;
@@ -383,11 +404,13 @@ async fn without_a_noting_pass_the_idle_time_is_just_waiting_for_input() {
     let (mut typing, mut input) = typed_input();
     let (sender, _notices) = mpsc::unbounded_channel();
     let mut presenter = Notices(sender);
+    let mut last_noted = None;
     typing.write_all(b"hello\n").await.expect("typing works");
 
-    let (line, warning) = read_line_during_idle_work(&mut input, Some(&memory), &mut presenter)
-        .await
-        .expect("the read succeeds");
+    let (line, warning) =
+        read_line_during_idle_work(&mut input, Some(&memory), &mut presenter, &mut last_noted)
+            .await
+            .expect("the read succeeds");
 
     assert_line(&line, "hello");
     assert_eq!(warning, None);

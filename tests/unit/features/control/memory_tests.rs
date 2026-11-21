@@ -10,7 +10,8 @@ use crate::features::{
     memory::MemoryService,
 };
 use crate::storage::{
-    ArchiveOutcome, ConversationArchive, FactOrigin, MAX_FACT_BYTES, MemoryEligibility, SourceId,
+    ArchiveOutcome, ConversationArchive, FactId, FactOrigin, MAX_FACT_BYTES, MemoryEligibility,
+    SourceId,
 };
 
 use super::{Focus, MemoryControl};
@@ -152,7 +153,7 @@ async fn forget_detail_needs_exactly_one_match() {
     let two = fixture
         .run(&mut control, MemoryCommand::ForgetDetail("cat".into()))
         .await;
-    assert!(says(&two, "matches multiple memories"));
+    assert!(says(&two, "matches more than one memory or fact"));
     let one = fixture
         .run(&mut control, MemoryCommand::ForgetDetail("Miso".into()))
         .await;
@@ -384,4 +385,214 @@ async fn a_save_with_no_storage_says_so() {
     );
     assert_eq!(control.focus, None);
     let _ = std::fs::remove_file(&path);
+}
+
+/// A fact stored directly, as a finished noting pass would; returns its id.
+async fn add_fact(fixture: &Fixture, text: &str, origin: FactOrigin) -> FactId {
+    fixture
+        .session
+        .facts_repository()
+        .expect("the archive is open")
+        .insert(text, origin)
+        .await
+        .expect("the fact fits")
+        .id
+}
+
+#[tokio::test]
+async fn listing_facts_shows_number_origin_and_text_and_an_empty_list_says_so() {
+    let mut fixture = Fixture::open("list-facts").await;
+    let mut control = MemoryControl::default();
+
+    let empty = fixture.run(&mut control, MemoryCommand::Facts).await;
+    assert_eq!(empty, [info("I have no saved facts.")]);
+
+    let stated = add_fact(&fixture, "my cat is Miso", FactOrigin::Stated).await;
+    let noted = add_fact(&fixture, "the user lives in Leeds", FactOrigin::Noted).await;
+    let listed = fixture.run(&mut control, MemoryCommand::Facts).await;
+    assert_eq!(
+        listed,
+        [
+            info(&format!("{} [stated] my cat is Miso", stated.0)),
+            info(&format!("{} [noted] the user lives in Leeds", noted.0)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_fact_number_stays_the_same_after_an_earlier_fact_is_removed() {
+    let mut fixture = Fixture::open("stable-numbers").await;
+    let mut control = MemoryControl::default();
+    let first = add_fact(&fixture, "first", FactOrigin::Stated).await;
+    let second = add_fact(&fixture, "second", FactOrigin::Stated).await;
+
+    fixture
+        .run(&mut control, MemoryCommand::ForgetFact(first))
+        .await;
+    let listed = fixture.run(&mut control, MemoryCommand::Facts).await;
+
+    assert_eq!(listed, [info(&format!("{} [stated] second", second.0))]);
+}
+
+#[tokio::test]
+async fn forgetting_by_number_removes_that_fact_and_a_bad_number_removes_nothing() {
+    let mut fixture = Fixture::open("forget-number").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "keep me", FactOrigin::Stated).await;
+    let target = add_fact(&fixture, "drop me", FactOrigin::Noted).await;
+
+    let missing = fixture
+        .run(
+            &mut control,
+            MemoryCommand::ForgetFact(FactId(target.0 + 1)),
+        )
+        .await;
+    assert_eq!(
+        missing,
+        [info(&format!(
+            "There is no fact number {}; nothing was forgotten.",
+            target.0 + 1
+        ))]
+    );
+    assert_eq!(fact_texts(&fixture.session).await, ["keep me", "drop me"]);
+
+    let done = fixture
+        .run(&mut control, MemoryCommand::ForgetFact(target))
+        .await;
+    assert_eq!(done, [info("Forgot that: drop me")]);
+    assert_eq!(fact_texts(&fixture.session).await, ["keep me"]);
+}
+
+#[tokio::test]
+async fn fact_commands_work_without_a_memory_service() {
+    let mut fixture = Fixture::open("facts-no-memory").await;
+    let mut control = MemoryControl::default();
+    let id = add_fact(&fixture, "my cat is Miso", FactOrigin::Stated).await;
+
+    let listed = control
+        .run(MemoryCommand::Facts, None, &mut fixture.session)
+        .await;
+    assert_eq!(listed.len(), 1);
+    let done = control
+        .run(MemoryCommand::ForgetFact(id), None, &mut fixture.session)
+        .await;
+    assert_eq!(done, [info("Forgot that: my cat is Miso")]);
+}
+
+#[tokio::test]
+async fn forget_that_after_a_noted_fact_removes_that_fact_only() {
+    let mut fixture = Fixture::open("forget-noted").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "older noted", FactOrigin::Noted).await;
+    let last = add_fact(&fixture, "last noted", FactOrigin::Noted).await;
+    control.focus_on_noted_fact(last);
+
+    let notices = fixture.run(&mut control, MemoryCommand::ForgetFocus).await;
+
+    assert_eq!(notices, [info("Forgot that: last noted")]);
+    assert_eq!(fact_texts(&fixture.session).await, ["older noted"]);
+}
+
+#[tokio::test]
+async fn forget_detail_removes_a_unique_fact_match_ignoring_case() {
+    let mut fixture = Fixture::open("detail-fact").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "My cat is Miso", FactOrigin::Stated).await;
+    add_fact(&fixture, "the user lives in Leeds", FactOrigin::Noted).await;
+
+    let notices = fixture
+        .run(&mut control, MemoryCommand::ForgetDetail("miso".into()))
+        .await;
+
+    assert_eq!(notices, [info("Forgot that: My cat is Miso")]);
+    assert_eq!(
+        fact_texts(&fixture.session).await,
+        ["the user lives in Leeds"]
+    );
+}
+
+#[tokio::test]
+async fn forget_detail_matching_several_facts_removes_nothing_and_says_why() {
+    let mut fixture = Fixture::open("detail-two-facts").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "my cat is Miso", FactOrigin::Stated).await;
+    add_fact(&fixture, "my cat's vet is Dr Lee", FactOrigin::Noted).await;
+
+    let notices = fixture
+        .run(&mut control, MemoryCommand::ForgetDetail("cat".into()))
+        .await;
+
+    assert!(says(&notices, "matches more than one memory or fact"));
+    assert!(says(&notices, "nothing was forgotten"));
+    assert_eq!(fact_texts(&fixture.session).await.len(), 2);
+}
+
+#[tokio::test]
+async fn forget_detail_matching_a_memory_and_a_fact_removes_neither() {
+    let mut fixture = Fixture::open("detail-both").await;
+    fixture.remember("My parrot is called Kiwi.").await;
+    add_fact(&fixture, "my parrot likes seeds", FactOrigin::Stated).await;
+    let mut control = MemoryControl::default();
+
+    let notices = fixture
+        .run(&mut control, MemoryCommand::ForgetDetail("parrot".into()))
+        .await;
+
+    assert!(says(&notices, "matches more than one memory or fact"));
+    assert_eq!(fact_texts(&fixture.session).await.len(), 1);
+    let memories = fixture
+        .run(&mut control, MemoryCommand::List(Some("parrot".into())))
+        .await;
+    assert!(says(&memories, "Kiwi"), "the memory is still there");
+}
+
+#[tokio::test]
+async fn forget_detail_with_no_match_among_facts_or_memories_removes_nothing() {
+    let mut fixture = Fixture::open("detail-none").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "my cat is Miso", FactOrigin::Stated).await;
+
+    let notices = fixture
+        .run(&mut control, MemoryCommand::ForgetDetail("parrot".into()))
+        .await;
+
+    assert!(says(&notices, "could not find one memory or fact"));
+    assert_eq!(fact_texts(&fixture.session).await, ["my cat is Miso"]);
+}
+
+#[tokio::test]
+async fn forget_detail_still_finds_a_fact_when_memory_is_unavailable() {
+    let mut fixture = Fixture::open("detail-no-memory").await;
+    let mut control = MemoryControl::default();
+    add_fact(&fixture, "my cat is Miso", FactOrigin::Stated).await;
+
+    let missing = control
+        .run(
+            MemoryCommand::ForgetDetail("parrot".into()),
+            None,
+            &mut fixture.session,
+        )
+        .await;
+    assert_eq!(missing, [info("Local memory storage is unavailable.")]);
+    let found = control
+        .run(
+            MemoryCommand::ForgetDetail("miso".into()),
+            None,
+            &mut fixture.session,
+        )
+        .await;
+    assert_eq!(found, [info("Forgot that: my cat is Miso")]);
+}
+
+#[tokio::test]
+async fn listing_facts_moves_the_focus_off_a_saved_fact() {
+    let mut fixture = Fixture::open("list-moves-focus").await;
+    let mut control = MemoryControl::default();
+    control.remember("my cat is Miso", &fixture.session).await;
+
+    fixture.run(&mut control, MemoryCommand::Facts).await;
+    let notices = fixture.run(&mut control, MemoryCommand::ForgetFocus).await;
+
+    assert!(says(&notices, "no current memory"));
+    assert_eq!(fact_texts(&fixture.session).await, ["my cat is Miso"]);
 }

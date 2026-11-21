@@ -99,6 +99,9 @@ where
     let mut next_input = None;
     let mut idle_work_due = true;
     let mut memory_control = MemoryControl::default();
+    // The last fact noted while idle and not yet made the "forget that" focus. It lives
+    // outside the read, so a tap that ends the wait does not lose it.
+    let mut last_noted = None;
     // A line was handed over (a transcript, or a line typed over speech) and the state is
     // not yet `Idle`; whatever handles the line moves it on.
     let mut state_awaiting_idle = false;
@@ -127,7 +130,7 @@ where
             let with_idle_work = mem::take(&mut idle_work_due);
             let read = async {
                 if with_idle_work {
-                    read_line_during_idle_work(&mut input, memory, presenter).await
+                    read_line_during_idle_work(&mut input, memory, presenter, &mut last_noted).await
                 } else {
                     read_input_line(&mut input).await.map(|line| (line, None))
                 }
@@ -150,6 +153,9 @@ where
                 },
             }
         };
+        if let Some(fact) = last_noted.take() {
+            memory_control.focus_on_noted_fact(fact);
+        }
         let (line, memory_warning) = match wake {
             Wake::Line(line, memory_warning) => (line, memory_warning),
             Wake::Tap { prompt_on_screen } => {

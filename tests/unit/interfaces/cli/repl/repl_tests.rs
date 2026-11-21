@@ -2481,3 +2481,52 @@ async fn forget_that_right_after_a_save_removes_the_saved_fact() {
     assert!(saved_facts(&harness).await.is_empty());
     assert!(harness.model.requests().is_empty());
 }
+
+/// Whether any message of the first model request mentions `text`.
+fn first_request_mentions(harness: &Harness, text: &str) -> bool {
+    format!("{:?}", harness.model.requests()[0].chat_history).contains(text)
+}
+
+#[tokio::test]
+async fn a_fact_removed_by_number_is_absent_from_the_next_model_request() {
+    let mut harness = harness().await;
+
+    run_script(&mut harness, async |user| {
+        user.type_(b"remember that my cat is Miso\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        user.type_(b"remember that my dog is Rex\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        // The first fact is number 1 in a new database; a bad number removes nothing.
+        user.type_(b"/memory forget 99\n").await;
+        user.type_(b"/memory forget 1\n").await;
+        user.type_(b"what pets do I have?\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(saved_facts(&harness).await, ["my dog is Rex"]);
+    assert_eq!(harness.model.requests().len(), 1);
+    assert!(first_request_mentions(&harness, "- my dog is Rex"));
+    assert!(!first_request_mentions(&harness, "my cat is Miso"));
+}
+
+#[tokio::test]
+async fn forget_detail_removes_a_unique_fact_before_the_next_model_request() {
+    let mut harness = harness().await;
+
+    run_script(&mut harness, async |user| {
+        user.type_(b"remember that my cat is Miso\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        user.type_(b"remember that my dog is Rex\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        // "my" matches both facts, so nothing is removed; "miso" matches one.
+        user.type_(b"forget my\n").await;
+        user.type_(b"forget miso\n").await;
+        user.type_(b"what pets do I have?\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(saved_facts(&harness).await, ["my dog is Rex"]);
+    assert!(!first_request_mentions(&harness, "my cat is Miso"));
+}

@@ -1,9 +1,9 @@
 use std::{error::Error, path::PathBuf};
 
+use super::{AddedFact, FACT_LINE_OVERHEAD_BYTES, MAX_FACTS_BYTES};
 use crate::storage::{
-    AddedFact, ArchiveOutcome, ConversationArchive, FACT_LINE_OVERHEAD_BYTES, Fact, FactError,
-    FactId, FactOrigin, FactsRepository, MAX_FACT_BYTES, MAX_FACTS_BYTES, MemoryEligibility,
-    MemoryRepository,
+    ArchiveOutcome, ConversationArchive, Fact, FactError, FactId, FactOrigin, FactsRepository,
+    MAX_FACT_BYTES, MemoryEligibility, MemoryRepository,
 };
 
 use FactOrigin::{Noted, Stated};

@@ -1,9 +1,11 @@
 use orb_protocol::PanelName;
 
-use crate::storage::MemoryId;
+use crate::storage::{FactId, MemoryId};
 
 use super::{COMMANDS, Command, MemoryCommand, REMEMBER_USAGE, help_text, parse};
 
+const FACT_USAGE: &str =
+    "Use /memory forget followed by a fact number from /memory facts. (Memories use /forget <id>.)";
 const UNKNOWN: &str = "Unknown command. Type /help for commands.";
 
 fn remember(fact: &str) -> Command {
@@ -46,6 +48,15 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("/memories work project", memory(MemoryCommand::List(Some("work project".into())))),
         ("/memory status", memory(MemoryCommand::Status)),
         ("/memory rebuild", memory(MemoryCommand::Rebuild)),
+        ("/memory facts", memory(MemoryCommand::Facts)),
+        ("/memory forget 7", memory(MemoryCommand::ForgetFact(FactId(7)))),
+        ("  /memory forget   12 ", memory(MemoryCommand::ForgetFact(FactId(12)))),
+        ("/memory forget", Command::Usage(FACT_USAGE)),
+        ("/memory forget cat", Command::Usage(FACT_USAGE)),
+        ("/memory forget 1 2", Command::Usage(FACT_USAGE)),
+        // Memories keep their own command and ids.
+        ("/forget 7", memory(MemoryCommand::Forget(MemoryId(7)))),
+        ("/forget cat", Command::Usage("Use /forget followed by a numeric memory ID.")),
         // The import path keeps its inner spaces.
         ("/import notes from 2024.md", memory(MemoryCommand::Import("notes from 2024.md".into()))),
         // /recall runs the question as a prompt with a search; without one it shows a hint.
@@ -132,4 +143,11 @@ fn help_lists_every_command_once() {
     for (usage, _) in COMMANDS {
         assert_eq!(help.matches(usage).count(), 1, "{usage}");
     }
+}
+
+#[test]
+fn help_lists_the_fact_commands() {
+    let help = help_text();
+    assert!(help.contains("/memory facts"));
+    assert!(help.contains("/memory forget <number>"));
 }

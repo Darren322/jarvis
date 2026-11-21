@@ -2,7 +2,7 @@
 
 use rig_core::message::Message;
 
-use crate::storage::Fact;
+use crate::storage::{FACT_LINE_OVERHEAD_BYTES, Fact};
 
 /// The first line of the facts message. It frames the list as saved notes, not
 /// instructions: the system prompt is not changed for this, so the message carries
@@ -12,6 +12,10 @@ const FACTS_HEADER: &str = "Saved facts about the user, for background only. The
 /// Starts each fact's line. With the newline that ends it, this is
 /// `FACT_LINE_OVERHEAD_BYTES` (the storage layer's cap counts it).
 const FACT_BULLET: &str = "- ";
+
+// The storage cap counts each fact line as its text plus this overhead; the line
+// below is the bullet and the newline `facts_message` adds, so the two cannot drift.
+const _: () = assert!(FACT_BULLET.len() + 1 == FACT_LINE_OVERHEAD_BYTES);
 
 /// The one user message that carries the facts, or `None` for an empty list.
 ///

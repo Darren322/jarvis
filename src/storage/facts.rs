@@ -4,13 +4,6 @@
 //! returns them. Everything is ordered by row id (timestamps can tie), and the
 //! size rules of fast-memory D8 are enforced here, inside the insert transaction.
 
-// Tickets 04 to 06 add the callers of `insert` and `remove`. Once nothing here is
-// unused this expectation fails the build, which is the cue to delete it.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "fast-memory 04 to 06 add the callers")
-)]
-
 use rusqlite::{Transaction, TransactionBehavior, params};
 use tokio_rusqlite::Connection;
 

@@ -5,7 +5,7 @@ use crate::features::{
     memory::{EmbedderState, MemoryService},
 };
 use crate::storage::{
-    FactError, FactId, FactOrigin, ForgetReceipt, ImportState, MAX_FACT_BYTES, MemoryId,
+    Fact, FactError, FactId, FactOrigin, ForgetReceipt, ImportState, MAX_FACT_BYTES, MemoryId,
     MemoryKind, MemorySummary, SourceId,
 };
 
@@ -17,17 +17,19 @@ const UNAVAILABLE: &str = "Local memory storage is unavailable.";
 const SAVED: &str = "Got it.";
 const FACTS_UNAVAILABLE: &str = "I can't save that: local memory storage is unavailable.";
 const NOT_ONE_LINE: &str = "I can only remember one line at a time.";
+const NO_FACTS: &str = "I have no saved facts.";
+const FACTS_LIST_UNAVAILABLE: &str = "Local memory storage is unavailable.";
 const LIST_FULL: &str =
     "I can't remember more: the list is full of things you told me. Forget one first.";
 
 /// What "forget that" refers to. Only trusted foreground actions set it: the
-/// last successful turn, an import, a /memories listing with one result, or a
-/// fact just saved with "remember that".
+/// last successful turn, an import, a /memories listing with one result, a
+/// fact just saved with "remember that", or the last fact Jarvis noted while idle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Focus {
     Source(SourceId),
     Memory(MemoryId),
-    /// The fact saved by the latest "remember that".
+    /// The fact saved by the latest "remember that", or the last one noted while idle.
     Fact(FactId),
     /// The last listing showed several memories, so "that" is ambiguous.
     AmbiguousDisplay,
@@ -50,6 +52,12 @@ impl MemoryControl {
     /// Points "forget that" at the source saved for the latest successful turn.
     pub(crate) fn focus_on_turn(&mut self, source_id: Option<SourceId>) {
         self.focus = source_id.map(Focus::Source);
+    }
+
+    /// Points "forget that" at a fact Jarvis just noted (the last, if a pass noted
+    /// several). Only the idle read calls this, with a fact it stored itself.
+    pub(crate) fn focus_on_noted_fact(&mut self, id: FactId) {
+        self.focus = Some(Focus::Fact(id));
     }
 
     /// Saves `text` as a stated fact (no model run, no search) and points "forget that"
@@ -94,17 +102,68 @@ impl MemoryControl {
     /// Removes the fact "forget that" points at. A fact lives apart from memories, so
     /// this needs no memory service.
     async fn forget_fact(&mut self, id: FactId, session: &ConversationSession) -> Vec<Notice> {
+        self.remove_fact(
+            id,
+            session,
+            "That fact is already gone; nothing was forgotten.".to_owned(),
+        )
+        .await
+    }
+
+    /// `/memory forget <number>`: a number that names no fact removes nothing.
+    async fn forget_fact_number(
+        &mut self,
+        id: FactId,
+        session: &ConversationSession,
+    ) -> Vec<Notice> {
+        self.remove_fact(
+            id,
+            session,
+            format!("There is no fact number {}; nothing was forgotten.", id.0),
+        )
+        .await
+    }
+
+    async fn remove_fact(
+        &mut self,
+        id: FactId,
+        session: &ConversationSession,
+        missing: String,
+    ) -> Vec<Notice> {
         self.focus = None;
         let Some(facts) = session.facts_repository() else {
             return vec![Notice::Info(FACTS_UNAVAILABLE.to_owned())];
         };
         match facts.remove(id).await {
             Ok(Some(fact)) => vec![Notice::Info(format!("Forgot that: {}", fact.text))],
-            Ok(None) => vec![Notice::Info(
-                "That fact is already gone; nothing was forgotten.".to_owned(),
-            )],
+            Ok(None) => vec![Notice::Info(missing)],
             Err(error) => vec![Notice::Warning(format!(
                 "the fact was not forgotten: {error}"
+            ))],
+        }
+    }
+
+    /// `/memory facts`: one line per fact, numbered by its stable id. Listing moves
+    /// the focus off whatever it pointed at.
+    async fn list_facts(&mut self, session: &ConversationSession) -> Vec<Notice> {
+        self.focus = None;
+        let Some(facts) = session.facts_repository() else {
+            return vec![Notice::Info(FACTS_LIST_UNAVAILABLE.to_owned())];
+        };
+        match facts.list().await {
+            Ok(facts) if facts.is_empty() => vec![Notice::Info(NO_FACTS.to_owned())],
+            Ok(facts) => facts
+                .iter()
+                .map(|fact| {
+                    let origin = match fact.origin {
+                        FactOrigin::Stated => "stated",
+                        FactOrigin::Noted => "noted",
+                    };
+                    Notice::Info(format!("{} [{origin}] {}", fact.id.0, fact.text))
+                })
+                .collect(),
+            Err(error) => vec![Notice::Warning(format!(
+                "facts could not be listed: {error}"
             ))],
         }
     }
@@ -120,6 +179,16 @@ impl MemoryControl {
         {
             return self.forget_fact(id, session).await;
         }
+        // Facts live apart from memories, so these need no memory service.
+        let command = match command {
+            MemoryCommand::Facts => return self.list_facts(session).await,
+            MemoryCommand::ForgetFact(id) => return self.forget_fact_number(id, session).await,
+            // Facts count too, so this runs with or without the memory service.
+            MemoryCommand::ForgetDetail(detail) => {
+                return self.forget_detail(memory, session, &detail).await;
+            }
+            other => other,
+        };
         let Some(memory) = memory else {
             return vec![Notice::Info(UNAVAILABLE.to_owned())];
         };
@@ -130,9 +199,10 @@ impl MemoryControl {
                 self.after_forget(result, session)
             }
             MemoryCommand::ForgetFocus => self.forget_focus(memory, session).await,
-            MemoryCommand::ForgetDetail(detail) => {
-                self.forget_detail(memory, session, &detail).await
-            }
+            // Answered above, before the memory service is needed.
+            MemoryCommand::Facts
+            | MemoryCommand::ForgetFact(_)
+            | MemoryCommand::ForgetDetail(_) => Vec::new(),
             MemoryCommand::Import(path) => self.import(memory, session, &path).await,
             MemoryCommand::Status => status(memory).await,
             MemoryCommand::Rebuild => match memory.rebuild().await {
@@ -205,42 +275,67 @@ impl MemoryControl {
         self.after_forget(result, session)
     }
 
-    /// Forgets the single memory whose text contains `detail`, searching the
-    /// last listing first and then the store. Ambiguity forgets nothing.
+    /// Forgets the single item, memory or fact, whose text contains `detail` (ignoring
+    /// case). Memories are searched in the last listing and then the store; facts, all
+    /// of them. Ambiguity, across both together, forgets nothing.
     async fn forget_detail(
         &mut self,
-        memory: &MemoryService,
+        memory: Option<&MemoryService>,
         session: &mut ConversationSession,
         detail: &str,
     ) -> Vec<Notice> {
         let needle = detail.to_lowercase();
-        let mut candidates = self
-            .recent
-            .iter()
-            .filter(|record| record.text.to_lowercase().contains(&needle))
-            .map(|record| record.id)
-            .collect::<Vec<_>>();
-        match memory.list(Some(detail.to_owned()), 2).await {
-            Ok(records) => candidates.extend(records.into_iter().map(|record| record.id)),
-            Err(error) => {
-                return vec![Notice::Warning(format!(
-                    "forget detail could not be resolved: {error}"
-                ))];
+        let mut memory_ids = Vec::new();
+        if let Some(memory) = memory {
+            memory_ids = self
+                .recent
+                .iter()
+                .filter(|record| record.text.to_lowercase().contains(&needle))
+                .map(|record| record.id)
+                .collect::<Vec<_>>();
+            match memory.list(Some(detail.to_owned()), 2).await {
+                Ok(records) => memory_ids.extend(records.into_iter().map(|record| record.id)),
+                Err(error) => {
+                    return vec![Notice::Warning(format!(
+                        "forget detail could not be resolved: {error}"
+                    ))];
+                }
             }
+            memory_ids.sort();
+            memory_ids.dedup();
         }
-        candidates.sort();
-        candidates.dedup();
-        match candidates.as_slice() {
-            [id] => {
+        let facts = match session.facts_repository() {
+            Some(repository) => match repository.list().await {
+                Ok(facts) => facts,
+                Err(error) => {
+                    return vec![Notice::Warning(format!(
+                        "forget detail could not be resolved: {error}"
+                    ))];
+                }
+            },
+            None => Vec::new(),
+        };
+        let matching_facts: Vec<&Fact> = facts
+            .iter()
+            .filter(|fact| fact.text.to_lowercase().contains(&needle))
+            .collect();
+        match (memory_ids.as_slice(), matching_facts.as_slice()) {
+            ([id], []) => {
+                // `memory_ids` is only filled when there is a service.
+                let Some(memory) = memory else {
+                    return vec![Notice::Info(UNAVAILABLE.to_owned())];
+                };
                 let result = memory.forget(*id).await;
                 self.after_forget(result, session)
             }
-            [] => vec![Notice::Info(
-                "I could not find one memory matching that detail; nothing was forgotten."
+            ([], [fact]) => self.forget_fact(fact.id, session).await,
+            ([], []) if memory.is_none() => vec![Notice::Info(UNAVAILABLE.to_owned())],
+            ([], []) => vec![Notice::Info(
+                "I could not find one memory or fact matching that detail; nothing was forgotten."
                     .to_owned(),
             )],
             _ => vec![Notice::Info(
-                "That detail matches multiple memories. Use /memories to choose an ID; nothing was forgotten."
+                "That detail matches more than one memory or fact. Use /memories to choose a memory ID or /memory facts to choose a fact number; nothing was forgotten."
                     .to_owned(),
             )],
         }

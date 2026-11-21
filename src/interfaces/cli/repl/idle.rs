@@ -5,7 +5,7 @@ use tokio::io::AsyncBufRead;
 use crate::features::memory::{EmbedError, IdlePass, MemoryError, MemoryService};
 use crate::interfaces::cli::input::{InputLine, InputReader, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
-use crate::storage::Examination;
+use crate::storage::{Examination, FactId};
 
 use super::InputFuture;
 
@@ -15,11 +15,14 @@ use super::InputFuture;
 /// Returns the line and an optional warning to print.
 ///
 /// Each fact noted is shown with `presenter` as soon as it is stored; they are
-/// terminal lines, not spoken.
+/// terminal lines, not spoken. `last_noted` is set to the last fact shown, so the
+/// caller can make it the "forget that" focus; it is an out-parameter, not part of the
+/// result, so it still holds the fact when a tap drops this future before it returns.
 pub(super) async fn read_line_during_idle_work<R, P>(
     input: &mut InputReader<R>,
     memory: Option<&MemoryService>,
     presenter: &mut P,
+    last_noted: &mut Option<FactId>,
 ) -> io::Result<(InputLine, Option<String>)>
 where
     R: AsyncBufRead + Unpin,
@@ -95,7 +98,12 @@ where
             // finishes even if its caller stops waiting, so it is awaited here, and
             // a line typed meanwhile is read right after.
             match noter.commit(turn).await {
-                Ok(examination) => show_noted(presenter, &examination)?,
+                Ok(examination) => {
+                    show_noted(presenter, &examination)?;
+                    if let Some(fact) = examination.noted.last() {
+                        *last_noted = Some(fact.id);
+                    }
+                }
                 Err(error) => {
                     warnings.push(format!("fact noting paused: {error}"));
                     break;

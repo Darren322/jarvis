@@ -1,6 +1,6 @@
 use rig_core::message::{Message, UserContent};
 
-use crate::storage::{FACT_LINE_OVERHEAD_BYTES, Fact, FactId, FactOrigin, MAX_FACTS_BYTES};
+use crate::storage::{Fact, FactId, FactOrigin};
 
 use super::{FACT_BULLET, FACTS_HEADER, facts_message};
 
@@ -53,28 +53,11 @@ fn the_same_list_always_renders_to_the_same_message() {
 
 #[test]
 fn the_storage_cap_counts_exactly_what_the_message_adds_per_fact() {
-    assert_eq!(
-        FACT_BULLET.len() + "\n".len(),
-        FACT_LINE_OVERHEAD_BYTES,
-        "the bytes the cap counts around each fact"
-    );
-
-    // A list that reaches the cap renders to the header plus exactly the cap.
-    let facts: Vec<_> = (0..6)
-        .map(|id| {
-            fact(
-                id,
-                &"x".repeat(MAX_FACTS_BYTES / 6 - FACT_LINE_OVERHEAD_BYTES),
-            )
-        })
-        .collect();
-    assert_eq!(
-        facts.iter().map(Fact::line_bytes).sum::<usize>(),
-        MAX_FACTS_BYTES
-    );
+    // Six facts of 197 bytes fill the 1,200-byte cap (197 + 3 each, as storage
+    // counts them), and the message is the header plus exactly those 1,200 bytes.
+    let facts: Vec<_> = (0..6).map(|id| fact(id, &"x".repeat(197))).collect();
+    assert_eq!(facts.iter().map(Fact::line_bytes).sum::<usize>(), 1_200);
+    assert_eq!(FACT_BULLET.len() + "\n".len(), 3);
     let message = facts_message(&facts).expect("a full list makes a message");
-    assert_eq!(
-        text_of(&message).len(),
-        FACTS_HEADER.len() + MAX_FACTS_BYTES
-    );
+    assert_eq!(text_of(&message).len(), FACTS_HEADER.len() + 1_200);
 }

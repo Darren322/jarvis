@@ -1,6 +1,6 @@
 use orb_protocol::PanelName;
 
-use crate::storage::MemoryId;
+use crate::storage::{FactId, MemoryId};
 
 /// What one line of user input asks for. Parsed the same way whether it was
 /// typed or (later) transcribed from speech.
@@ -32,6 +32,10 @@ pub(crate) enum Command {
 pub(crate) enum MemoryCommand {
     List(Option<String>),
     Forget(MemoryId),
+    /// `/memory facts`: list the facts with their numbers.
+    Facts,
+    /// `/memory forget <number>`: remove the fact with that number.
+    ForgetFact(FactId),
     ForgetFocus,
     ForgetDetail(String),
     Import(String),
@@ -44,11 +48,13 @@ pub(crate) enum MemoryCommand {
 pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/memories [text]", "list recent memories, optionally filtered by text"),
     ("/forget <id>",     "forget a memory and everything built from it"),
-    ("forget that",      "forget the last answer or the single listed memory"),
-    ("forget <detail>",  "forget the one memory that matches <detail>"),
+    ("forget that",      "forget the last answer, the single listed memory, or the fact just saved or noted"),
+    ("forget <detail>",  "forget the one memory or fact that matches <detail>"),
     ("/recall <question>", "answer <question> after searching old conversations"),
     ("/remember <fact>", "save a fact about you (\"remember that <fact>\" works too)"),
     ("/import <path>",   "remember a .txt or .md file (up to 1 MiB)"),
+    ("/memory facts",   "list saved facts: a number, who gave it (stated or noted) and the text"),
+    ("/memory forget <number>", "forget the fact with that number (numbers stay the same as facts come and go)"),
     ("/memory status",   "show memory counts and embedder state"),
     ("/memory rebuild",  "re-embed every memory while idle"),
     ("/reset",           "clear the conversation context and start a new session"),
@@ -85,6 +91,8 @@ pub(crate) fn parse(input: String) -> Command {
         "/recall" => return Command::Usage(RECALL_USAGE),
         "/remember" => return Command::Usage(REMEMBER_USAGE),
         "/memories" => return Command::Memory(MemoryCommand::List(None)),
+        "/memory facts" => return Command::Memory(MemoryCommand::Facts),
+        "/memory forget" => return Command::Usage(FORGET_FACT_USAGE),
         "/memory status" => return Command::Memory(MemoryCommand::Status),
         "/memory rebuild" => return Command::Memory(MemoryCommand::Rebuild),
         _ => {}
@@ -104,6 +112,12 @@ pub(crate) fn parse(input: String) -> Command {
         return match id.trim().parse::<i64>() {
             Ok(id) => Command::Memory(MemoryCommand::Forget(MemoryId(id))),
             Err(_) => Command::Usage("Use /forget followed by a numeric memory ID."),
+        };
+    }
+    if let Some(number) = trimmed.strip_prefix("/memory forget ") {
+        return match number.trim().parse::<i64>() {
+            Ok(number) => Command::Memory(MemoryCommand::ForgetFact(FactId(number))),
+            Err(_) => Command::Usage(FORGET_FACT_USAGE),
         };
     }
     if let Some(question) = trimmed.strip_prefix("/recall ") {
@@ -137,6 +151,11 @@ pub(crate) fn parse(input: String) -> Command {
 
     Command::Prompt(input)
 }
+
+/// Shown for `/memory forget` with no number or one that is not a number. Memories use
+/// `/forget <id>`; facts have their own numbers, from `/memory facts`.
+const FORGET_FACT_USAGE: &str =
+    "Use /memory forget followed by a fact number from /memory facts. (Memories use /forget <id>.)";
 
 const RECALL_USAGE: &str = "Use /recall followed by what you want to remember.";
 
