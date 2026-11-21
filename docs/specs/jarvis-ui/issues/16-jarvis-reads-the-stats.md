@@ -1,6 +1,6 @@
 # 16: Jarvis can say the stats it shows
 
-Status: in-review
+Status: done
 Stories: US6
 Blocked by: 14
 Assignee: Sonnet agent (2026-11-20)
@@ -31,7 +31,7 @@ Traces to: D2, D7
 - [x] `collect_system_status`'s own `sysinfo` reading is gone; the figures come from `SystemMachine` (or one reading both share).
 - [x] The tool's output for the widest values is stated in bytes and tokens in Comments, and stays under 100 tokens.
 - [x] The description names storage, CPU, temperature, memory and uptime. `registered_tools_match_the_allowed_list` still passes.
-- [ ] On the Pi, with the Dashboard shown, "how much storage do I have?" by voice calls `system_status`, and the spoken figure matches the screen. (Pi check.)
+- [x] On the Pi, with the Dashboard shown, "how much storage do I have?" by voice calls `system_status`, and the spoken figure matches the screen. (Pi check.)
 - [x] `scripts/verify.sh` passes.
 
 ## Comments
@@ -42,3 +42,4 @@ Traces to: D2, D7
   - **Verified.** `scripts/verify.sh` in the main checkout: all checks passed (463 root unit tests, 270 UI tests).
   - **Not verified.** The Pi: the real `SystemMachine` there, and the voice check above.
 - 2026-11-20 (coordinator): committed as `c4ca182` (code) and `a691dde` (docs) at Darren's request, pushed, and deployed to the 8 GB Pi: Jarvis was idle (last turn 13:16), `git pull` to `a691dde`, `cargo build --release --locked` (41.9 s), `systemctl --user restart jarvis` at 13:40; the service is active and the screen reconnected (one WebSocket client on 8765). Waiting for Darren's voice check.
+- 2026-11-21 (coordinator): Darren closed the ticket after trying it on the Pi: "jarvus ui 16 [...] fine. clear them". Done.

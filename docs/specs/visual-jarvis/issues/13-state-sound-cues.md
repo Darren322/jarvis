@@ -1,6 +1,6 @@
 # 13: A short sound on every state change
 
-Status: in-review
+Status: done
 Stories: US1, US2, US3
 Blocked by: fast-memory 08 (order only, Darren's choice); the sound preview below
 Assignee: Claude
@@ -44,7 +44,7 @@ Owns: `src/features/speech/cues.rs`, `playback.rs`, `output.rs` and `mod.rs`; `s
 - [x] The idle cue is skipped when a tap interrupts.
 - [x] The off switch plays nothing and changes no timing; the volume boundary values are tested.
 - [x] No new crate. `scripts/verify.sh` passes.
-- [ ] Darren has heard all six on the Pi speaker in a real conversation.
+- [x] Darren has heard all six on the Pi speaker in a real conversation.
 
 ## Comments
 
@@ -67,3 +67,5 @@ Not ticked, and only the Pi can show them: that a real clip sent to speech-to-te
 - Still for Darren's ears: whether the cues now play in full, whether the constant noise can be heard, whether the longer thinking sound over the start of an answer is pleasant. The loopback script and its recordings were removed from the Pi's `/tmp`.
 
 2026-11-15 (Claude), end of session: Darren heard the fixed cues on the Pi and said "sound effect is good" (not asked cue by cue, and not asked whether the constant noise is audible). A new problem keeps the ticket in review: he speaks on the tap, and because the recorder starts only after the listening cue has played, the start of his speech is lost ("and you're free" for "Are you free?", "Hejavis" for "Hey Jarvis"); he confirmed the cue is the cause. The criterion "the listening cue is not in the clip" may have to change. A test of whether a beep in the clip hurts the Hailo's transcription was running when the session ended; its output is in `~/stt-compare/beep-test/` on the 16 GB Pi. The two possible fixes are in `notes/HANDOFF_2026-11-15b.md`.
+
+2026-11-21 (Claude): Darren closed the ticket as it stands: "visual-jarivis 13 [...] fine. clear them". No listening-cue fix was made; options a to c in `notes/HANDOFF_2026-11-15b.md` were not chosen. The criterion "the listening cue is not in the clip" stays unticked: the recording-start test passes, but no real clip was checked on the Pi. With Darren's OK, the beep test's copies of his voice with the beep mixed in (`~/stt-compare/beep-test/clips_A`, `clips_B`, `clips_B_loud`) and `beep-test/__pycache__` were deleted from the 16 GB Pi; the transcripts and result tables are kept.
