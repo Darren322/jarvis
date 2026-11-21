@@ -1,6 +1,6 @@
 # 12: Catalog panels
 
-Status: in-review
+Status: done
 Stories: US5
 Blocked by: 11
 Assignee: Opus agent, high effort (2026-11-21)
@@ -46,7 +46,7 @@ Darren's examples, which every decision is checked against:
 - [x] UI (Vitest): each part renders; a gauge shows the value from the latest `Stats` and "unknown" for a missing temperature or storage; model text is rendered as text (a `<b>` in a card stays literal); the Orb stays in its corner; a tap outside sends `PanelClosed`.
 - [x] The token cost is stated: the tool definition's size in tokens (counted with the Gemma server's read-only `/tokenize` on the Pi, by the coordinator) and the longest Panel the schema allows, both against the 4,096-token slot.
 - [x] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
-- [ ] Pi (coordinator, with Darren): E1, E3 and E5 by voice; what Gemma builds and how it looks.
+- [x] Pi (coordinator, with Darren): E1, E3 and E5 by voice; what Gemma builds and how it looks. (E3 opens the stats Dashboard: see Comments.)
 - [x] No cloud request (D10's code-generated Panels are a separate opt-in experiment).
 
 ## Comments
@@ -69,3 +69,4 @@ Darren's examples, which every decision is checked against:
 - 2026-11-21 (coordinator): Darren chose the flat tool ("okay lets go with a, the simple one first"); explained to him that a bigger Gemma shares the same chat template, so the nested schema would stay unreadable. Built (uncommitted): `build_panel` takes `title` (required), `text` (a note: one card titled `NOTE_TITLE` "Note"), `items` (one list titled `LIST_TITLE` "Items") and `gauges` (an enum array); `BuildPanelArgs::into_parts` turns them into the same Catalog parts, list then note then gauges, empty fields adding nothing; the protocol, the limits and the UI are unchanged. `/apply-template` shows the flat schema in Gemma's own declaration format (`gauges:{items:{enum:[...],type:STRING},type:ARRAY}`), like `current_time`. The preamble now says "use the build_panel tool" instead of "call build_panel". Tests: the argument rule table, the field-to-part table, a schema test that bans `anyOf`, `oneOf` and `const`, the description; spot-checked (note before list failed the order table; restored). `scripts/verify.sh`: all checks passed.
     - **Pi test before Darren (his OK, Q17):** the patch built beside the checkout (`~/jarvis-exp`, target seeded from `target/release`, 53 s) and `bench_first_text.py` with tool lines printed, `--pause=25`, on a database copy. "Hello." 28.77 s (cold, 1,612 tokens, just under the 30 s deadline). "Show my facts as a list." `build_panel`; "Show my facts as a lease." `build_panel`; "Show me the CPU and temperature as gauges." `show_panel` (the stats Dashboard, not gauges); "Make me a shopping list: milk, eggs and bread." `build_panel`; "What time is it?" `current_time`, "It is 8:50 PM."; "Can you put my facts on the screen?" `build_panel`. First words 0.67 to 1.04 s after the cold one. What each Panel held was not seen (no screen on the bench). Scratch worktree, target and files removed.
 - 2026-11-21 (coordinator): committed as `969c2dd` (docs `ae5c4dd`), pushed and deployed at Darren's OK ("sure"): release build 49.5 s, `systemctl --user restart jarvis`. Waiting for Darren to try E1, E3 and E5 by voice.
+- 2026-11-21 (coordinator): Darren by voice on the flat tool (from the log, 20:53 to 20:56): "show my facts as a list" `build_panel`; "Show my facts as a lease." `build_panel`; "Can you show me my shopping list?" `build_panel`; "What time is it?" "It is 8:55 PM."; "Show me your CPU and come with you as gauges please." `show_panel` (the stats Dashboard: E3 is met by the Dashboard, which shows the same figures, rather than by two gauges); "Close it." closed it. The first question was warm (1,605 of 1,616 tokens cached). Closed at Darren's word ("Ok close the ticket after u are done"). Left open: Gemma prefers `show_panel` for gauge requests; what each built Panel held was judged by Darren's eye, not recorded.

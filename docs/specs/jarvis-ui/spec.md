@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 11 and 13 to 16 are done. 11 (the camera Panel: 800x450 at 30 fps, mirrored, one `/camera` MJPEG route; C1 to C7 in the ticket) was closed by Darren on 2026-11-21 after trying it on the 8 GB Pi; the picture is sideways because the module is mounted turned 90°, left for later (Q14 in the ticket). Jarvis runs there as the systemd user service `jarvis.service`. Next: 12 (catalog panels) was settled with Darren on 2026-11-21 (G1 to G8 and his examples E1 to E5 in the ticket: a `build_panel` tool with card, list and live gauge parts) and is in progress with an Opus agent. 17 (a timer, split from 12) is needs-triage. Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 16 are done. 12 (catalog panels) was closed on 2026-11-21: a flat `build_panel` tool (`title`, `text`, `items`, `gauges`), because Gemma's chat template cannot show the model nested `anyOf` parts; gauge requests open the stats Dashboard instead. 11's sideways camera picture is left for later (Q14 in 11). Next: 17 (a timer, needs-triage, by grilling). Gemma runs 2 slots of 5,120 tokens since 2026-11-21. Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -95,7 +95,7 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 09 | show_panel tool and close phrases | done | 03, 07 |
 | 10 | Stats Dashboard panel | done | 04, 07 |
 | 11 | Camera panel | done | 10 |
-| 12 | Catalog panels | in-progress | 11 |
+| 12 | Catalog panels | done | 11 |
 | 13 | Close a Panel by saying it any way | done | 09 |
 | 14 | Storage on the stats Dashboard | done | 10 |
 | 15 | Bring up the stats without the model | done | 09 |
