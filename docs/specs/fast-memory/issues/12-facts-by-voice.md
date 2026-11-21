@@ -32,3 +32,4 @@ Owns: `src/features/control/**`, `src/interfaces/cli/repl/mod.rs` (only where me
 - **Prompt:** one line added to "Do not note": "plans, appointments or anything tied to a date (an interview next Monday),".
 - **Changed expectations:** three listing assertions in `memory_tests.rs` for the new line format.
 - **Only the Pi proves:** how the spoken replies and list sound, real transcriptions against the phrase list, and what Gemma notes with the new prompt line.
+- 2026-11-21 (coordinator): committed as `390e71d`, pushed and deployed to the 8 GB Pi: Jarvis idle, `git pull`, `cargo build --release --locked` (46.7 s), `systemctl --user restart jarvis` at 17:14; active, schema still v6, the three facts unchanged. Waiting for Darren's voice check.
