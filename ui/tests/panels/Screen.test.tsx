@@ -157,8 +157,27 @@ describe('the camera Panel', () => {
     await receive(SHOW_CAMERA);
     expect(orbBox()).toEqual(CORNER);
     expect(panel()).toBeNull();
-    expect(picture().getAttribute('src')).toBe(link.cameraUrl);
+    const source = new URL(picture().getAttribute('src') ?? '');
+    expect(`${source.origin}${source.pathname}`).toBe(link.cameraUrl);
+    expect(source.searchParams.get('showing')).not.toBeNull();
     expect(picture().getAttribute('alt')).toBe('Camera');
+  });
+
+  test('showing the camera again asks for a new picture, so it is never the last still frame', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    const first = picture().getAttribute('src');
+    await receive(HIDE_PANEL);
+    await receive(SHOW_CAMERA);
+    expect(picture().getAttribute('src')).not.toBe(first);
+  });
+
+  test('a render while the camera shows keeps the same picture request', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    const first = picture().getAttribute('src');
+    await receive(SHOW_CAMERA);
+    expect(picture().getAttribute('src')).toBe(first);
   });
 
   test('the Orb is drawn after the camera Panel, so it stays on top', async () => {
