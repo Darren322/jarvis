@@ -1,4 +1,5 @@
 pub mod close_panel;
+pub mod current_time;
 pub mod show_panel;
 pub mod system_status;
 pub mod system_status_tool;
@@ -12,6 +13,7 @@ use serde::de::DeserializeOwned;
 
 use crate::features::{panel::PanelHandle, stats::machine::SystemMachine};
 use close_panel::ClosePanelTool;
+use current_time::CurrentTimeTool;
 use show_panel::ShowPanelTool;
 use system_status_tool::SystemStatusTool;
 
@@ -65,6 +67,7 @@ pub(crate) fn register(
         .tool(SystemStatusTool::new())
         .tool(ShowPanelTool::new(panels.clone()))
         .tool(ClosePanelTool::new(panels))
+        .tool(CurrentTimeTool)
 }
 
 /// Every tool the policy offers to the model and accepts calls for.
@@ -72,6 +75,7 @@ pub(crate) const ALLOWED_TOOLS: &[ToolRule] = &[
     ToolRule::for_tool::<SystemStatusTool<SystemMachine>>(),
     ToolRule::for_tool::<ShowPanelTool>(),
     ToolRule::for_tool::<ClosePanelTool>(),
+    ToolRule::for_tool::<CurrentTimeTool>(),
 ];
 
 pub(crate) fn allowed_tool(name: &str) -> Option<&'static ToolRule> {
