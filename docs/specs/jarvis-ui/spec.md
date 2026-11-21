@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 10 and 13 to 16 are done. 16 (`system_status` returns the Dashboard's figures, committed as `c4ca182`) was closed by Darren on 2026-11-21 after trying it on the 8 GB Pi, where Jarvis runs as the systemd user service `jarvis.service`. Next: 11 (camera, needs-info: resolution and transport, by grilling) and 12 (catalog, needs-triage). Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 10 and 13 to 16 are done. 16 (`system_status` returns the Dashboard's figures, committed as `c4ca182`) was closed by Darren on 2026-11-21 after trying it on the 8 GB Pi, where Jarvis runs as the systemd user service `jarvis.service`. Next: 11 (camera) was settled with Darren on 2026-11-21 (C1 to C7 in the ticket: 800x450 at 30 fps, mirrored, one `/camera` MJPEG route) and is built and in review (uncommitted, `scripts/verify.sh` green); next: Darren's commit and OK to deploy, then the Pi rows in the ticket (CPU, the picture, mirroring, a busy camera) with his eyes. 12 (catalog, needs-triage) waits for it. Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 

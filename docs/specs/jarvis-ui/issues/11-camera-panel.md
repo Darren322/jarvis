@@ -1,9 +1,9 @@
 # 11: Camera panel
 
-Status: ready-for-agent
+Status: in-review
 Stories: US4
 Blocked by: 10
-Assignee: unassigned
+Assignee: Opus agent, high effort (2026-11-21)
 Owns: `crates/orb-protocol/src/lib.rs` and its tests (`PanelName::Camera`); `src/features/camera/` (new); `src/features/mod.rs`; `src/features/panel/mod.rs` (the timeout arm); `src/features/control/command.rs` and `src/features/control/panel.rs` (the phrases); `src/tools/show_panel.rs` (the name and its description); `src/interfaces/orb/` (the `/camera` route); `src/config/camera.rs` (new) and `src/config/mod.rs`; `src/app.rs` (wiring only); `src/features/assistant/preamble.txt` only if the panel names are listed there; `ui/src/panels/`, `ui/src/link/` and `ui/tests/`; the matching tests under `tests/unit/`. `Cargo.toml` and `Cargo.lock` are the coordinator's (`tokio-util` is already added).
 Traces to: D3, D8, D9, D11
 
@@ -24,15 +24,15 @@ Traces to: D3, D8, D9, D11
 ## Acceptance criteria
 - [x] The camera model is chosen and attached (imx708, Camera Module 3, 2026-11-15).
 - [x] The frame transport is decided and recorded (P4: C2, C3).
-- [ ] `PanelName::Camera` round-trips on the wire as `"camera"`; the protocol tests cover it.
-- [ ] The process starts on show and stops on hide, on a replacing Panel, on UI disconnect and on shutdown. Tested with a fake program (as the recorder tests do); no process is left behind.
-- [ ] The frame decoder: table tests for one frame, two frames in one read, a frame split across reads, bytes before the first frame, and the frame size limit and one byte more (a named limit that drops or rejects an oversized frame).
-- [ ] `/camera` streams frames while the camera Panel shows and refuses while it does not; a second frame replaces the first for a slow reader (only the newest is sent).
-- [ ] A failing or exiting program closes the Panel and produces "The camera isn't available."
-- [ ] The camera Panel stays shown with paused time over one hour.
-- [ ] The phrases parse to showing the camera (parse table with near-misses that stay prompts); `show_panel` accepts `camera`.
-- [ ] The UI shows the stream in the Panel with the Orb in its corner; Vitest covers the URL and the Panel choice.
-- [ ] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
+- [x] `PanelName::Camera` round-trips on the wire as `"camera"`; the protocol tests cover it.
+- [x] The process starts on show and stops on hide, on a replacing Panel, on UI disconnect and on shutdown. Tested with a fake program (as the recorder tests do); no process is left behind.
+- [x] The frame decoder: table tests for one frame, two frames in one read, a frame split across reads, bytes before the first frame, and the frame size limit and one byte more (a named limit that drops or rejects an oversized frame).
+- [x] `/camera` streams frames while the camera Panel shows and refuses while it does not; a second frame replaces the first for a slow reader (only the newest is sent).
+- [x] A failing or exiting program closes the Panel and produces "The camera isn't available."
+- [x] The camera Panel stays shown with paused time over one hour.
+- [x] The phrases parse to showing the camera (parse table with near-misses that stay prompts); `show_panel` accepts `camera`.
+- [x] The UI shows the stream in the Panel with the Orb in its corner; Vitest covers the URL and the Panel choice.
+- [x] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
 - [ ] Pi (coordinator, with Darren's OK): frame rate and CPU of `rpicam-vid`, Jarvis and Chromium while the camera shows, against D11; Darren sees the picture.
 - [ ] Jarvis does not see the image; no frame is stored or sent off the LAN; no cloud request (C7).
 
@@ -40,3 +40,9 @@ Traces to: D3, D8, D9, D11
 
 - 2026-11-15 (coordinator): Darren attached the camera. `rpicam-hello --list-cameras` reports imx708 (Camera Module 3); modes 1536x864 @120, 2304x1296 @56, 4608x2592 @14.35. `rpicam-vid --codec mjpeg` to /dev/null for 30 s on the idle 8 GB Pi: 1280x720 @30 = 17.9% of one core, about 76 MB RSS; 640x480 @30 = 8.8%, about 75 MB. Measured alone, without Chromium or Jarvis running. Details in `notes/ui-spike/measurements-2026-11-15.md`.
 - 2026-11-21 (coordinator): grilled with Darren; decisions C1 to C7 above. No npm package: Chromium decodes `multipart/x-mixed-replace` in an `<img>` itself. `tokio-util =0.7.19` (`codec`) was already in `Cargo.lock` through other crates; added as a direct dependency (one lock line). An `<img>` request carries no `Origin` header, so `/camera` cannot be origin-checked like the WebSocket; it relies on the 127.0.0.1 bind and on refusing while the camera Panel is hidden (C4).
+- 2026-11-21 (coordinator): built by an Opus agent (high effort) in the main checkout; C6's spoken line by the coordinator. Reviewed the whole diff and ran `scripts/verify.sh` in the main checkout: all checks passed; `--repeat camera` and `--repeat announcement` 20 of 20 each.
+    - **Rust:** `features/camera/` (`Camera` follows the shown Panel through `PanelHandle::watch_shown`, spawns `rpicam-vid --width 800 --height 450 --framerate 30 --hflip --codec mjpeg --nopreview -t 0 -o -` with `kill_on_drop`, kills and reaps it on every stop, and keeps the newest frame in a `watch`), `features/camera/frames.rs` (`JpegFrames`, a `tokio_util` `Decoder`; `MAX_FRAME_BYTES` = 1 MiB; never errors: skips junk, drops an oversized frame and resyncs), `interfaces/orb/camera.rs` (`/camera`: 403 unless the camera Panel shows, else `multipart/x-mixed-replace; boundary=frame` with `Cache-Control: no-store`, ending when the Panel goes). `PanelName::Camera` (`"camera"`), timeout `None`, `show_panel` accepts `camera` and tells the model it cannot see the picture, phrases "show the camera", "bring up the camera", "show me the camera".
+    - **C6:** the camera sends `CameraUnavailable.notice()` on a bounded queue (1); the REPL reads it as `Announcements` (`interfaces/cli/input.rs`) only in its idle `select!`, after typed input and taps (`biased;`), so one that comes during an answer or a recording waits until idle. It is printed as a notice and, with speech on, said. Tests: shown and said while idle; with speech off only shown, and the next prompt still runs. Spot-check: the spoken line removed, the test failed; restored.
+    - **Beyond C1 to C7, for Darren to confirm:** (1) `FRAME_TIMEOUT` = 10 s: no frame for 10 s (also at start) counts as unavailable and closes the Panel (AGENTS: every external wait has a named timeout). (2) A WebSocket client that disconnects now delivers `PanelClosed`, so the camera stops filming for nobody; this also clears a shown stats Panel at once instead of after its 30 s timeout.
+    - **Known, not fixed:** a Panel replaced in the instant after the camera fails could be closed by the camera's close (no "close if camera" request); `/camera` viewers are not capped (localhost bind plus the shown-Panel gate).
+    - **Only the Pi proves:** that the installed `rpicam-vid` takes these flags and writes MJPEG to stdout; the first frame well within 10 s; CPU and frame rate of `rpicam-vid`, Jarvis and Chromium against D11; the picture and its mirroring; show, close, show again gives a live picture (if it freezes, add a per-show query string to the `<img>` `src`); a busy camera (`rpicam-hello` holding it) closes the Panel and says the line; `systemctl --user stop jarvis` leaves no `rpicam-vid`.
