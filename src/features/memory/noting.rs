@@ -26,6 +26,10 @@ const FACT_MARKER: &str = "FACT:";
 /// facts as a list.") is the model copying Darren's words, not a fact about him
 /// (fast-memory 14).
 const FACT_SUBJECT: &str = "the user";
+/// Verbs after [`FACT_SUBJECT`] that report what Darren said rather than state a
+/// fact: on the Pi on 2026-11-21 "I say facts, the t at the end" came back as
+/// "The user says facts, the t at the end." (fast-memory 14).
+const REPORTED_SPEECH: [&str; 2] = ["says", "said"];
 /// The most facts one turn may yield; a run that lists more is rambling.
 const MAX_FACTS_PER_TURN: usize = 5;
 /// How many times the model run may fail on one turn before the pass stops trying
@@ -152,14 +156,31 @@ fn parse_candidates(answer: &str) -> Vec<String> {
 }
 
 /// Whether `fact` is a sentence about the user: it starts with [`FACT_SUBJECT`]
-/// as a whole word ("The user's" counts, "The username" does not).
+/// as a whole word ("The user's" counts, "The username" does not), and its next
+/// word is not one of [`REPORTED_SPEECH`].
 fn is_about_the_user(fact: &str) -> bool {
-    fact.get(..FACT_SUBJECT.len())
-        .is_some_and(|start| start.eq_ignore_ascii_case(FACT_SUBJECT))
-        && fact[FACT_SUBJECT.len()..]
-            .chars()
-            .next()
-            .is_some_and(|next| !next.is_alphanumeric())
+    let Some(rest) = fact
+        .get(..FACT_SUBJECT.len())
+        .filter(|start| start.eq_ignore_ascii_case(FACT_SUBJECT))
+        .and_then(|_| fact.get(FACT_SUBJECT.len()..))
+    else {
+        return false;
+    };
+    if !rest
+        .chars()
+        .next()
+        .is_some_and(|next| !next.is_alphanumeric())
+    {
+        return false;
+    }
+    let next_word = rest
+        .trim_start()
+        .split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or_default();
+    !REPORTED_SPEECH
+        .iter()
+        .any(|verb| next_word.eq_ignore_ascii_case(verb))
 }
 
 #[cfg(test)]

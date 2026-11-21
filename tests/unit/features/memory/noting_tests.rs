@@ -109,7 +109,7 @@ fn only_lines_that_start_with_the_marker_are_facts() {
             .map(|n| format!("FACT: The user has fact {n}.\n"))
             .collect()
     };
-    let cases: [(&str, &str, Vec<&str>); 18] = [
+    let cases: [(&str, &str, Vec<&str>); 21] = [
         ("no facts", "NONE", vec![]),
         ("nothing at all", "", vec![]),
         (
@@ -169,6 +169,21 @@ fn only_lines_that_start_with_the_marker_are_facts() {
         ("no subject", "FACT: User likes tea.", vec![]),
         ("a longer word", "FACT: The username is darren.", vec![]),
         ("the subject alone", "FACT: The user", vec![]),
+        (
+            "reported speech, from the Pi",
+            "FACT: The user says facts, the t at the end.\nFACT: The user said hello.",
+            vec![],
+        ),
+        (
+            "reported speech in any case",
+            "FACT: the user SAYS facts.",
+            vec![],
+        ),
+        (
+            "a word that starts like a reporting verb",
+            "FACT: The user sails on Sundays.",
+            vec!["The user sails on Sundays."],
+        ),
         (
             "a copied line beside a fact keeps the fact",
             "FACT: I say facts.\nFACT: The user likes tea.",
