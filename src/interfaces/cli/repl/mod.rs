@@ -4,7 +4,7 @@ use tokio::io::AsyncBufRead;
 
 use crate::features::{
     assistant::Assistant,
-    control::{self, Command, MemoryControl, TapAction, tap_action},
+    control::{self, Command, MemoryControl, Notice, TapAction, tap_action},
     conversation::ConversationSession,
     listening::Listener,
     memory::{MemoryService, RecallMode, wants_memory_search},
@@ -23,7 +23,7 @@ mod warmup;
 
 use idle::read_line_during_idle_work;
 use listen::{ListenEnd, ListenStop, NOT_CONFIGURED, listen};
-use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
+use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup, speak_lines};
 use turn::{FILLER_LINES, PromptRequest, run_prompt};
 use warmup::WarmupTask;
 
@@ -237,6 +237,22 @@ where
                         print_notices(&memory_control.run(command, memory, session).await);
                         idle_work_due = true;
                     }
+                    Command::Remember(fact) => {
+                        // A save is a command: no model run, no search, so no state
+                        // change either. The reply is shown and, with speech on, said.
+                        let notices = memory_control.remember(&fact, session).await;
+                        let lines: Vec<&str> = notices.iter().map(Notice::text).collect();
+                        for line in &lines {
+                            presenter.notice(line)?;
+                        }
+                        if let Some(speech) = available(speech, speech_available) {
+                            speak_lines(speech, &lines).await;
+                            if speech.is_disabled() {
+                                speech_available = false;
+                            }
+                        }
+                        idle_work_due = true;
+                    }
                     Command::Prompt(prompt) | Command::Recall(prompt) => {
                         // `run_prompt` reports its own states, starting with `Thinking`.
                         state_awaiting_idle = false;
@@ -350,6 +366,7 @@ fn recall_mode(command: &Command) -> RecallMode {
         | Command::Show(_)
         | Command::Help
         | Command::Memory(_)
+        | Command::Remember(_)
         | Command::Usage(_) => RecallMode::Skip,
     }
 }

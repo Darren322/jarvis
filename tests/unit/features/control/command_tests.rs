@@ -2,9 +2,13 @@ use orb_protocol::PanelName;
 
 use crate::storage::MemoryId;
 
-use super::{COMMANDS, Command, MemoryCommand, help_text, parse};
+use super::{COMMANDS, Command, MemoryCommand, REMEMBER_USAGE, help_text, parse};
 
 const UNKNOWN: &str = "Unknown command. Type /help for commands.";
+
+fn remember(fact: &str) -> Command {
+    Command::Remember(fact.to_owned())
+}
 
 fn memory(command: MemoryCommand) -> Command {
     Command::Memory(command)
@@ -54,6 +58,41 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("do you recall my cat?", Command::Prompt("do you recall my cat?".into())),
         ("recall my cat", Command::Prompt("recall my cat".into())),
         ("what does /recall do", Command::Prompt("what does /recall do".into())),
+        // "remember that" and /remember save the rest as said, whatever the case or punctuation.
+        ("remember that my cat is Miso", remember("my cat is Miso")),
+        ("Remember that my cat is Miso.", remember("my cat is Miso.")),
+        ("REMEMBER THAT My Cat Is Miso", remember("My Cat Is Miso")),
+        ("  remember that   my cat is Miso  ", remember("my cat is Miso")),
+        ("Remember that, my cat is Miso", remember("my cat is Miso")),
+        ("remember that: my cat is Miso", remember("my cat is Miso")),
+        ("Please remember that my cat is Miso", remember("my cat is Miso")),
+        ("Hey Jarvis, remember that my cat is Miso.", remember("my cat is Miso.")),
+        ("hey jarvis remember that my cat is Miso", remember("my cat is Miso")),
+        ("Okay, Jarvis, please remember that my cat is Miso", remember("my cat is Miso")),
+        ("remember that timeout is 5 seconds", remember("timeout is 5 seconds")),
+        ("remember that one of my cats is Miso", Command::Prompt("remember that one of my cats is Miso".into())),
+        ("/remember my cat is Miso", remember("my cat is Miso")),
+        ("  /remember   my cat is Miso  ", remember("my cat is Miso")),
+        ("/remember", Command::Usage(REMEMBER_USAGE)),
+        ("  /remember  ", Command::Usage(REMEMBER_USAGE)),
+        ("remember that", Command::Usage(REMEMBER_USAGE)),
+        ("Remember that.", Command::Usage(REMEMBER_USAGE)),
+        ("Hey Jarvis, remember that", Command::Usage(REMEMBER_USAGE)),
+        ("/remembers it", Command::Usage(UNKNOWN)),
+        // Near-misses stay prompts: a question about the past, a different word, a mid-line phrase.
+        ("remember when we met", Command::Prompt("remember when we met".into())),
+        ("remember that time we met", Command::Prompt("remember that time we met".into())),
+        ("Remember that day?", Command::Prompt("Remember that day?".into())),
+        ("remember that night, it was cold", Command::Prompt("remember that night, it was cold".into())),
+        ("Hey Jarvis, remember that one time", Command::Prompt("Hey Jarvis, remember that one time".into())),
+        ("remember that one", Command::Prompt("remember that one".into())),
+        ("remembering my cat", Command::Prompt("remembering my cat".into())),
+        ("remember thatcher is a name", Command::Prompt("remember thatcher is a name".into())),
+        ("remember that's odd", Command::Prompt("remember that's odd".into())),
+        ("remember my cat is Miso", Command::Prompt("remember my cat is Miso".into())),
+        ("do you remember that my cat is Miso", Command::Prompt("do you remember that my cat is Miso".into())),
+        ("I remember that my cat is Miso", Command::Prompt("I remember that my cat is Miso".into())),
+        ("okayremember that my cat is Miso", Command::Prompt("okayremember that my cat is Miso".into())),
         // /forget takes exactly a numeric id.
         ("/forget 42", memory(MemoryCommand::Forget(MemoryId(42)))),
         ("/forget 4x2", Command::Usage("Use /forget followed by a numeric memory ID.")),
@@ -79,6 +118,11 @@ fn parses_each_command_and_its_nearest_non_command() {
     for (input, expected) in cases {
         assert_eq!(parse(input.to_owned()), expected, "{input}");
     }
+}
+
+#[test]
+fn help_lists_remember() {
+    assert!(help_text().contains("/remember <fact>"));
 }
 
 #[test]

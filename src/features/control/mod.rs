@@ -23,3 +23,12 @@ pub(crate) enum Notice {
     Info(String),
     Warning(String),
 }
+
+impl Notice {
+    /// The line itself, for an interface that shows or speaks it its own way.
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Self::Info(text) | Self::Warning(text) => text,
+        }
+    }
+}

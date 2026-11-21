@@ -20,6 +20,9 @@ pub(crate) enum Command {
     Show(PanelName),
     /// `/recall <question>`: run the question as a prompt with a memory search forced.
     Recall(String),
+    /// `/remember <fact>` or "remember that <fact>": save the fact as stated. No model call
+    /// and no memory search.
+    Remember(String),
     /// A recognized command with unusable arguments; holds the usage hint.
     Usage(&'static str),
     Prompt(String),
@@ -44,6 +47,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("forget that",      "forget the last answer or the single listed memory"),
     ("forget <detail>",  "forget the one memory that matches <detail>"),
     ("/recall <question>", "answer <question> after searching old conversations"),
+    ("/remember <fact>", "save a fact about you (\"remember that <fact>\" works too)"),
     ("/import <path>",   "remember a .txt or .md file (up to 1 MiB)"),
     ("/memory status",   "show memory counts and embedder state"),
     ("/memory rebuild",  "re-embed every memory while idle"),
@@ -79,6 +83,7 @@ pub(crate) fn parse(input: String) -> Command {
         "/reset" => return Command::Reset,
         "/help" => return Command::Help,
         "/recall" => return Command::Usage(RECALL_USAGE),
+        "/remember" => return Command::Usage(REMEMBER_USAGE),
         "/memories" => return Command::Memory(MemoryCommand::List(None)),
         "/memory status" => return Command::Memory(MemoryCommand::Status),
         "/memory rebuild" => return Command::Memory(MemoryCommand::Rebuild),
@@ -104,6 +109,12 @@ pub(crate) fn parse(input: String) -> Command {
     if let Some(question) = trimmed.strip_prefix("/recall ") {
         return Command::Recall(question.trim().to_owned());
     }
+    if let Some(fact) = trimmed.strip_prefix("/remember ") {
+        return Command::Remember(fact.trim().to_owned());
+    }
+    if let Some(command) = spoken_remember(trimmed) {
+        return command;
+    }
     if let Some(path) = input.trim_start().strip_prefix("/import ") {
         return Command::Memory(MemoryCommand::Import(path.trim_start().to_owned()));
     }
@@ -128,6 +139,56 @@ pub(crate) fn parse(input: String) -> Command {
 }
 
 const RECALL_USAGE: &str = "Use /recall followed by what you want to remember.";
+
+/// Shown when a save has nothing after the phrase: `/remember` or "remember that" alone.
+pub(super) const REMEMBER_USAGE: &str =
+    "Use /remember followed by the fact, or say \"remember that\" and the fact.";
+
+/// Words that, right after "remember that", make the line a question about the past
+/// ("remember that time we...") and not a fact to save. Matched as whole words.
+const PAST_WORDS: &[&str] = &["time", "day", "night", "one"];
+
+/// Words a spoken line may start with before "remember that", each followed by a
+/// space or punctuation: "Hey Jarvis, remember that ...".
+const SPOKEN_PREFIXES: &[&str] = &["hey jarvis", "jarvis", "okay", "ok", "please"];
+
+/// "remember that <fact>" with any spoken prefix, as a save. `None` for a line that is
+/// not a save ("remember when we...", "remember that time...", "remembering...").
+/// The fact keeps the words as said, minus the punctuation joining it to the phrase.
+fn spoken_remember(trimmed: &str) -> Option<Command> {
+    let mut line = trimmed;
+    while let Some(rest) = SPOKEN_PREFIXES
+        .iter()
+        .find_map(|prefix| strip_whole_word(line, prefix))
+    {
+        line = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+    }
+    let after = strip_whole_word(line, "remember that")?;
+    let first_word = after.split_whitespace().next().unwrap_or_default();
+    let first_word = first_word.trim_end_matches(is_punctuation);
+    if PAST_WORDS
+        .iter()
+        .any(|word| first_word.eq_ignore_ascii_case(word))
+    {
+        return None;
+    }
+    let fact = after.trim_start_matches(|c: char| c.is_whitespace() || is_punctuation(c));
+    Some(if fact.is_empty() {
+        Command::Usage(REMEMBER_USAGE)
+    } else {
+        Command::Remember(fact.to_owned())
+    })
+}
+
+/// `strip_leading_phrase`, but the phrase must end at a word boundary, so "ok" does not
+/// match "okay" and "remember that" does not match "remember thatcher".
+fn strip_whole_word<'a>(input: &'a str, phrase: &str) -> Option<&'a str> {
+    let rest = strip_leading_phrase(input, phrase)?;
+    rest.chars()
+        .next()
+        .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '\'' | '-')))
+        .then_some(rest)
+}
 
 /// Shown for a mistyped command such as `/iste`, so it is not sent to the model as a prompt.
 const UNKNOWN_COMMAND: &str = "Unknown command. Type /help for commands.";

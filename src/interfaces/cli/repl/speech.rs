@@ -195,6 +195,20 @@ impl<'a, E> SpokenAnswer<'a, E> {
     }
 }
 
+/// Says short fixed lines (a confirmation such as "Got it.") with no model run, and
+/// returns when they have played. Nothing interrupts it: the lines are a few words,
+/// and input typed meanwhile waits in the reader. A failure is a warning.
+pub(super) async fn speak_lines<S: SpeechControl>(speech: &mut S, lines: &[&str]) {
+    let mut answer = SpokenAnswer::start(speech);
+    for line in lines {
+        answer.feed.feed_line(line);
+    }
+    answer.feed.finish_text();
+    if let Err(error) = (&mut answer.speaking).await {
+        eprintln!("Warning: local speech failed: {}", error_chain(&error));
+    }
+}
+
 /// Resolves when the speech side signals that playback started, and is pending when
 /// there is nothing left to observe. `true` means the signal was sent rather than dropped.
 pub(super) async fn playback_signal(started: &mut Option<oneshot::Receiver<()>>) -> bool {

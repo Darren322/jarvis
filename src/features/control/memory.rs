@@ -4,18 +4,31 @@ use crate::features::{
     conversation::ConversationSession,
     memory::{EmbedderState, MemoryService},
 };
-use crate::storage::{ForgetReceipt, ImportState, MemoryId, MemoryKind, MemorySummary, SourceId};
+use crate::storage::{
+    FactError, FactId, FactOrigin, ForgetReceipt, ImportState, MAX_FACT_BYTES, MemoryId,
+    MemoryKind, MemorySummary, SourceId,
+};
 
-use super::{MemoryCommand, Notice};
+use super::{MemoryCommand, Notice, command::REMEMBER_USAGE};
 
 const UNAVAILABLE: &str = "Local memory storage is unavailable.";
 
+/// Said and printed after a fact is saved.
+const SAVED: &str = "Got it.";
+const FACTS_UNAVAILABLE: &str = "I can't save that: local memory storage is unavailable.";
+const NOT_ONE_LINE: &str = "I can only remember one line at a time.";
+const LIST_FULL: &str =
+    "I can't remember more: the list is full of things you told me. Forget one first.";
+
 /// What "forget that" refers to. Only trusted foreground actions set it: the
-/// last successful turn, an import, or a /memories listing with one result.
+/// last successful turn, an import, a /memories listing with one result, or a
+/// fact just saved with "remember that".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Focus {
     Source(SourceId),
     Memory(MemoryId),
+    /// The fact saved by the latest "remember that".
+    Fact(FactId),
     /// The last listing showed several memories, so "that" is ambiguous.
     AmbiguousDisplay,
 }
@@ -39,12 +52,74 @@ impl MemoryControl {
         self.focus = source_id.map(Focus::Source);
     }
 
+    /// Saves `text` as a stated fact (no model run, no search) and points "forget that"
+    /// at it. A refusal says why in plain words and leaves no focus, so "forget that"
+    /// cannot reach something older by mistake.
+    pub(crate) async fn remember(
+        &mut self,
+        text: &str,
+        session: &ConversationSession,
+    ) -> Vec<Notice> {
+        self.focus = None;
+        let Some(facts) = session.facts_repository() else {
+            return vec![Notice::Info(FACTS_UNAVAILABLE.to_owned())];
+        };
+        match facts.insert(text, FactOrigin::Stated).await {
+            Ok(added) => {
+                self.focus = Some(Focus::Fact(added.id));
+                let mut notices = vec![Notice::Info(SAVED.to_owned())];
+                if !added.dropped.is_empty() {
+                    let dropped = added
+                        .dropped
+                        .iter()
+                        .map(|fact| fact.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    notices.push(Notice::Info(format!("To make room I forgot: {dropped}.")));
+                }
+                notices
+            }
+            Err(FactError::Empty) => vec![Notice::Info(REMEMBER_USAGE.to_owned())],
+            Err(FactError::NotOneLine) => vec![Notice::Info(NOT_ONE_LINE.to_owned())],
+            Err(FactError::TooLong) => vec![Notice::Info(format!(
+                "That is too long for me to remember. Keep it to {MAX_FACT_BYTES} characters or fewer."
+            ))],
+            Err(FactError::ListFull) => vec![Notice::Info(LIST_FULL.to_owned())],
+            Err(FactError::Storage(error)) => vec![Notice::Warning(format!(
+                "I couldn't save that: the facts list is unavailable ({error})."
+            ))],
+        }
+    }
+
+    /// Removes the fact "forget that" points at. A fact lives apart from memories, so
+    /// this needs no memory service.
+    async fn forget_fact(&mut self, id: FactId, session: &ConversationSession) -> Vec<Notice> {
+        self.focus = None;
+        let Some(facts) = session.facts_repository() else {
+            return vec![Notice::Info(FACTS_UNAVAILABLE.to_owned())];
+        };
+        match facts.remove(id).await {
+            Ok(Some(fact)) => vec![Notice::Info(format!("Forgot that: {}", fact.text))],
+            Ok(None) => vec![Notice::Info(
+                "That fact is already gone; nothing was forgotten.".to_owned(),
+            )],
+            Err(error) => vec![Notice::Warning(format!(
+                "the fact was not forgotten: {error}"
+            ))],
+        }
+    }
+
     pub(crate) async fn run(
         &mut self,
         command: MemoryCommand,
         memory: Option<&MemoryService>,
         session: &mut ConversationSession,
     ) -> Vec<Notice> {
+        if matches!(command, MemoryCommand::ForgetFocus)
+            && let Some(Focus::Fact(id)) = self.focus
+        {
+            return self.forget_fact(id, session).await;
+        }
         let Some(memory) = memory else {
             return vec![Notice::Info(UNAVAILABLE.to_owned())];
         };
@@ -113,6 +188,7 @@ impl MemoryControl {
         let result = match self.focus {
             Some(Focus::Source(source_id)) => memory.forget_source(source_id).await,
             Some(Focus::Memory(memory_id)) => memory.forget(memory_id).await,
+            Some(Focus::Fact(fact_id)) => return self.forget_fact(fact_id, session).await,
             Some(Focus::AmbiguousDisplay) => {
                 return vec![Notice::Info(
                     "The current /memories display has multiple records. Use /forget <id> to choose one; nothing was forgotten."

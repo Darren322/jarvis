@@ -2371,3 +2371,113 @@ async fn ending_the_conversation_stops_a_warm_up_that_is_still_running() {
 
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
+
+async fn saved_facts(harness: &Harness) -> Vec<String> {
+    harness
+        .session
+        .facts_repository()
+        .expect("the archive is open")
+        .list()
+        .await
+        .expect("facts list")
+        .into_iter()
+        .map(|fact| fact.text)
+        .collect()
+}
+
+#[tokio::test]
+async fn remember_that_saves_a_fact_and_says_got_it_without_a_model_request() {
+    let mut harness = harness().await;
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(b"Hey Jarvis, remember that my cat is Miso.\n")
+            .await;
+        user.wait_for_notice_containing("Got it.").await;
+        user.type_(b"/remember my dog is Rex\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+    })
+    .await;
+
+    assert_eq!(notices(&shown), ["Got it.", "Got it."]);
+    assert!(states(&shown).is_empty(), "a save is not a model run");
+    assert!(harness.model.requests().is_empty());
+    assert_eq!(
+        saved_facts(&harness).await,
+        ["my cat is Miso.", "my dog is Rex"]
+    );
+}
+
+#[tokio::test]
+async fn a_saved_fact_is_spoken_when_speech_is_on() {
+    let mut harness = harness().await;
+    let (release_sender, release) = oneshot::channel();
+    release_sender.send(()).expect("the receiver is alive");
+    let mut speech = Some(speech_that_plays_until_released(release));
+
+    let shown = run_with(&mut harness, &mut speech, async |user| {
+        user.type_(b"remember that my cat is Miso\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+    })
+    .await;
+
+    assert_eq!(notices(&shown), ["Got it."]);
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(speech.calls, ["Got it."]);
+    assert!(harness.model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_save_says_why_saves_nothing_and_sends_nothing_to_the_model() {
+    let mut harness = harness().await;
+    let too_long = "z".repeat(crate::storage::MAX_FACT_BYTES + 1);
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(format!("remember that {too_long}\n").as_bytes())
+            .await;
+        user.wait_for_notice_containing("too long").await;
+    })
+    .await;
+
+    assert_eq!(
+        notices(&shown),
+        ["That is too long for me to remember. Keep it to 200 characters or fewer."]
+    );
+    assert!(saved_facts(&harness).await.is_empty());
+    assert!(harness.model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn remember_that_time_is_a_prompt_and_saves_no_fact() {
+    let mut harness = harness().await;
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(b"remember that time we met\n").await;
+        user.wait_for(AssistantState::Idle).await;
+    })
+    .await;
+
+    assert_eq!(
+        states(&shown),
+        [AssistantState::Thinking, AssistantState::Idle]
+    );
+    assert_user_message_reached_model(&harness, "remember that time we met");
+    assert!(saved_facts(&harness).await.is_empty());
+}
+
+#[tokio::test]
+async fn forget_that_right_after_a_save_removes_the_saved_fact() {
+    let mut harness = harness().await;
+
+    let shown = run_script(&mut harness, async |user| {
+        user.type_(b"remember that my cat is Miso\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        // Lines are handled in order, so the `/exit` that follows runs after this one;
+        // its reply goes to stdout like every memory command's, not to the presenter.
+        user.type_(b"forget that\n").await;
+    })
+    .await;
+
+    assert_eq!(notices(&shown), ["Got it."]);
+    assert!(saved_facts(&harness).await.is_empty());
+    assert!(harness.model.requests().is_empty());
+}

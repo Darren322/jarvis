@@ -85,11 +85,7 @@ impl ConversationSession {
             .map(ConversationArchive::memory_repository)
     }
 
-    /// Where facts are added and removed; the commands of fast-memory 04 to 06 use it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "fast-memory 04 to 06 add the callers")
-    )]
+    /// Where facts are added and removed ("remember that" and "forget that" use it).
     pub(crate) fn facts_repository(&self) -> Option<FactsRepository> {
         self.archive
             .as_ref()
