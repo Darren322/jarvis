@@ -5,9 +5,12 @@ use rig_agent::tool::{Tool, ToolContext};
 use rig_core::serde_json::json;
 use serde::Serialize;
 
-const TIME_FORMAT: &str = "%H:%M";
+/// 12-hour, unpadded hour, as it is said: `7:31 PM`, `12:00 AM`. Darren heard
+/// "19:31" read out on 2026-11-21 and wants the spoken 12-hour form.
+const TIME_FORMAT: &str = "%-I:%M %p";
 const WEEKDAY_FORMAT: &str = "%A";
-const DATE_FORMAT: &str = "%Y-%m-%d";
+/// As it is said: `21 November 2026`, not an ISO date read digit by digit.
+const DATE_FORMAT: &str = "%-d %B %Y";
 /// `%:z` prints the offset with a colon and minutes, e.g. `+08:00` or `-03:30`.
 const UTC_OFFSET_FORMAT: &str = "%:z";
 /// What jiff itself calls the zone it falls back to when the system zone cannot
@@ -21,11 +24,11 @@ pub struct CurrentTimeArgs {}
 /// The clock reading the model is told, in the Pi's own time zone.
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct CurrentTime {
-    /// 24-hour `HH:MM`, no seconds.
+    /// 12-hour `7:31 PM`, no seconds.
     pub(crate) time: String,
     /// English weekday name.
     pub(crate) weekday: String,
-    /// ISO `YYYY-MM-DD`.
+    /// `21 November 2026`.
     pub(crate) date: String,
     /// IANA name, or `Etc/Unknown` when the system zone could not be read.
     pub(crate) time_zone: String,
@@ -59,9 +62,11 @@ impl Tool for CurrentTimeTool {
     type Error = Infallible;
 
     fn description(&self) -> String {
-        "Returns the current local time (24-hour), the weekday, the date, the time zone and its \
-         UTC offset, read from this Pi's clock. Use it for any question about the current time, \
-         date or day of the week, and never guess them. If the time zone is \"Etc/Unknown\", \
+        "Returns the current local time, the weekday, the date, the time zone and its UTC \
+         offset, read from this Pi's clock. Use it for any question about the current time, \
+         date or day of the week, and never guess them. Answer only what was asked: for the \
+         time, say just the time as given (\"It's 7:31 PM.\"), and add the weekday, date or \
+         time zone only when the question asks for them. If the time zone is \"Etc/Unknown\", \
          say the time zone is unknown and do not guess one."
             .to_string()
     }
