@@ -1,7 +1,7 @@
 # Fast memory
 
 Status: active
-Resume here: 01 (search only on demand) and 02 (filler line) are done; 01 is measured on the Pi (five ordinary questions wait 3.1 s in total, down from 32.9 s) and 02 has not been heard there yet. 08 (longer conversation, cache warm-up) is done: measured on the Pi, committed as `b2dd2be`, pushed and built there, and the Gemma server now runs 2 slots of 4,096 tokens. Not yet tried by voice. Next: the facts list: 03, 04, 05, 06. Added 2026-11-16: 09 (a fresh conversation after 30 minutes of quiet) is written, not started; 10 (a tool run emptied the prompt cache) is done: fixed in `d94f962`, measured with Jarvis on the Pi on 2026-11-20 (the turn after a tool call read 826 of 854 tokens from the cache).
+Resume here: 01 (search only on demand) and 02 (filler line) are done; 01 is measured on the Pi (five ordinary questions wait 3.1 s in total, down from 32.9 s) and 02 has not been heard there yet. 08 (longer conversation, cache warm-up) is done: measured on the Pi, committed as `b2dd2be`, pushed and built there, and the Gemma server now runs 2 slots of 4,096 tokens. Not yet tried by voice. Next: the facts list: 03, 04, 05, 06. Added 2026-11-16: 09 (a fresh conversation after 30 minutes of quiet) is in review since 2026-11-21: integrated uncommitted in `dev`, `scripts/verify.sh` green, waiting for Darren to commit; 10 (a tool run emptied the prompt cache) is done: fixed in `d94f962`, measured with Jarvis on the Pi on 2026-11-20 (the turn after a tool call read 826 of 854 tokens from the cache).
 
 Settled with Darren in a grilling session on 2026-11-14. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 

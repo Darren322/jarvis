@@ -27,6 +27,11 @@ use speech::{SpeechControl, SpeechWait, SpokenOutcome, report_speech_cleanup};
 use turn::{FILLER_LINES, PromptRequest, run_prompt};
 use warmup::WarmupTask;
 
+/// How long Jarvis must have heard nothing before the next prompt starts a new
+/// conversation. Measured from the last recorded answer (see
+/// `ConversationSession::quiet_for`), and checked only when a prompt arrives.
+const QUIET_BEFORE_NEW_CONVERSATION: Duration = Duration::from_secs(30 * 60);
+
 type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>;
 
 /// Runs the REPL until the input ends or the user exits.
@@ -225,12 +230,7 @@ where
                                 speech_available = false;
                             }
                         }
-                        // The history it was sent for is gone.
-                        warmup.cancel();
-                        if let Err(error) = session.reset().await {
-                            eprintln!("Warning: local archiving is unavailable: {error}");
-                        }
-                        memory_control.clear();
+                        reset_conversation(session, &mut warmup, &mut memory_control).await;
                         println!("Conversation context reset.");
                     }
                     Command::Memory(command) => {
@@ -240,6 +240,15 @@ where
                     Command::Prompt(prompt) | Command::Recall(prompt) => {
                         // `run_prompt` reports its own states, starting with `Thinking`.
                         state_awaiting_idle = false;
+                        if let Some(quiet) = session.quiet_for()
+                            && quiet >= QUIET_BEFORE_NEW_CONVERSATION
+                        {
+                            eprintln!(
+                                "New conversation after {} minutes of quiet.",
+                                quiet.as_secs() / 60
+                            );
+                            reset_conversation(session, &mut warmup, &mut memory_control).await;
+                        }
                         let speaking = available(speech, speech_available);
                         let end = run_prompt(
                             assistant,
@@ -308,6 +317,22 @@ where
             }
         }
     }
+}
+
+/// Ends the conversation: the single path for `/reset` and the quiet reset, so
+/// they cannot drift apart. The archive and the memories stay; a failure to open
+/// the next archive session is a warning and the conversation goes on without one.
+async fn reset_conversation(
+    session: &mut ConversationSession,
+    warmup: &mut WarmupTask,
+    memory_control: &mut MemoryControl,
+) {
+    // The history the warm-up was sent for is gone.
+    warmup.cancel();
+    if let Err(error) = session.reset().await {
+        eprintln!("Warning: local archiving is unavailable: {error}");
+    }
+    memory_control.clear();
 }
 
 /// Whether the run for `command` searches memory: `/recall` always does, and a

@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use super::history::{History, Recorded, merge_source_dependencies};
 use crate::features::assistant::{
@@ -21,6 +21,9 @@ pub(crate) struct ConversationSession {
     archive_path: PathBuf,
     history: History,
     archive: Option<ConversationArchive>,
+    /// When the last successful answer was recorded, on Tokio's monotonic clock so a
+    /// wall-clock change cannot move it. `None` until the first one and after a reset.
+    last_answer_at: Option<Instant>,
 }
 
 // LEARNING: `Result` carries the model outcome; `Option` marks metadata that may be absent,
@@ -47,6 +50,7 @@ impl ConversationSession {
             archive_path: archive_path.into(),
             history: History::default(),
             archive: None,
+            last_answer_at: None,
         }
     }
 
@@ -58,12 +62,20 @@ impl ConversationSession {
     // On error the session keeps working with process-only context (no archive).
     pub(crate) async fn reset(&mut self) -> Result<(), StorageError> {
         self.history.clear();
+        self.last_answer_at = None;
         let next = match self.archive.take() {
             Some(archive) => archive.next_session().await,
             None => ConversationArchive::open(self.archive_path.clone()).await,
         };
         self.archive = Some(next?);
         Ok(())
+    }
+
+    /// How long it has been since the last successful answer was recorded; `None`
+    /// before any answer in this conversation. A failed or dropped turn records
+    /// nothing, so it never restarts the count.
+    pub(crate) fn quiet_for(&self) -> Option<Duration> {
+        self.last_answer_at.map(|at| at.elapsed())
     }
 
     pub(crate) fn memory_repository(&self) -> Option<MemoryRepository> {
@@ -164,6 +176,9 @@ impl ConversationSession {
             Recorded::Cleared(warning) => (Some(warning), None),
         };
         let context_warning = combine_warnings(context_warning, history_warning);
+        if run.is_ok() {
+            self.last_answer_at = Some(Instant::now());
+        }
         let current_source_id = if run.is_ok() && !lineage_suppressed {
             current_source
         } else {

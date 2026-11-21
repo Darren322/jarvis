@@ -7,15 +7,19 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use rig_agent::AgentBuilder;
+use rig_agent::{
+    AgentBuilder,
+    prelude::{CompletionError, CompletionModel},
+};
 use rig_core::{
-    completion::Usage,
+    completion::{CompletionRequest, CompletionResponse, Usage},
     message::{AssistantContent, Message, UserContent},
+    streaming::StreamingCompletionResponse,
     test_utils::{MockCompletionModel, MockStreamEvent},
 };
 use serde_json::json;
@@ -33,7 +37,8 @@ use crate::{
     clients::{remote_embeddings::RemoteEmbeddings, speech_to_text::SpeechToText},
     config::{EmbeddingConfig, SpeechToTextConfig},
     features::{
-        assistant::Assistant,
+        assistant::{Assistant, CacheWarmup},
+        control::MemoryControl,
         conversation::ConversationSession,
         listening::{Listener, Recorder},
         memory::MemoryService,
@@ -44,7 +49,10 @@ use crate::{
 
 use super::super::input::Taps;
 use super::super::presentation::{AssistantPresenter, TerminalPresenter};
-use super::{listen::NOT_CONFIGURED, run_input_loop, speech::SpeechControl};
+use super::{
+    QUIET_BEFORE_NEW_CONVERSATION, listen::NOT_CONFIGURED, reset_conversation, run_input_loop,
+    speech::SpeechControl, warmup::WarmupTask,
+};
 use crate::features::control::Tap;
 
 type CapturedAnswers = Arc<Mutex<Vec<String>>>;
@@ -635,10 +643,20 @@ const REPLY: &str = "It is noon.";
 
 /// No voice settings; the model has one answer ready.
 async fn harness() -> Harness {
-    let model = MockCompletionModel::from_stream_turns([[
+    harness_answering(vec![answer()]).await
+}
+
+/// One streamed model turn that answers with `REPLY`.
+fn answer() -> Vec<MockStreamEvent> {
+    vec![
         MockStreamEvent::text(REPLY),
         MockStreamEvent::final_response(Usage::new()),
-    ]]);
+    ]
+}
+
+/// No voice settings; the model plays `turns` in order, one per request.
+async fn harness_answering(turns: Vec<Vec<MockStreamEvent>>) -> Harness {
+    let model = MockCompletionModel::from_stream_turns(turns);
     let assistant = Assistant::new(
         crate::tools::register(
             AgentBuilder::new(model.clone()),
@@ -2134,4 +2152,222 @@ async fn close_it_hides_the_panel_that_is_shown_and_makes_no_model_request() {
     assert_eq!(panels.shown(), None);
     assert_eq!(harness.model.request_count(), 0);
     service.abort();
+}
+
+// A new conversation after 30 minutes of quiet (fast-memory 09). The clock is paused,
+// so the gaps are exact and nothing waits in real time.
+
+const ONE_MS: Duration = Duration::from_millis(1);
+
+fn failing_turn() -> Vec<MockStreamEvent> {
+    vec![
+        MockStreamEvent::text("partial"),
+        MockStreamEvent::error("injected failure"),
+    ]
+}
+
+/// How many messages each model request carried as chat history, in order.
+fn histories_sent(harness: &Harness) -> Vec<usize> {
+    harness
+        .model
+        .requests()
+        .iter()
+        .map(|request| request.chat_history.len())
+        .collect()
+}
+
+/// Types `line` and waits until the loop is idle again.
+async fn say(driver: &mut Driver, line: &str) {
+    driver.type_(format!("{line}\n").as_bytes()).await;
+    driver.wait_for(AssistantState::Idle).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_prompt_after_exactly_thirty_minutes_of_quiet_starts_with_an_empty_history() {
+    assert_eq!(QUIET_BEFORE_NEW_CONVERSATION, Duration::from_secs(30 * 60));
+    // (quiet before the second prompt, request messages: first prompt + answer + second
+    // prompt when kept, the second prompt alone when the conversation started afresh)
+    let cases = [
+        (QUIET_BEFORE_NEW_CONVERSATION - ONE_MS, 3),
+        (QUIET_BEFORE_NEW_CONVERSATION, 1),
+    ];
+    for (quiet, second_request_messages) in cases {
+        let mut harness = harness_answering(vec![answer(), answer()]).await;
+        run_script(&mut harness, async |driver| {
+            say(driver, "first question").await;
+            tokio::time::advance(quiet).await;
+            say(driver, "second question").await;
+        })
+        .await;
+
+        assert_eq!(
+            histories_sent(&harness),
+            [1, second_request_messages],
+            "quiet of {quiet:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_first_request_after_a_quiet_reset_carries_only_the_new_prompt() {
+    let mut harness = harness_answering(vec![answer(), answer(), answer()]).await;
+    run_script(&mut harness, async |driver| {
+        say(driver, "first question").await;
+        say(driver, "second question").await;
+        tokio::time::advance(QUIET_BEFORE_NEW_CONVERSATION).await;
+        say(driver, "third question").await;
+    })
+    .await;
+
+    let requests = harness.model.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].chat_history.len(), 3);
+    assert_eq!(
+        requests[2].chat_history.iter().collect::<Vec<_>>(),
+        [&user_message("third question")]
+    );
+    assert_eq!(requests[2].preamble, requests[0].preamble);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_quiet_reset_deletes_neither_the_archive_nor_the_memories() {
+    let mut harness = harness_answering(vec![answer(), answer()]).await;
+    run_script(&mut harness, async |driver| {
+        say(driver, "first question").await;
+        tokio::time::advance(QUIET_BEFORE_NEW_CONVERSATION).await;
+        say(driver, "second question").await;
+    })
+    .await;
+
+    let database = harness._archive_dir.path().join("conversation.sqlite3");
+    let connection = rusqlite::Connection::open(database).expect("the archive opens");
+    let count = |sql: &str| -> i64 {
+        connection
+            .query_row(sql, [], |row| row.get(0))
+            .expect("the rows can be counted")
+    };
+    assert_eq!(count("SELECT COUNT(*) FROM turns"), 2);
+    assert_eq!(
+        count("SELECT COUNT(*) FROM sources WHERE state = 'active'"),
+        2
+    );
+    assert_eq!(
+        count("SELECT COUNT(DISTINCT source_id) FROM memories"),
+        2,
+        "each turn, the old conversation's included, keeps its memories"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_first_prompt_after_start_up_does_not_reset_however_long_jarvis_waited() {
+    let mut harness = harness_answering(vec![answer(), answer()]).await;
+    assert_eq!(harness.session.quiet_for(), None);
+    run_script(&mut harness, async |driver| {
+        tokio::time::advance(QUIET_BEFORE_NEW_CONVERSATION * 4).await;
+        say(driver, "first question").await;
+        say(driver, "second question").await;
+    })
+    .await;
+
+    assert_eq!(histories_sent(&harness), [1, 3]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_turn_does_not_restart_the_quiet_count() {
+    let mut harness = harness_answering(vec![answer(), failing_turn(), answer()]).await;
+    run_script(&mut harness, async |driver| {
+        say(driver, "first question").await;
+        tokio::time::advance(QUIET_BEFORE_NEW_CONVERSATION / 3).await;
+        say(driver, "failing question").await;
+        // 30 minutes since the answer, only 20 since the failure.
+        tokio::time::advance(QUIET_BEFORE_NEW_CONVERSATION * 2 / 3).await;
+        say(driver, "third question").await;
+    })
+    .await;
+
+    assert_eq!(histories_sent(&harness), [1, 3, 1]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_command_that_never_reaches_the_model_neither_resets_nor_restarts_the_quiet_count() {
+    let third = QUIET_BEFORE_NEW_CONVERSATION / 3;
+    // A command 20 minutes after the answer does not restart the count, so the prompt
+    // 10 minutes later is 30 minutes after the answer and starts afresh.
+    for command in ["/help", "/memories", "close it"] {
+        let mut harness = harness_answering(vec![answer(), answer()]).await;
+        run_script(&mut harness, async |driver| {
+            say(driver, "first question").await;
+            tokio::time::advance(third * 2).await;
+            driver.type_(format!("{command}\n").as_bytes()).await;
+            tokio::time::advance(third).await;
+            say(driver, "second question").await;
+        })
+        .await;
+
+        assert_eq!(histories_sent(&harness), [1, 1], "after {command}");
+    }
+}
+
+/// Never answers, counting the requests that started and the ones dropped while waiting.
+#[derive(Clone)]
+struct WarmupCountingModel {
+    started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+struct CountsDrop(Arc<AtomicUsize>);
+
+impl Drop for CountsDrop {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl CompletionModel for WarmupCountingModel {
+    async fn completion(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<CompletionResponse, CompletionError> {
+        unreachable!("Assistant uses the streaming path")
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse, CompletionError> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let _waiting = CountsDrop(Arc::clone(&self.dropped));
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn ending_the_conversation_stops_a_warm_up_that_is_still_running() {
+    let model = WarmupCountingModel {
+        started: Arc::default(),
+        dropped: Arc::default(),
+    };
+    let (started, dropped) = (Arc::clone(&model.started), Arc::clone(&model.dropped));
+    let assistant = Assistant::new(AgentBuilder::new(model).build());
+    let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
+    let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
+    assert!(session.reset().await.is_ok());
+    let mut warmup = WarmupTask::default();
+    let mut memory_control = MemoryControl::default();
+    warmup.start(
+        &assistant,
+        CacheWarmup::new(Vec::new(), Message::user("a question")),
+    );
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+    reset_conversation(&mut session, &mut warmup, &mut memory_control).await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
