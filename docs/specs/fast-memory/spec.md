@@ -1,7 +1,7 @@
 # Fast memory
 
 Status: active
-Resume here: 01 to 06 and 08 to 10 are done or in review: 03 to 06 (the facts list: stored and sent with every request, "remember that", noted while idle, listed and forgotten) were built, reviewed and committed on 2026-11-21 and deployed to the Pi together (schema v5 and v6, database backed up first); Darren's voice checks are next. 07 (a recall tool) and 11 (warm the cache after a noted fact; measure first) are needs-triage.
+Resume here: 01 to 06, 08 to 10 and 12 are done or in review. The facts list (03 to 06) and its voice fixes (12, then `5b16e6a`: "can you forget ..." and no false "I forgot" from Gemma) are committed, pushed and running on the 8 GB Pi (schema v6; backup `data/jarvis.sqlite3.bak-2026-11-21`). Darren has used it by voice: saving, noting, "what facts do you have" and forgetting work; "list my facts" is misheard by speech-to-text, so "what facts do you have" is the phrase. Next: Darren's final voice check of `5b16e6a`, then close 03 to 06 and 12. 07 (a recall tool) and 11 (warm the cache after a noted fact; measure first) are needs-triage.
 
 Settled with Darren in a grilling session on 2026-11-14. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
