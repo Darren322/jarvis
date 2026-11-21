@@ -104,9 +104,12 @@ async fn examine(noter: &FactNoter) -> Option<Vec<String>> {
 
 #[test]
 fn only_lines_that_start_with_the_marker_are_facts() {
-    let lines =
-        |count: usize| -> String { (1..=count).map(|n| format!("FACT: fact {n}\n")).collect() };
-    let cases: [(&str, &str, Vec<&str>); 11] = [
+    let lines = |count: usize| -> String {
+        (1..=count)
+            .map(|n| format!("FACT: The user has fact {n}.\n"))
+            .collect()
+    };
+    let cases: [(&str, &str, Vec<&str>); 18] = [
         ("no facts", "NONE", vec![]),
         ("nothing at all", "", vec![]),
         (
@@ -116,8 +119,8 @@ fn only_lines_that_start_with_the_marker_are_facts() {
         ),
         (
             "several, with spacing and a Windows line end",
-            "FACT: a\r\n  FACT:   b  \nFACT: c",
-            vec!["a", "b", "c"],
+            "FACT: The user a\r\n  FACT:   The user b  \nFACT: The user c",
+            vec!["The user a", "The user b", "The user c"],
         ),
         ("an empty fact", "FACT:\nFACT:   \n", vec![]),
         ("prose around nothing", "Sure! The user likes tea.", vec![]),
@@ -142,6 +145,35 @@ fn only_lines_that_start_with_the_marker_are_facts() {
             "FACTS: a\nFACTUAL: b",
             vec![],
         ),
+        // Only a sentence about the user is a fact (fast-memory 14); these are the
+        // model copying Darren's words, from the Pi on 2026-11-21.
+        (
+            "about the user, any case, and possessive",
+            "FACT: the user lives in Leeds.\nFACT: THE USER likes tea.\nFACT: The user's sister is Mia.",
+            vec![
+                "the user lives in Leeds.",
+                "THE USER likes tea.",
+                "The user's sister is Mia.",
+            ],
+        ),
+        (
+            "his words copied",
+            "FACT: I say show my facts as a list.",
+            vec![],
+        ),
+        (
+            "a want in his words",
+            "FACT: I want to show my facts as a list.",
+            vec![],
+        ),
+        ("no subject", "FACT: User likes tea.", vec![]),
+        ("a longer word", "FACT: The username is darren.", vec![]),
+        ("the subject alone", "FACT: The user", vec![]),
+        (
+            "a copied line beside a fact keeps the fact",
+            "FACT: I say facts.\nFACT: The user likes tea.",
+            vec!["The user likes tea."],
+        ),
     ];
     for (name, output, expected) in cases {
         assert_eq!(parse_candidates(output), expected, "{name}");
@@ -150,7 +182,13 @@ fn only_lines_that_start_with_the_marker_are_facts() {
     assert_eq!(MAX_FACTS_PER_TURN, 5);
     assert_eq!(
         parse_candidates(&lines(5)),
-        ["fact 1", "fact 2", "fact 3", "fact 4", "fact 5"]
+        [
+            "The user has fact 1.",
+            "The user has fact 2.",
+            "The user has fact 3.",
+            "The user has fact 4.",
+            "The user has fact 5."
+        ]
     );
     assert_eq!(parse_candidates(&lines(6)), parse_candidates(&lines(5)));
 }

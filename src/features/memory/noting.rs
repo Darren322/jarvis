@@ -21,6 +21,11 @@ use crate::storage::{Examination, FactsRepository, StorageError, TurnId};
 /// malformed output yields nothing. The prompt in `note_facts.txt` asks for exactly
 /// this.
 const FACT_MARKER: &str = "FACT:";
+/// How every fact must begin, compared without case: the prompt asks for one
+/// sentence about the user. A line that does not (on 2026-11-21 "I say show my
+/// facts as a list.") is the model copying Darren's words, not a fact about him
+/// (fast-memory 14).
+const FACT_SUBJECT: &str = "the user";
 /// The most facts one turn may yield; a run that lists more is rambling.
 const MAX_FACTS_PER_TURN: usize = 5;
 /// How many times the model run may fail on one turn before the pass stops trying
@@ -140,10 +145,21 @@ fn parse_candidates(answer: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix(FACT_MARKER))
         .map(str::trim)
-        .filter(|fact| !fact.is_empty())
+        .filter(|fact| is_about_the_user(fact))
         .take(MAX_FACTS_PER_TURN)
         .map(str::to_owned)
         .collect()
+}
+
+/// Whether `fact` is a sentence about the user: it starts with [`FACT_SUBJECT`]
+/// as a whole word ("The user's" counts, "The username" does not).
+fn is_about_the_user(fact: &str) -> bool {
+    fact.get(..FACT_SUBJECT.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(FACT_SUBJECT))
+        && fact[FACT_SUBJECT.len()..]
+            .chars()
+            .next()
+            .is_some_and(|next| !next.is_alphanumeric())
 }
 
 #[cfg(test)]
