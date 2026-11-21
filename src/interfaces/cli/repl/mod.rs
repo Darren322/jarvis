@@ -3,7 +3,7 @@ use std::{future::Future, io, mem, pin::Pin, time::Duration};
 use tokio::io::AsyncBufRead;
 
 use crate::features::{
-    assistant::Assistant,
+    assistant::{Assistant, CacheWarmup},
     control::{self, Command, MemoryControl, Notice, TapAction, tap_action},
     conversation::ConversationSession,
     listening::Listener,
@@ -39,6 +39,8 @@ type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>
 /// `taps` is a second input source beside the typed line (see [`Taps`]); pass
 /// `Taps::none()` for a keyboard-only session. `announcements` are lines from
 /// background features, shown and said while idle (see [`Announcements`]).
+/// `startup_warmup`, when given, is sent ahead before the first read so the first
+/// question does not wait for a cold read of the prompt (fast-memory 13).
 #[expect(
     clippy::too_many_arguments,
     reason = "the composition root hands over each service once"
@@ -51,6 +53,7 @@ pub(crate) async fn run_input_loop<R, S, P>(
     input: &mut R,
     taps: Taps,
     announcements: Announcements,
+    startup_warmup: Option<CacheWarmup>,
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
@@ -68,6 +71,7 @@ where
         input,
         taps,
         announcements,
+        startup_warmup,
         presenter,
         listener,
         panels,
@@ -96,6 +100,7 @@ async fn run_input_loop_inner<R, S, P>(
     input: &mut R,
     mut taps: Taps,
     mut announcements: Announcements,
+    startup_warmup: Option<CacheWarmup>,
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
@@ -123,6 +128,9 @@ where
     let mut filler_position = 0;
     // Stopped when the next model run starts and when the loop ends.
     let mut warmup = WarmupTask::default();
+    if let Some(startup_warmup) = startup_warmup {
+        warmup.start(assistant, startup_warmup);
+    }
 
     loop {
         if !prompt_is_visible && next_input.is_none() && !listen_due {

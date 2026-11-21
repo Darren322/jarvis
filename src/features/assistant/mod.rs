@@ -36,9 +36,10 @@ pub(crate) const SYSTEM_PREAMBLE: &str = include_str!("preamble.txt");
 const RUN_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_TEXT_DELTA_BYTES: usize = 1024;
 const MAX_RESPONSE_TOKENS: u64 = 1024;
-/// How long a cache warm-up may take. Reading the largest trimmed history takes
-/// well under this at the model server's measured speed.
-const WARMUP_DEADLINE: Duration = Duration::from_secs(30);
+/// How long a cache warm-up may take. A warm-up keeps nobody waiting, and a cold
+/// read of the request's start (system prompt, tools and facts, about 1,600
+/// tokens at about 58 a second) is close to 30 s on its own (fast-memory 13).
+const WARMUP_DEADLINE: Duration = Duration::from_secs(60);
 /// A warm-up needs the model server to read the prompt, not to answer it.
 const WARMUP_RESPONSE_TOKENS: u64 = 1;
 

@@ -13,6 +13,9 @@ use crate::storage::{
     MemorySaveState, SourceId, StorageError,
 };
 
+/// Stands in for the first prompt in the start-up warm-up: the server caches the
+/// request up to where this differs from what Darren will say.
+const STARTUP_WARMUP_PROMPT: &str = "Hello.";
 const SUPPRESSED_LINEAGE_WARNING: &str = "Recent conversation context was cleared because a recalled memory changed while the answer was being saved.";
 
 // LEARNING: A Rust struct holds data; its `impl` groups its methods. Java usually keeps data and
@@ -226,6 +229,16 @@ impl ConversationSession {
                 )),
             ),
         }
+    }
+
+    /// The start of a fresh conversation's first request, to send ahead when Jarvis
+    /// starts (fast-memory 13): the facts message and [`STARTUP_WARMUP_PROMPT`] in
+    /// place of the prompt nobody has said yet. The server caches the system prompt,
+    /// tools and facts before it, which a cold read takes about 30 s to reach. A
+    /// failed facts read warms without them; the first turn reports it.
+    pub(crate) async fn startup_warmup(&self) -> CacheWarmup {
+        let (facts, _warning) = self.facts_for_request().await;
+        CacheWarmup::new(Vec::new(), Message::user(STARTUP_WARMUP_PROMPT)).with_facts(facts)
     }
 
     /// How the next request begins: the facts message, then every stored message up

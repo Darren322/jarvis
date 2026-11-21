@@ -110,6 +110,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut presenter,
         None,
         &panels,
@@ -248,6 +249,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut present_answer,
         None,
         &panels,
@@ -367,6 +369,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut present_answer,
         None,
         &panels,
@@ -470,6 +473,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut present_answer,
         None,
         &panels,
@@ -757,15 +761,17 @@ async fn run_with_taps(
     taps: Taps,
     script: impl AsyncFnOnce(&mut Driver),
 ) -> Vec<Shown> {
-    run_with_sources(harness, speech, taps, no_announcements(), script).await
+    run_with_sources(harness, speech, taps, no_announcements(), None, script).await
 }
 
-/// `run_with_taps`, with a background source of announcements as well.
+/// `run_with_taps`, with a background source of announcements and a start-up
+/// warm-up as well.
 async fn run_with_sources(
     harness: &mut Harness,
     speech: &mut Option<FailingSpeech>,
     taps: Taps,
     announcements: Announcements,
+    startup_warmup: Option<CacheWarmup>,
     script: impl AsyncFnOnce(&mut Driver),
 ) -> Vec<Shown> {
     let (writer, reader) = tokio::io::duplex(8192);
@@ -785,6 +791,7 @@ async fn run_with_sources(
         &mut input,
         taps,
         announcements,
+        startup_warmup,
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
@@ -1007,6 +1014,7 @@ async fn end_of_input_while_listening_ends_the_loop() {
             &mut input,
             Taps::none(),
             no_announcements(),
+            None,
             &mut presenter,
             harness.listener.as_ref(),
             &harness.panels,
@@ -1756,6 +1764,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut presenter,
         None,
         &panels,
@@ -1827,6 +1836,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         &mut input,
         Taps::none(),
         no_announcements(),
+        None,
         &mut presenter,
         None,
         &panels,
@@ -1968,6 +1978,7 @@ async fn run_with_cue_speech(
         &mut input,
         taps,
         no_announcements(),
+        None,
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
@@ -2649,6 +2660,7 @@ async fn an_announcement_while_idle_is_shown_and_said() {
         &mut speech,
         Taps::none(),
         announcements,
+        None,
         async |user| user.wait_for_notice_containing(CAMERA_LINE).await,
     )
     .await;
@@ -2669,6 +2681,7 @@ async fn with_speech_off_an_announcement_is_only_shown_and_the_next_prompt_still
         &mut None,
         Taps::none(),
         announcements,
+        None,
         async |user| {
             user.wait_for_notice_containing(CAMERA_LINE).await;
             user.type_(b"hello there\n").await;
@@ -2679,4 +2692,51 @@ async fn with_speech_off_an_announcement_is_only_shown_and_the_next_prompt_still
 
     assert_eq!(notices(&shown), [CAMERA_LINE]);
     assert_user_message_reached_model(&harness, "hello there");
+}
+
+#[tokio::test]
+async fn a_startup_warmup_goes_first_and_the_first_prompt_still_runs() {
+    // The warm-up takes the first scripted turn; the prompt is answered by the second.
+    let mut harness = harness_answering(vec![answer(), answer()]).await;
+    let model = harness.model.clone();
+    let startup_warmup = harness.session.startup_warmup().await;
+
+    let shown = run_with_sources(
+        &mut harness,
+        &mut None,
+        Taps::none(),
+        no_announcements(),
+        Some(startup_warmup),
+        async |user| {
+            for _ in 0..500 {
+                if !model.requests().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            user.type_(b"hello there\n").await;
+            user.wait_for(AssistantState::Idle).await;
+        },
+    )
+    .await;
+
+    let requests = harness.model.requests();
+    assert_eq!(requests.len(), 2, "the warm-up, then the prompt");
+    let warmup = &requests[0];
+    // A fresh database has no facts, so the warm-up is the stand-in prompt alone.
+    assert_eq!(warmup.chat_history.len(), 1, "{:?}", warmup.chat_history);
+    assert!(matches!(warmup.chat_history[0], Message::User { .. }));
+    assert_ne!(warmup.chat_history[0], user_message("hello there"));
+    assert_eq!(warmup.max_tokens, Some(1), "a warm-up only reads");
+    assert_eq!(
+        requests[1].chat_history.last(),
+        Some(&user_message("hello there"))
+    );
+    assert_eq!(
+        shown
+            .iter()
+            .filter(|shown| matches!(shown, Shown::Answer(text) if text.contains(REPLY)))
+            .count(),
+        1
+    );
 }

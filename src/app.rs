@@ -237,6 +237,9 @@ impl App {
             std::future::pending::<std::convert::Infallible>().await
         };
 
+        // Read before the loop borrows the session: the start of the first request,
+        // sent ahead so the first question does not wait for a cold read.
+        let startup_warmup = session.startup_warmup().await;
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
         let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
@@ -251,6 +254,7 @@ impl App {
                 &mut input,
                 taps,
                 Announcements::new(announcements),
+                Some(startup_warmup),
                 &mut presenter,
                 self.listener.as_ref(),
                 &self.panels,
