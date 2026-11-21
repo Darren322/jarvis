@@ -54,6 +54,7 @@ Work through these in order. Each step ends with a commit and a short note of wh
 9. **Jarvis knows itself.** Asked for by Darren on 2026-11-21 ("I wish jarvis will know more about itself"). First: what it can do and runs on (commands, Panels, tools, the two Pis and their models) as a fixed, cached part of the prompt; which Panel is on the screen now, sent with the newest prompt so a change costs no reread; and its own timings from step 8. Spec by grilling first.
 10. **Touching the Panels.** Darren, 2026-11-21: "able to interact with panels, cameras etc? in the future adding calendar and many more". Taps on Panel parts become events Jarvis understands, as it understands speech. Anything that acts needs step 5's approval rule (8B). Design by grilling, with Darren's example taps, after step 9.
 11. **Questions about its own code.** Darren chose this on 2026-11-21 as its own epic: Jarvis answers questions about its own code and docs by searching the repo on demand. After step 10.
+12. **Jarvis changes itself.** Darren, 2026-11-21: "in the future, i will ask jarvis modify itself with external harness or openrouter api call via our own rust subagents/agents." A cloud call needs an explicit opt-in covering everything sent (the privacy rule), and jarvis-ui D10's code-generated Panels are the first small case. Design by grilling, after step 11.
 
 ## Later (named, in rough order)
 

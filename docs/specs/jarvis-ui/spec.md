@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 11 and 13 to 16 are done. 11 (the camera Panel: 800x450 at 30 fps, mirrored, one `/camera` MJPEG route; C1 to C7 in the ticket) was closed by Darren on 2026-11-21 after trying it on the 8 GB Pi; the picture is sideways because the module is mounted turned 90°, left for later (Q14 in the ticket). Jarvis runs there as the systemd user service `jarvis.service`. Next: 12 (catalog panels, needs-triage), by grilling. Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 11 and 13 to 16 are done. 11 (the camera Panel: 800x450 at 30 fps, mirrored, one `/camera` MJPEG route; C1 to C7 in the ticket) was closed by Darren on 2026-11-21 after trying it on the 8 GB Pi; the picture is sideways because the module is mounted turned 90°, left for later (Q14 in the ticket). Jarvis runs there as the systemd user service `jarvis.service`. Next: 12 (catalog panels) was settled with Darren on 2026-11-21 (G1 to G8 and his examples E1 to E5 in the ticket: a `build_panel` tool with card, list and live gauge parts) and is in progress with an Opus agent. 17 (a timer, split from 12) is needs-triage. Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -77,7 +77,7 @@ Darren approved all five, plus the ticket 03 dependencies.
 - **P2. A Panel timeout of 30 seconds** for the Stats Dashboard (ticket 09), set in config. The camera never times out (D8).
 - **P3. Tickets 08 and 09 are also blocked by 03.** Both publish through the transport that 03 builds, so they need its handle.
 - **P4. Camera frames and D3.** Ticket 11 decides, once the camera is attached; the likely answer is one `/camera` route on the same axum server. Decided 2026-11-21: that route (ticket 11, C2).
-- **P5. The Catalog part limit** (ticket 12): at most 8 parts per Panel, as a starting point to revisit in ticket 12.
+- **P5. The Catalog part limit** (ticket 12): at most 8 parts per Panel, as a starting point to revisit in ticket 12. Revisited 2026-11-21: at most 4 parts (ticket 12, G4).
 - **Ticket 03 dependencies.** axum's `ws` feature, and `tokio-tungstenite` as a dev-dependency WebSocket test client. Exact versions are pinned in ticket 03.
 
 ## Status
@@ -95,8 +95,9 @@ Darren approved all five, plus the ticket 03 dependencies.
 | 09 | show_panel tool and close phrases | done | 03, 07 |
 | 10 | Stats Dashboard panel | done | 04, 07 |
 | 11 | Camera panel | done | 10 |
-| 12 | Catalog panels | needs-triage | 11 |
+| 12 | Catalog panels | in-progress | 11 |
 | 13 | Close a Panel by saying it any way | done | 09 |
 | 14 | Storage on the stats Dashboard | done | 10 |
 | 15 | Bring up the stats without the model | done | 09 |
 | 16 | Jarvis can say the stats it shows | done | 14 |
+| 17 | A timer on the screen | needs-triage | 12 |
