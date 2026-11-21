@@ -1,29 +1,42 @@
 # 11: Camera panel
 
-Status: needs-info
+Status: ready-for-agent
 Stories: US4
 Blocked by: 10
 Assignee: unassigned
-Owns: none yet. Set when the ticket is unblocked.
-Traces to: D8, D9
+Owns: `crates/orb-protocol/src/lib.rs` and its tests (`PanelName::Camera`); `src/features/camera/` (new); `src/features/mod.rs`; `src/features/panel/mod.rs` (the timeout arm); `src/features/control/command.rs` and `src/features/control/panel.rs` (the phrases); `src/tools/show_panel.rs` (the name and its description); `src/interfaces/orb/` (the `/camera` route); `src/config/camera.rs` (new) and `src/config/mod.rs`; `src/app.rs` (wiring only); `src/features/assistant/preamble.txt` only if the panel names are listed there; `ui/src/panels/`, `ui/src/link/` and `ui/tests/`; the matching tests under `tests/unit/`. `Cargo.toml` and `Cargo.lock` are the coordinator's (`tokio-util` is already added).
+Traces to: D3, D8, D9, D11
 
-**Waiting on:**
-- ~~The camera is not attached.~~ Attached 2026-11-15: Camera Module 3 (imx708). Still open: resolution and frame rate.
-- The frame transport conflicts with D3. D3 says axum serves only the WebSocket. MJPEG needs an HTTP stream or binary WebSocket frames. Proposal P4, approved 2026-11-15: this ticket decides once the camera is attached; the likely answer is one `/camera` route on the same axum server. Record the choice in an ADR or in Comments. Do not start until it is decided.
+**Settled with Darren on 2026-11-21 (grilling, "ok to all"):**
 
-**What to build (provisional):** A camera Panel. `rpicam-vid` produces MJPEG, shown as an image in the UI (D9). The process starts when the Panel is shown and stops when it is hidden or the UI disconnects. The camera Panel never times out (D8). It is added as a new `Camera` variant of the Panel enum from ticket 07, with its timeout arm in ticket 09.
+| # | Decision |
+| --- | --- |
+| C1 | `rpicam-vid --codec mjpeg` at 800x450, 30 fps, mirrored (`--hflip`), written to stdout. The Pi's CPU cost is recorded against D11; if it is high, fall back to 640x480. Resolution, frame rate and the program path are named constants or config, not inline numbers. |
+| C2 | One `/camera` route on the same axum server as the WebSocket, still bound to 127.0.0.1. It answers `multipart/x-mixed-replace` MJPEG; the UI shows it with a plain `<img>` whose URL is built from the WebSocket's host and port. No npm package. This changes D3 (P4). |
+| C3 | Frames are cut out of `rpicam-vid`'s stdout with a `tokio_util::codec::Decoder` (`tokio-util = "=0.7.19"`, feature `codec`, approved by Darren). Only the newest frame is kept (a `watch` channel): a slow viewer skips frames and never builds a backlog. |
+| C4 | Jarvis owns the process. It starts when the camera Panel is shown and stops (killed and reaped) when the Panel is hidden or replaced, the UI disconnects, or Jarvis shuts down. `/camera` refuses a request while the camera Panel is not shown (an HTTP error status), so nothing but showing the Panel turns the camera on. |
+| C5 | Shown by `show_panel` with the name `camera`, or by fixed phrases with no model call, as ticket 15 does for the stats ("show the camera", "bring up the camera", "show me the camera", with the usual spoken prefixes). Closed like every Panel ("close it", "hide that", `close_panel`, a tap outside). It never times out (D8). |
+| C6 | If `rpicam-vid` cannot start or exits while shown (camera busy or unplugged), the Panel closes, the Orb returns and Jarvis says "The camera isn't available." No retry loop, nothing stored. |
+| C7 | Jarvis never sees the image (no vision). No frame is stored, logged or sent off the Pi. |
 
-Open questions for Darren: which camera model, resolution and frame rate, and the frame transport (P4).
+**What to build:** a `Camera` variant of `PanelName`, its timeout arm (`None`), its phrases and tool name; a camera feature that follows the shown Panel (as `StatsSource` follows it through `PanelHandle::watch_shown`) and runs the process; the `/camera` route that streams the latest frames; and a camera Panel in the UI. How C6's spoken line reaches speech from a background failure is for the implementer to propose: use an existing path if there is one, otherwise stop and report the options.
 
-## Acceptance criteria (provisional, to be confirmed when unblocked)
-- [ ] The camera model is chosen and attached. Darren confirms in Comments.
-- [ ] The frame transport is decided and recorded (P4).
-- [ ] `rpicam-vid` starts on show and stops on hide or disconnect. Tested with a fake program, as the recorder tests do. No process is left behind.
+## Acceptance criteria
+- [x] The camera model is chosen and attached (imx708, Camera Module 3, 2026-11-15).
+- [x] The frame transport is decided and recorded (P4: C2, C3).
+- [ ] `PanelName::Camera` round-trips on the wire as `"camera"`; the protocol tests cover it.
+- [ ] The process starts on show and stops on hide, on a replacing Panel, on UI disconnect and on shutdown. Tested with a fake program (as the recorder tests do); no process is left behind.
+- [ ] The frame decoder: table tests for one frame, two frames in one read, a frame split across reads, bytes before the first frame, and the frame size limit and one byte more (a named limit that drops or rejects an oversized frame).
+- [ ] `/camera` streams frames while the camera Panel shows and refuses while it does not; a second frame replaces the first for a slow reader (only the newest is sent).
+- [ ] A failing or exiting program closes the Panel and produces "The camera isn't available."
 - [ ] The camera Panel stays shown with paused time over one hour.
-- [ ] Frame rate and CPU on the Pi are recorded against D11. A Panel may cost more while shown.
-- [ ] Jarvis does not see the image. Vision is out of scope.
-- [ ] No frame is stored or sent off the LAN. No cloud request is made (privacy rule).
+- [ ] The phrases parse to showing the camera (parse table with near-misses that stay prompts); `show_panel` accepts `camera`.
+- [ ] The UI shows the stream in the Panel with the Orb in its corner; Vitest covers the URL and the Panel choice.
+- [ ] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
+- [ ] Pi (coordinator, with Darren's OK): frame rate and CPU of `rpicam-vid`, Jarvis and Chromium while the camera shows, against D11; Darren sees the picture.
+- [ ] Jarvis does not see the image; no frame is stored or sent off the LAN; no cloud request (C7).
 
 ## Comments
 
 - 2026-11-15 (coordinator): Darren attached the camera. `rpicam-hello --list-cameras` reports imx708 (Camera Module 3); modes 1536x864 @120, 2304x1296 @56, 4608x2592 @14.35. `rpicam-vid --codec mjpeg` to /dev/null for 30 s on the idle 8 GB Pi: 1280x720 @30 = 17.9% of one core, about 76 MB RSS; 640x480 @30 = 8.8%, about 75 MB. Measured alone, without Chromium or Jarvis running. Details in `notes/ui-spike/measurements-2026-11-15.md`.
+- 2026-11-21 (coordinator): grilled with Darren; decisions C1 to C7 above. No npm package: Chromium decodes `multipart/x-mixed-replace` in an `<img>` itself. `tokio-util =0.7.19` (`codec`) was already in `Cargo.lock` through other crates; added as a direct dependency (one lock line). An `<img>` request carries no `Origin` header, so `/camera` cannot be origin-checked like the WebSocket; it relies on the 127.0.0.1 bind and on refusing while the camera Panel is hidden (C4).
