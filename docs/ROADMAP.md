@@ -60,7 +60,7 @@ Work through these in order. Each step ends with a commit and a short note of wh
 | 12A | Facial recognition, offline: enroll Darren only, evaluate matching | 11A, usable imagery |
 | 12B | Opt-in household recognition in shadow mode | 11C, 12A |
 | 12C | Voice recognition, offline: enroll Darren only, evaluate matching | 12A, room on the Hailo-10H beside speech-to-text |
-| 12D | Per-person spaces: Jarvis recalls only the memories of the person it has authenticated; MASTER (Darren) can recall everyone's | 12B, 12C, a grilling session |
+| 12D | Per-person spaces: Jarvis recalls only the memories of the person it has authenticated; MASTER (Darren) can recall everyone's. The facts list (fast-memory 03 to 06, schema v5/v6) has no owner yet: every fact is "about the user", and the noting prompt says "the user" | 12B, 12C, a grilling session |
 | 9 | One explicitly permitted cloud request | 4C, privacy opt-in |
 | 15C | Headless Jarvis: run without a terminal (probably a systemd user service), with errors in the journal and a way to start and stop it (was visual-jarvis US9) | The screen UI in daily use |
 | 15D | The Orb's colour shows Jarvis's mood: blue calm, gold engaged, red angry (was visual-jarvis US10) | A mood signal from Jarvis; the React Orb |
