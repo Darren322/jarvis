@@ -80,13 +80,20 @@ async fn binary_runs_help_reset_exit_with_local_health_and_no_model_request() {
         1,
         "startup performs one local health check"
     );
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method.as_str() == "POST")
-            .count(),
-        0,
-        "help/reset/exit must not request model completion"
+    // The start-up cache warm-up (fast-memory 13) may reach the server before
+    // `/exit`: it asks for one token and is no answer. Nothing else may.
+    let completions: Vec<serde_json::Value> = requests
+        .iter()
+        .filter(|request| request.method.as_str() == "POST")
+        .map(|request| serde_json::from_slice(&request.body).expect("a JSON request body"))
+        .collect();
+    let (warmups, answers): (Vec<_>, Vec<_>) = completions
+        .iter()
+        .partition(|body| body["max_tokens"] == serde_json::json!(1));
+    assert!(warmups.len() <= 1, "at most the one start-up warm-up");
+    assert!(
+        answers.is_empty(),
+        "help/reset/exit must not request a model answer: {answers:?}"
     );
 
     let connection = rusqlite::Connection::open(&archive_path).expect("temporary archive opens");
