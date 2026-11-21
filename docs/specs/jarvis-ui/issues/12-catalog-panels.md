@@ -1,6 +1,6 @@
 # 12: Catalog panels
 
-Status: in-progress
+Status: in-review
 Stories: US5
 Blocked by: 11
 Assignee: Opus agent, high effort (2026-11-21)
@@ -37,18 +37,20 @@ Darren's examples, which every decision is checked against:
 - **UI:** a built-Panel component in the Panel frame (the same frame, colours and Orb corner as the Dashboard), laying out 1 to 4 parts; gauges reuse the Dashboard's look and its formatting of each figure.
 
 ## Acceptance criteria
-- [ ] The built Panel message and each part round-trip on the wire; unknown kinds, unknown sources and unknown fields are rejected (protocol tests, Rust and TypeScript).
-- [ ] Limits at their edges (one table): 0 parts rejected, 1 accepted, 4 accepted, 5 rejected; 0 list items rejected, 8 accepted, 9 rejected; 120 characters accepted and 121 rejected for a card title, card text, list title and list item (one multi-byte case); a Panel title of 40 accepted, 41 rejected. Each boundary test spot-checked by breaking it by one.
-- [ ] A rejected Panel sends nothing to the orb and its error message names the limit; a part not in the Catalog is rejected by the argument rule.
-- [ ] Streamed model test (`MockCompletionModel::from_stream_turns`): a `build_panel` call shows the Panel, and the second turn answers.
-- [ ] The built Panel times out with the stats timeout (paused time) and closes on "close it" and on `PanelClosed`; showing the stats or the camera replaces it.
-- [ ] `Stats` messages flow while a built Panel shows and stop when it closes.
-- [ ] UI (Vitest): each part renders; a gauge shows the value from the latest `Stats` and "unknown" for a missing temperature or storage; model text is rendered as text (a `<b>` in a card stays literal); the Orb stays in its corner; a tap outside sends `PanelClosed`.
+- [x] The built Panel message and each part round-trip on the wire; unknown kinds, unknown sources and unknown fields are rejected (protocol tests, Rust and TypeScript).
+- [x] Limits at their edges (one table): 0 parts rejected, 1 accepted, 4 accepted, 5 rejected; 0 list items rejected, 8 accepted, 9 rejected; 120 characters accepted and 121 rejected for a card title, card text, list title and list item (one multi-byte case); a Panel title of 40 accepted, 41 rejected. Each boundary test spot-checked by breaking it by one.
+- [x] A rejected Panel sends nothing to the orb and its error message names the limit; a part not in the Catalog is rejected by the argument rule.
+- [x] Streamed model test (`MockCompletionModel::from_stream_turns`): a `build_panel` call shows the Panel, and the second turn answers.
+- [x] The built Panel times out with the stats timeout (paused time) and closes on "close it" and on `PanelClosed`; showing the stats or the camera replaces it.
+- [x] `Stats` messages flow while a built Panel shows and stop when it closes.
+- [x] UI (Vitest): each part renders; a gauge shows the value from the latest `Stats` and "unknown" for a missing temperature or storage; model text is rendered as text (a `<b>` in a card stays literal); the Orb stays in its corner; a tap outside sends `PanelClosed`.
 - [ ] The token cost is stated: the tool definition's size in tokens (counted with the Gemma server's read-only `/tokenize` on the Pi, by the coordinator) and the longest Panel the schema allows, both against the 4,096-token slot.
-- [ ] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
+- [x] `scripts/verify.sh` passes; any `select!`, cancellation or timing test also passes `scripts/verify.sh --repeat <pattern>` (20 runs).
 - [ ] Pi (coordinator, with Darren): E1, E3 and E5 by voice; what Gemma builds and how it looks.
-- [ ] No cloud request (D10's code-generated Panels are a separate opt-in experiment).
+- [x] No cloud request (D10's code-generated Panels are a separate opt-in experiment).
 
 ## Comments
 
 - 2026-11-21 (coordinator): grilled with Darren after ticket 11 closed. Q1: "sure" to the five examples above, and for the future "i will ask jarvis modify itself with external harness or openrouter api call via our own rust subagents/agents" (recorded as roadmap step 12, not part of this ticket). Q2 "sure" (a tool). Q3 "I think both is good". Q4 to Q8: "yes to all". The timer (E2) is ticket 17.
+- 2026-11-21 (coordinator): built by an Opus agent (high effort) in the main checkout. Reviewed the diff against G1 to G8 and ran `scripts/verify.sh` in the main checkout: all checks passed (the agent's `--repeat buil` was 20 of 20). The limits live in `orb_protocol` (`MAX_PANEL_TITLE_CHARS` 40, `MAX_PANEL_PARTS` 4, `MAX_LIST_ITEMS` 8, `MAX_PART_TEXT_CHARS` 120; `BuiltPanel` is valid by construction) and the tool's schema is built from them. `ToOrb::ShowBuiltPanel` carries the Panel (`{"type":"show_built_panel","title":...,"parts":[{"kind":"list",...},{"kind":"card",...},{"kind":"gauge","source":"cpu"}]}`); `PanelName::Built` cannot be named by a message or `show_panel`. Over-limit Panels reach the tool and return a typed error whose message the model sees (`map_error` to `invalid_args`); unknown kinds, sources or fields are stopped by the argument rule. Gauges read the Dashboard's `Stats` and draw with the Dashboard's own `Gauge`. A source scan bans `innerHTML` and `dangerouslySetInnerHTML`. `ToOrb` is no longer `Copy`; the `ToOrb` line limit is `MAX_TO_ORB_LINE_BYTES` (26,452, the widest escaped Panel); `FromOrb` keeps 274. The glossary's Catalog entry is updated (G3).
+    - **Risk for Darren (estimate):** every request caps the answer at 1,024 tokens, and the largest Panel the schema allows is about 4,360 characters of text, likely more than 1,024 tokens. Gemma could start such a Panel and not finish it; the policy stops a truncated turn, so nothing shows. It fails safe; E1 with many long facts could hit it.
