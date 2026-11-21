@@ -14,10 +14,12 @@ const FIRST: Stats = {
 const SECOND: Stats = { ...FIRST, cpuPercent: 40 };
 
 const SHOW = { type: 'show_panel', panel: 'stats' } as const;
+const SHOW_CAMERA = { type: 'show_panel', panel: 'camera' } as const;
 const HIDE = { type: 'hide_panel' } as const;
 const reading = (stats: Stats) => ({ type: 'stats', stats }) as const;
 
 const WAITING: PanelView = { kind: 'stats', reading: null };
+const CAMERA: PanelView = { kind: 'camera' };
 
 test.each([
   // [what happens, before, message, after]
@@ -27,6 +29,11 @@ test.each([
   ['a reading while no Panel shows is dropped', NO_PANEL, reading(FIRST), NO_PANEL],
   ['HidePanel closes the Dashboard and drops its reading', { kind: 'stats', reading: FIRST }, HIDE, NO_PANEL],
   ['HidePanel with no Panel shown changes nothing', NO_PANEL, HIDE, NO_PANEL],
+  ['ShowPanel camera opens the camera', NO_PANEL, SHOW_CAMERA, CAMERA],
+  ['the camera replaces the Dashboard and drops its reading', { kind: 'stats', reading: FIRST }, SHOW_CAMERA, CAMERA],
+  ['the Dashboard replaces the camera and waits for a reading', CAMERA, SHOW, WAITING],
+  ['a reading while the camera shows is dropped', CAMERA, reading(FIRST), CAMERA],
+  ['HidePanel closes the camera', CAMERA, HIDE, NO_PANEL],
 ] as const)('%s', (_, before, message, after) => {
   expect(applyPanelMessage(before, message)).toEqual(after);
 });
@@ -34,6 +41,12 @@ test.each([
 test('showing the Dashboard while it shows keeps its reading and returns the same view', () => {
   const view: PanelView = { kind: 'stats', reading: FIRST };
   expect(applyPanelMessage(view, SHOW)).toBe(view);
+});
+
+test('showing the camera while it shows returns the same view, so nothing re-renders', () => {
+  const view: PanelView = { kind: 'camera' };
+  expect(applyPanelMessage(view, SHOW_CAMERA)).toBe(view);
+  expect(applyPanelMessage(view, reading(FIRST))).toBe(view);
 });
 
 test('reopening after HidePanel never shows the old reading', () => {

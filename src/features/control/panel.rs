@@ -1,4 +1,5 @@
-//! The panel commands: "bring up the stats" and "close it", without the model.
+//! The panel commands: "bring up the stats", "show the camera" and "close it",
+//! without the model.
 
 use orb_protocol::PanelName;
 
@@ -23,6 +24,7 @@ pub(crate) async fn show_panel(panels: &PanelHandle, panel: PanelName) -> Notice
     match panels.show(panel).await {
         Ok(()) => Notice::Info(match panel {
             PanelName::Stats => "Showing the stats.".to_owned(),
+            PanelName::Camera => "Showing the camera.".to_owned(),
         }),
         Err(error) => Notice::Warning(format!("could not show the panel: {error}")),
     }

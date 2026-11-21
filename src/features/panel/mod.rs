@@ -26,11 +26,12 @@ pub(crate) const PANEL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Requests waiting for the panel state. Showing or closing waits when it is full.
 const REQUEST_QUEUE: usize = 4;
 
-/// How long `panel` stays up, if it times out at all. The camera arm
-/// (jarvis-ui ticket 11) returns `None`: it stays until closed.
+/// How long `panel` stays up, if it times out at all. The camera returns
+/// `None`: it stays until closed (jarvis-ui D8).
 pub(crate) fn timeout_for(panel: PanelName, dashboard_timeout: Duration) -> Option<Duration> {
     match panel {
         PanelName::Stats => Some(dashboard_timeout),
+        PanelName::Camera => None,
     }
 }
 

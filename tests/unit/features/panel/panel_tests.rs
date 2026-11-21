@@ -49,15 +49,17 @@ async fn settle() {
 
 impl Rig {
     async fn show_stats(&mut self) {
+        self.show(PanelName::Stats).await;
+    }
+
+    async fn show(&mut self, panel: PanelName) {
         self.panels
-            .show(PanelName::Stats)
+            .show(panel)
             .await
             .expect("the panel task is running");
         assert_eq!(
             self.shown_to_orb.recv().await,
-            Some(ToOrb::ShowPanel {
-                panel: PanelName::Stats
-            })
+            Some(ToOrb::ShowPanel { panel })
         );
     }
 
@@ -74,6 +76,37 @@ fn the_stats_panel_times_out_after_the_configured_time() {
     let timeout = Duration::from_secs(7);
     assert_eq!(timeout_for(PanelName::Stats, timeout), Some(timeout));
     assert_eq!(PANEL_TIMEOUT, Duration::from_secs(30));
+}
+
+#[test]
+fn the_camera_panel_never_times_out() {
+    assert_eq!(timeout_for(PanelName::Camera, Duration::from_secs(7)), None);
+}
+
+/// Longer than an hour, which is as long as ticket 11 asks the camera to stay.
+const OVER_AN_HOUR: Duration = Duration::from_secs(60 * 60 + 1);
+
+#[tokio::test(start_paused = true)]
+async fn the_camera_panel_stays_shown_for_over_an_hour() {
+    let mut rig = start();
+    rig.show(PanelName::Camera).await;
+
+    tokio::time::advance(OVER_AN_HOUR).await;
+    settle().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Camera));
+    rig.nothing_sent();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_camera_replacing_the_stats_drops_the_stats_timeout() {
+    let mut rig = start();
+    rig.show_stats().await;
+    rig.show(PanelName::Camera).await;
+
+    tokio::time::advance(PANEL_TIMEOUT * 2).await;
+    settle().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Camera));
+    rig.nothing_sent();
 }
 
 #[tokio::test(start_paused = true)]

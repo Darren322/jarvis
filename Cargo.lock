@@ -1235,6 +1235,7 @@ dependencies = [
  "tokio",
  "tokio-rusqlite",
  "tokio-tungstenite",
+ "tokio-util",
  "wiremock",
 ]
 

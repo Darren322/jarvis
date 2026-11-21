@@ -47,6 +47,12 @@ fn every_panel_message_has_its_documented_line_and_round_trips() {
             },
             r#"{"type":"show_panel","panel":"stats"}"#,
         ),
+        (
+            ToOrb::ShowPanel {
+                panel: PanelName::Camera,
+            },
+            r#"{"type":"show_panel","panel":"camera"}"#,
+        ),
         (ToOrb::HidePanel {}, r#"{"type":"hide_panel"}"#),
         (
             stats(Some(55.5), ServiceHealth::Up, ServiceHealth::Down),
@@ -205,8 +211,9 @@ fn a_decoded_stats_message_must_have_a_valid_cpu_percent() {
 #[test]
 fn unknown_panels_extra_fields_and_missing_fields_are_rejected() {
     let to_orb = [
-        r#"{"type":"show_panel","panel":"camera"}"#,
+        r#"{"type":"show_panel","panel":"weather"}"#,
         r#"{"type":"show_panel","panel":"Stats"}"#,
+        r#"{"type":"show_panel","panel":"Camera"}"#,
         r#"{"type":"show_panel"}"#,
         r#"{"type":"show_panel","panel":"stats","extra":1}"#,
         r#"{"type":"hide_panel","extra":1}"#,

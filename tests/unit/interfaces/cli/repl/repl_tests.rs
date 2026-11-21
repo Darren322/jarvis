@@ -47,13 +47,13 @@ use crate::{
     storage::{ArchiveOutcome, ConversationArchive, MemoryEligibility},
 };
 
-use super::super::input::Taps;
+use super::super::input::{Announcements, Taps};
 use super::super::presentation::{AssistantPresenter, TerminalPresenter};
 use super::{
     QUIET_BEFORE_NEW_CONVERSATION, listen::NOT_CONFIGURED, reset_conversation, run_input_loop,
     speech::SpeechControl, warmup::WarmupTask,
 };
-use crate::features::control::Tap;
+use crate::features::control::{Notice, Tap};
 
 type CapturedAnswers = Arc<Mutex<Vec<String>>>;
 
@@ -109,6 +109,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut presenter,
         None,
         &panels,
@@ -246,6 +247,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut present_answer,
         None,
         &panels,
@@ -364,6 +366,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut present_answer,
         None,
         &panels,
@@ -466,6 +469,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut present_answer,
         None,
         &panels,
@@ -571,6 +575,11 @@ fn states(shown: &[Shown]) -> Vec<AssistantState> {
             Shown::Notice(_) | Shown::Answer(_) => None,
         })
         .collect()
+}
+
+/// A background source that never says anything: its sender is already gone.
+fn no_announcements() -> Announcements {
+    Announcements::new(tokio::sync::mpsc::channel(1).1)
 }
 
 fn notices(shown: &[Shown]) -> Vec<&str> {
@@ -748,6 +757,17 @@ async fn run_with_taps(
     taps: Taps,
     script: impl AsyncFnOnce(&mut Driver),
 ) -> Vec<Shown> {
+    run_with_sources(harness, speech, taps, no_announcements(), script).await
+}
+
+/// `run_with_taps`, with a background source of announcements as well.
+async fn run_with_sources(
+    harness: &mut Harness,
+    speech: &mut Option<FailingSpeech>,
+    taps: Taps,
+    announcements: Announcements,
+    script: impl AsyncFnOnce(&mut Driver),
+) -> Vec<Shown> {
     let (writer, reader) = tokio::io::duplex(8192);
     let mut input = BufReader::new(reader);
     let screen = Screen::default();
@@ -764,6 +784,7 @@ async fn run_with_taps(
         speech,
         &mut input,
         taps,
+        announcements,
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
@@ -985,6 +1006,7 @@ async fn end_of_input_while_listening_ends_the_loop() {
             &mut speech,
             &mut input,
             Taps::none(),
+            no_announcements(),
             &mut presenter,
             harness.listener.as_ref(),
             &harness.panels,
@@ -1733,6 +1755,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut presenter,
         None,
         &panels,
@@ -1803,6 +1826,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         &mut speech,
         &mut input,
         Taps::none(),
+        no_announcements(),
         &mut presenter,
         None,
         &panels,
@@ -1943,6 +1967,7 @@ async fn run_with_cue_speech(
         speech,
         &mut input,
         taps,
+        no_announcements(),
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
@@ -2599,4 +2624,59 @@ async fn forget_detail_removes_a_unique_fact_before_the_next_model_request() {
 
     assert_eq!(saved_facts(&harness).await, ["my dog is Rex"]);
     assert!(!first_request_mentions(&harness, "my cat is Miso"));
+}
+
+const CAMERA_LINE: &str = "The camera isn't available.";
+
+/// A background source holding one line already, and its sender (kept alive so the
+/// source stays open).
+fn one_announcement() -> (tokio::sync::mpsc::Sender<Notice>, Announcements) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    sender
+        .try_send(Notice::Warning(CAMERA_LINE.to_owned()))
+        .expect("the queue has room");
+    (sender, Announcements::new(receiver))
+}
+
+#[tokio::test]
+async fn an_announcement_while_idle_is_shown_and_said() {
+    let mut harness = harness().await;
+    let mut speech = speech_for_one_reply();
+    let (_sender, announcements) = one_announcement();
+
+    let shown = run_with_sources(
+        &mut harness,
+        &mut speech,
+        Taps::none(),
+        announcements,
+        async |user| user.wait_for_notice_containing(CAMERA_LINE).await,
+    )
+    .await;
+
+    assert_eq!(notices(&shown), [CAMERA_LINE]);
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(speech.calls, [CAMERA_LINE]);
+    assert!(harness.model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn with_speech_off_an_announcement_is_only_shown_and_the_next_prompt_still_runs() {
+    let mut harness = harness().await;
+    let (_sender, announcements) = one_announcement();
+
+    let shown = run_with_sources(
+        &mut harness,
+        &mut None,
+        Taps::none(),
+        announcements,
+        async |user| {
+            user.wait_for_notice_containing(CAMERA_LINE).await;
+            user.type_(b"hello there\n").await;
+            user.wait_for(AssistantState::Idle).await;
+        },
+    )
+    .await;
+
+    assert_eq!(notices(&shown), [CAMERA_LINE]);
+    assert_user_message_reached_model(&harness, "hello there");
 }

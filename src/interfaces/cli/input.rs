@@ -5,7 +5,7 @@ use tokio::{
     sync::mpsc,
 };
 
-use crate::features::control::Tap;
+use crate::features::control::{Notice, Tap};
 
 const MAX_INPUT_BYTES: usize = 2_048;
 const MAX_FRAMED_INPUT_BYTES: usize = MAX_INPUT_BYTES + 2;
@@ -71,6 +71,29 @@ impl Taps {
         if let Some(taps) = self.0.as_mut() {
             if let Some(tap) = taps.recv().await {
                 return tap;
+            }
+            self.0 = None;
+        }
+        std::future::pending().await
+    }
+}
+
+/// Lines a background feature has for Darren (the camera failing, C6 of jarvis-ui
+/// ticket 11), read only while the loop is idle: one that arrives during an answer
+/// or a recording waits in its bounded queue until the loop is idle again.
+pub(crate) struct Announcements(Option<mpsc::Receiver<Notice>>);
+
+impl Announcements {
+    pub(crate) fn new(announcements: mpsc::Receiver<Notice>) -> Self {
+        Self(Some(announcements))
+    }
+
+    /// The next line. Never completes once every sender is gone.
+    /// Safe to drop at any `.await`: a line is only taken when this returns.
+    pub(crate) async fn next(&mut self) -> Notice {
+        if let Some(announcements) = self.0.as_mut() {
+            if let Some(notice) = announcements.recv().await {
+                return notice;
             }
             self.0 = None;
         }

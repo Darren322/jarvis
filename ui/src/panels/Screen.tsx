@@ -1,8 +1,9 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { OrbSource, PanelSource } from '../link/link';
+import { CAMERA_URL, type OrbSource, type PanelSource } from '../link/link';
 import type { PanelName } from '../link/protocol';
 import { type FrameScheduler, Orb, type OrbSize } from '../orb/Orb';
 import type { CreateOrbRenderer } from '../orb/renderer';
+import { Camera } from './Camera';
 import { Dashboard } from './Dashboard';
 import { orbPlacement, PANEL_INSETS } from './layout';
 import { PANEL_COLOR_STYLE } from './palette';
@@ -29,16 +30,30 @@ function LiveDashboard({ source }: { readonly source: PanelSource }) {
   return <Dashboard reading={reading} />;
 }
 
+/** What the Panel shows inside its frame. */
+function PanelContent({ panel, source }: { readonly panel: PanelName; readonly source: PanelSource }) {
+  switch (panel) {
+    case 'stats':
+      return <LiveDashboard source={source} />;
+    case 'camera':
+      return <Camera url={source.cameraUrl ?? CAMERA_URL} />;
+  }
+}
+
 /** The Panel's frame: the same place and border for every Panel. A tap inside it does nothing. */
 function PanelFrame({ panel, source }: { readonly panel: PanelName; readonly source: PanelSource }) {
   return (
-    <section className="panel" aria-label={PANEL_LABELS[panel]} style={{ ...PANEL_INSETS, ...PANEL_COLOR_STYLE }}>
-      <LiveDashboard source={source} />
+    <section
+      className={`panel panel-${panel}`}
+      aria-label={PANEL_LABELS[panel]}
+      style={{ ...PANEL_INSETS, ...PANEL_COLOR_STYLE }}
+    >
+      <PanelContent panel={panel} source={source} />
     </section>
   );
 }
 
-const PANEL_LABELS: Readonly<Record<PanelName, string>> = { stats: 'Stats' };
+const PANEL_LABELS: Readonly<Record<PanelName, string>> = { stats: 'Stats', camera: 'Camera' };
 
 export interface ScreenProps {
   /** Where the Orb's state and the Panel come from: the link, or a fixture in the preview. */

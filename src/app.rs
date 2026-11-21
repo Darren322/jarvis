@@ -15,6 +15,7 @@ use crate::config::{
 };
 use crate::features::{
     assistant::{Assistant, FactExtractor, SYSTEM_PREAMBLE},
+    camera::{CAMERA_PROGRAM, Camera, FAILURE_QUEUE},
     conversation::ConversationSession,
     listening::{Listener, Recorder, run_level_meter},
     memory::{FactNoter, MemoryService},
@@ -25,7 +26,7 @@ use crate::features::{
 };
 use crate::interfaces::cli::{
     diagnostics::error_chain,
-    input::Taps,
+    input::{Announcements, Taps},
     presentation::{StatePublishing, TerminalPresenter},
     repl::run_input_loop,
 };
@@ -160,11 +161,13 @@ impl App {
             Some(_) => Taps::new(tap_receiver),
             None => Taps::none(),
         };
+        let (camera, camera_feed) = Camera::new(CAMERA_PROGRAM, self.panels.clone());
         let feeds = OrbFeeds {
             states: &states,
             mic_level,
             speech_level: speech.as_ref().map(SpeechOutput::level),
             taps: tap_sender,
+            camera: camera_feed,
         };
         let serve_orb = async {
             let Some(orb) = orb else {
@@ -198,6 +201,8 @@ impl App {
             .and_then(|mut inbox| inbox.take());
         // The stats go only to an orb: they are the Dashboard's data.
         let stats_to_orb = orb_handle.as_ref().map(|handle| handle.to_orb.clone());
+        // The camera films only for an orb: without a screen nobody would see it.
+        let films_for_orb = orb_handle.is_some();
         let dashboard_timeout = self.panel_config.dashboard_timeout;
         let serve_panels = async {
             match panel_inbox {
@@ -222,6 +227,16 @@ impl App {
             std::future::pending::<std::convert::Infallible>().await
         };
 
+        // The camera runs exactly while the camera panel is shown. Its failures
+        // are told by the REPL, shown and said once it is idle (ticket 11, C6).
+        let (camera_failures, announcements) = mpsc::channel(FAILURE_QUEUE);
+        let serve_camera = async {
+            if films_for_orb {
+                camera.run(camera_failures).await;
+            }
+            std::future::pending::<std::convert::Infallible>().await
+        };
+
         let stdin = tokio::io::stdin();
         let mut input = BufReader::new(stdin);
         let mut presenter = StatePublishing::new(TerminalPresenter::default(), &states);
@@ -235,6 +250,7 @@ impl App {
                 &mut speech,
                 &mut input,
                 taps,
+                Announcements::new(announcements),
                 &mut presenter,
                 self.listener.as_ref(),
                 &self.panels,
@@ -243,6 +259,7 @@ impl App {
             never = play_cues => match never {},
             never = serve_panels => match never {},
             never = serve_stats => match never {},
+            never = serve_camera => match never {},
         }
     }
 

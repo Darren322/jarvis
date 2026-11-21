@@ -34,7 +34,7 @@ impl StatsVisibility {
     pub(crate) fn of_panel(shown: Option<PanelName>) -> Self {
         match shown {
             Some(PanelName::Stats) => Self::Shown,
-            None => Self::Hidden,
+            Some(PanelName::Camera) | None => Self::Hidden,
         }
     }
 }

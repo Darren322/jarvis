@@ -12,7 +12,7 @@ use crate::features::{
     state::AssistantState,
 };
 use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
-use crate::interfaces::cli::input::{InputLine, InputReader, Taps, read_input_line};
+use crate::interfaces::cli::input::{Announcements, InputLine, InputReader, Taps, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
 
 mod idle;
@@ -37,7 +37,8 @@ type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>
 /// Runs the REPL until the input ends or the user exits.
 ///
 /// `taps` is a second input source beside the typed line (see [`Taps`]); pass
-/// `Taps::none()` for a keyboard-only session.
+/// `Taps::none()` for a keyboard-only session. `announcements` are lines from
+/// background features, shown and said while idle (see [`Announcements`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "the composition root hands over each service once"
@@ -49,6 +50,7 @@ pub(crate) async fn run_input_loop<R, S, P>(
     speech: &mut Option<S>,
     input: &mut R,
     taps: Taps,
+    announcements: Announcements,
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
@@ -59,7 +61,16 @@ where
     P: AssistantPresenter,
 {
     let result = run_input_loop_inner(
-        assistant, session, memory, speech, input, taps, presenter, listener, panels,
+        assistant,
+        session,
+        memory,
+        speech,
+        input,
+        taps,
+        announcements,
+        presenter,
+        listener,
+        panels,
     )
     .await;
     if let Some(speech) = speech.as_mut()
@@ -84,6 +95,7 @@ async fn run_input_loop_inner<R, S, P>(
     speech: &mut Option<S>,
     input: &mut R,
     mut taps: Taps,
+    mut announcements: Announcements,
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
@@ -135,8 +147,9 @@ where
                     read_input_line(&mut input).await.map(|line| (line, None))
                 }
             };
-            // Typed input wins over a tap. Both losers are safe to drop: a half-read
-            // line stays in `input`, and idle work commits each vector on its own.
+            // Typed input wins over a tap, and both over an announcement. The losers
+            // are safe to drop: a half-read line stays in `input`, idle work commits
+            // each vector on its own, and an unread tap or announcement stays queued.
             tokio::select! {
                 biased;
                 read = read => {
@@ -151,6 +164,7 @@ where
                     | TapAction::DropAnswerThenListen
                     | TapAction::StopSpeakingThenListen => continue,
                 },
+                notice = announcements.next() => Wake::Announcement(notice),
             }
         };
         if let Some(fact) = last_noted.take() {
@@ -158,6 +172,21 @@ where
         }
         let (line, memory_warning) = match wake {
             Wake::Line(line, memory_warning) => (line, memory_warning),
+            Wake::Announcement(notice) => {
+                // Only the idle read takes one, and the prompt is open then: end its
+                // line, so the notice starts a line of its own.
+                println!();
+                prompt_is_visible = false;
+                presenter.notice(notice.text())?;
+                if let Some(speech) = available(speech, speech_available) {
+                    speak_lines(speech, &[notice.text()]).await;
+                    if speech.is_disabled() {
+                        speech_available = false;
+                    }
+                }
+                idle_work_due = true;
+                continue;
+            }
             Wake::Tap { prompt_on_screen } => {
                 if prompt_on_screen {
                     // End the open prompt line, as Enter does for a typed line.
@@ -407,6 +436,8 @@ enum Wake {
         /// Whether an open prompt line is on screen and must be ended first.
         prompt_on_screen: bool,
     },
+    /// A background feature's line, shown and said while idle.
+    Announcement(Notice),
 }
 
 /// The speech output, unless speech has been given up for this session.

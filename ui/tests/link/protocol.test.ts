@@ -38,14 +38,16 @@ test.each([
 describe('panel messages', () => {
   test.each([
     ['{"type":"show_panel","panel":"stats"}', { type: 'show_panel', panel: 'stats' }],
+    ['{"type":"show_panel","panel":"camera"}', { type: 'show_panel', panel: 'camera' }],
     ['{"type":"hide_panel"}', { type: 'hide_panel' }],
   ])('%s parses', (text, message) => {
     expect(parseToOrb(text)).toEqual(message);
   });
 
   test.each([
-    '{"type":"show_panel","panel":"camera"}',
+    '{"type":"show_panel","panel":"weather"}',
     '{"type":"show_panel","panel":"Stats"}',
+    '{"type":"show_panel","panel":"Camera"}',
     '{"type":"show_panel"}',
     '{"type":"show_panel","panel":"stats","extra":1}',
     '{"type":"hide_panel","panel":"stats"}',

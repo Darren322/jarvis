@@ -26,6 +26,22 @@ export const JARVIS_PORT = 8765;
 /** The address of Jarvis's WebSocket: localhost only, route `/`. */
 export const JARVIS_URL = `ws://127.0.0.1:${JARVIS_PORT}/`;
 
+/** The route of the camera Panel's picture, beside the WebSocket. It must match `CAMERA_PATH` in `src/interfaces/orb/camera.rs`. */
+const CAMERA_PATH = '/camera';
+
+/**
+ * Where the camera Panel's picture comes from: Jarvis's `/camera` route, on the
+ * same host and port as the WebSocket at `socketUrl` (`ws:` becomes `http:`).
+ */
+export function cameraUrl(socketUrl: string): string {
+  const url = new URL(CAMERA_PATH, socketUrl);
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  return url.href;
+}
+
+/** The camera Panel's picture beside the default WebSocket. */
+export const CAMERA_URL = cameraUrl(JARVIS_URL);
+
 /**
  * How long the link waits after a connection closes or fails before it tries
  * again, in milliseconds. The same 3 s as `RECONNECT_INTERVAL` in
@@ -77,6 +93,8 @@ export interface PanelSource {
   readonly stats: Stats | null;
   /** Darren tapped outside the Panel: tell Jarvis once and hide it here. */
   readonly closePanel: () => void;
+  /** Where the camera Panel's picture comes from; default `CAMERA_URL`. */
+  readonly cameraUrl?: string;
 }
 
 const browserSocket: CreateSocket = (url) => new WebSocket(url);
@@ -91,10 +109,13 @@ export class JarvisLink implements OrbSource, PanelSource {
   #running = false;
   readonly #url: string;
   readonly #createSocket: CreateSocket;
+  /** The camera's picture, from the host and port this link connects to. */
+  readonly cameraUrl: string;
 
   constructor(options: LinkOptions = {}) {
     this.#url = options.url ?? JARVIS_URL;
     this.#createSocket = options.createSocket ?? browserSocket;
+    this.cameraUrl = cameraUrl(this.#url);
   }
 
   get display(): Display {

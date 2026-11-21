@@ -10,6 +10,7 @@ import { allValues } from './dashboardQueries';
 const TAP = '{"type":"tap"}';
 const PANEL_CLOSED = '{"type":"panel_closed"}';
 const SHOW_STATS = '{"type":"show_panel","panel":"stats"}';
+const SHOW_CAMERA = '{"type":"show_panel","panel":"camera"}';
 const HIDE_PANEL = '{"type":"hide_panel"}';
 const STATS =
   '{"type":"stats","cpu_percent":12.5,"ram_used_bytes":2469606195,"ram_total_bytes":8464105472,"llama":"up","bge":"down"}';
@@ -79,6 +80,19 @@ function panel(): HTMLElement | null {
   return container.querySelector<HTMLElement>('section[aria-label="Stats"]');
 }
 
+function cameraPanel(): HTMLElement | null {
+  return container.querySelector<HTMLElement>('section[aria-label="Camera"]');
+}
+
+/** The camera's picture, failing the test if it is not shown. */
+function picture(): HTMLImageElement {
+  const image = cameraPanel()?.querySelector('img');
+  if (image === null || image === undefined) {
+    throw new Error('no camera picture');
+  }
+  return image;
+}
+
 async function pointerDown(target: Element) {
   await act(async () => {
     target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
@@ -134,6 +148,84 @@ describe('the Orb and the Panel', () => {
     await act(async () => socket.fail());
     expect(panel()).toBeNull();
     expect(orbBox()).toEqual(FULL());
+  });
+});
+
+describe('the camera Panel', () => {
+  test('ShowPanel camera shows the picture from the camera URL with the Orb in its corner', async () => {
+    const { link, receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    expect(orbBox()).toEqual(CORNER);
+    expect(panel()).toBeNull();
+    expect(picture().getAttribute('src')).toBe(link.cameraUrl);
+    expect(picture().getAttribute('alt')).toBe('Camera');
+  });
+
+  test('the Orb is drawn after the camera Panel, so it stays on top', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    const order = [...container.children].map((element) => element.getAttribute('aria-label') ?? element.className);
+    expect(order).toEqual(['panel-outside', 'Camera', 'Jarvis orb: tap to talk']);
+  });
+
+  test('the stats replace the camera and the camera replaces the stats', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_STATS, STATS);
+    await receive(SHOW_CAMERA);
+    expect(panel()).toBeNull();
+    expect(cameraPanel()).not.toBeNull();
+    await receive(SHOW_STATS);
+    expect(cameraPanel()).toBeNull();
+    expect(allValues(container).CPU).toBe('—');
+  });
+
+  test('HidePanel removes the picture, which ends its request, and gives the Orb the window back', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    await receive(HIDE_PANEL);
+    expect(cameraPanel()).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
+    expect(orbBox()).toEqual(FULL());
+  });
+
+  test('a tap outside the camera Panel sends one PanelClosed and hides it', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    const outside = container.querySelector('.panel-outside');
+    if (outside === null) {
+      throw new Error('nothing catches taps outside the Panel');
+    }
+    await pointerDown(outside);
+    expect(socket.sent).toEqual([PANEL_CLOSED]);
+    expect(cameraPanel()).toBeNull();
+  });
+
+  test('a tap on the picture sends nothing and the camera stays', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    await pointerDown(picture());
+    expect(socket.sent).toEqual([]);
+    expect(cameraPanel()).not.toBeNull();
+  });
+
+  test('a dropped connection hides the camera Panel', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    await act(async () => socket.fail());
+    expect(cameraPanel()).toBeNull();
+    expect(orbBox()).toEqual(FULL());
+  });
+
+  test('state and level messages cause no React render while the camera shows', async () => {
+    const { receive, commits } = await mountScreen();
+    await receive(SHOW_CAMERA);
+    const before = commits();
+    await receive(
+      '{"type":"state","state":"listening"}',
+      ...Array.from({ length: 50 }, (_, index) => JSON.stringify({ type: 'level', level: index / 50, source: 'mic' })),
+      STATS,
+    );
+    expect(commits()).toBe(before);
   });
 });
 

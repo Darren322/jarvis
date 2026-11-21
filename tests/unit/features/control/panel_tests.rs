@@ -116,6 +116,39 @@ async fn a_show_phrase_shows_the_stats_without_a_model_call() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_show_phrase_shows_the_camera_without_a_model_call() {
+    // A model with no scripted turn: any request to it would panic or fail.
+    let model = MockCompletionModel::from_stream_turns(Vec::<Vec<_>>::new());
+    let handle = model.clone();
+    let (panels, inbox) = channel();
+    let (to_orb, mut shown_to_orb) = mpsc::channel(16);
+    let (_events, from_orb) = mpsc::channel::<FromOrb>(16);
+    let task = tokio::spawn(async move {
+        match inbox
+            .run(Some(OrbHandle { to_orb, from_orb }), PANEL_TIMEOUT)
+            .await {}
+    });
+
+    let Command::Show(panel) = parse("Show me the camera.".to_owned()) else {
+        panic!("a show phrase parses to Show");
+    };
+    assert_eq!(
+        show_panel(&panels, panel).await,
+        Notice::Info("Showing the camera.".to_owned())
+    );
+    settle().await;
+
+    assert_eq!(
+        shown_to_orb.recv().await,
+        Some(ToOrb::ShowPanel {
+            panel: PanelName::Camera
+        })
+    );
+    assert!(handle.requests().is_empty());
+    task.abort();
+}
+
+#[tokio::test(start_paused = true)]
 async fn showing_with_the_panel_service_stopped_is_a_warning_not_a_crash() {
     let (panels, inbox) = channel();
     drop(inbox);

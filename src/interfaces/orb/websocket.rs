@@ -1,6 +1,7 @@
 //! The WebSocket door, for the UI in Chromium. It listens on `127.0.0.1` only and
-//! serves one route, `/`, which upgrades to a WebSocket. Each text message in
-//! either direction is one `orb-protocol` JSON object, with no newline.
+//! serves two routes: `/`, which upgrades to a WebSocket, and `/camera`, the
+//! camera Panel's picture ([`super::camera`]). Each text message in either
+//! direction is one `orb-protocol` JSON object, with no newline.
 //!
 //! A browser lets any web page open a WebSocket to localhost, and a tap starts the
 //! microphone, so the handshake is refused unless the page's `Origin` is one of
@@ -10,6 +11,10 @@
 //! `axum` runs the HTTP handshake. Each connection is a task that `axum`
 //! spawns, so it can outlive the serve future: it ends as soon as the hub is
 //! gone (see [`Outbox::next`]) or the client leaves.
+//!
+//! A UI that leaves has hidden its Panel (it shows none until told again), so a
+//! connection that ends tells the Panel state the orb closed it. Otherwise a
+//! Panel that never times out, the camera, would keep filming for nobody.
 
 use std::{
     convert::Infallible,
@@ -37,8 +42,10 @@ use tokio::{
 
 use super::{
     Inbox, MAX_CONNECTIONS, OrbError, WRITE_TIMEOUT,
+    camera::{CAMERA_PATH, camera},
     hub::{Gone, HubHandle, Outbox},
 };
+use crate::features::camera::CameraFeed;
 
 /// The bound port. Dropping it (or the `serve` future) stops accepting; the
 /// connections already open end with the hub.
@@ -87,6 +94,7 @@ impl WebSocketEndpoint {
         hub: HubHandle,
         inbox: Inbox,
         allowed_origins: Vec<String>,
+        camera_feed: CameraFeed,
     ) -> Infallible {
         let shared = Arc::new(Shared {
             hub,
@@ -94,7 +102,10 @@ impl WebSocketEndpoint {
             allowed_origins,
             slots: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         });
-        let app = Router::new().route("/", get(upgrade)).with_state(shared);
+        let app = Router::new()
+            .route("/", get(upgrade))
+            .route(CAMERA_PATH, get(camera).with_state(camera_feed))
+            .with_state(shared);
         // `axum::serve` retries failed accepts itself and only returns on an error
         // that cannot be fixed by trying again; there is nothing left to serve then.
         let _ = axum::serve(self.listener, app).await;
@@ -126,7 +137,11 @@ async fn upgrade(
     // nothing buffered beyond the limit.
     ws.max_message_size(MAX_LINE_BYTES)
         .max_frame_size(MAX_LINE_BYTES)
-        .on_upgrade(move |socket| serve_client(socket, outbox, inbox, permit))
+        .on_upgrade(move |socket| async move {
+            serve_client(socket, outbox, &inbox, permit).await;
+            // The UI that left shows no Panel any more.
+            inbox.deliver(FromOrb::PanelClosed {});
+        })
 }
 
 /// Whether the request names one of the `allowed` origins. Browsers write the
@@ -145,7 +160,7 @@ fn is_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
 async fn serve_client(
     mut socket: WebSocket,
     mut outbox: Outbox,
-    inbox: Inbox,
+    inbox: &Inbox,
     _slot: OwnedSemaphorePermit,
 ) {
     loop {

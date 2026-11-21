@@ -6,6 +6,7 @@
  *   {"type":"state","state":"thinking"}
  *   {"type":"level","level":0.25,"source":"mic"}
  *   {"type":"show_panel","panel":"stats"}
+ *   {"type":"show_panel","panel":"camera"}
  *   {"type":"hide_panel"}
  *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,
  *    "storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
@@ -23,8 +24,12 @@ export type OrbState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'spe
 /** Whose loudness a level is. Mirrors `orb_protocol::LevelSource`. */
 export type LevelSource = 'speech' | 'mic';
 
-/** A Panel the UI can show. Mirrors `orb_protocol::PanelName`. */
-export type PanelName = 'stats';
+/**
+ * A Panel the UI can show. Mirrors `orb_protocol::PanelName`. The camera's
+ * picture does not come over the WebSocket: the camera Panel loads it from
+ * Jarvis's `/camera` route.
+ */
+export type PanelName = 'stats' | 'camera';
 
 /** Whether a service answered its last health check. Mirrors `orb_protocol::ServiceHealth`. */
 export type ServiceHealth = 'up' | 'down';
@@ -77,7 +82,7 @@ export const MAX_CPU_PERCENT = 100;
 
 const ORB_STATES: readonly string[] = ['idle', 'listening', 'transcribing', 'thinking', 'speaking'];
 const LEVEL_SOURCES: readonly string[] = ['speech', 'mic'];
-const PANEL_NAMES: readonly string[] = ['stats'];
+const PANEL_NAMES: readonly string[] = ['stats', 'camera'];
 const SERVICE_HEALTHS: readonly string[] = ['up', 'down'];
 
 const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'] as const;

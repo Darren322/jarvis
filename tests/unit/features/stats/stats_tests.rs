@@ -339,6 +339,10 @@ fn the_dashboard_is_visible_exactly_while_the_stats_panel_is_shown() {
         StatsVisibility::Shown
     );
     assert_eq!(StatsVisibility::of_panel(None), StatsVisibility::Hidden);
+    assert_eq!(
+        StatsVisibility::of_panel(Some(PanelName::Camera)),
+        StatsVisibility::Hidden
+    );
 }
 
 #[tokio::test(start_paused = true)]

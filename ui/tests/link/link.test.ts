@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { JARVIS_PORT, JARVIS_URL, JarvisLink, RECONNECT_DELAY } from '../../src/link/link';
+import { CAMERA_URL, cameraUrl, JARVIS_PORT, JARVIS_URL, JarvisLink, RECONNECT_DELAY } from '../../src/link/link';
 import { latest, socketFactory } from './fakeSocket';
 
 const TAP = '{"type":"tap"}';
@@ -24,6 +24,27 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('the camera URL', () => {
+  test.each([
+    // [WebSocket URL, camera URL]
+    ['ws://127.0.0.1:8765/', 'http://127.0.0.1:8765/camera'],
+    ['ws://localhost:9000/', 'http://localhost:9000/camera'],
+    ['ws://127.0.0.1:8765', 'http://127.0.0.1:8765/camera'],
+    ['wss://jarvis.local:443/', 'https://jarvis.local/camera'],
+  ])('%s gives %s: the same host and port as the WebSocket', (socketUrl, expected) => {
+    expect(cameraUrl(socketUrl)).toBe(expected);
+  });
+
+  test('the default is the default WebSocket host and port', () => {
+    expect(CAMERA_URL).toBe('http://127.0.0.1:8765/camera');
+    expect(new JarvisLink().cameraUrl).toBe(CAMERA_URL);
+  });
+
+  test('a link to another WebSocket shows the camera from there', () => {
+    expect(new JarvisLink({ url: 'ws://localhost:9000/' }).cameraUrl).toBe('http://localhost:9000/camera');
+  });
 });
 
 describe('connecting', () => {
@@ -115,7 +136,7 @@ describe('messages', () => {
       'null',
       '42',
       '{}',
-      '{"type":"show_panel","panel":"camera"}',
+      '{"type":"show_panel","panel":"weather"}',
       '{"type":"hide_panel","panel":"stats"}',
       '{"type":"stats","cpu":12}',
       STATS.replace('12.5', '100.01'),

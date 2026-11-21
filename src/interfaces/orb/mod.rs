@@ -5,6 +5,8 @@
 //! taps. Messages are `orb-protocol` JSON. One door leads in, the [`websocket`]
 //! for the UI in Chromium, on `127.0.0.1` and for allowed origins only. Every
 //! client it serves gets the same messages from the same source (the [`hub`]).
+//! Beside it, on the same port, the [`camera`] route serves the camera Panel's
+//! picture while that Panel shows.
 //!
 //! This interface shares only `features/` with the terminal: it is handed a
 //! [`StateFeed`] observer, two loudness readers and the sending half of a tap
@@ -21,6 +23,7 @@
 //! only thing it can cause is one `Tap` in a bounded queue or one event in a
 //! bounded handle queue.
 
+mod camera;
 mod hub;
 mod websocket;
 
@@ -37,6 +40,7 @@ use self::{hub::Hub, websocket::WebSocketEndpoint};
 use crate::{
     config::OrbConfig,
     features::{
+        camera::CameraFeed,
         control::Tap,
         listening::LEVEL_INTERVAL,
         speech::LevelReceiver,
@@ -79,6 +83,8 @@ pub(crate) struct OrbFeeds<'a> {
     /// Loudness of Jarvis's voice; `None` when speech is not configured.
     pub(crate) speech_level: Option<LevelReceiver>,
     pub(crate) taps: mpsc::Sender<Tap>,
+    /// The camera Panel's picture, for the `/camera` route.
+    pub(crate) camera: CameraFeed,
 }
 
 /// How a feature talks to the orbs, apart from state, loudness and taps.
@@ -169,7 +175,7 @@ impl OrbServer {
         tokio::select! {
             biased;
             never = publish_everything(&hub, states, messages, &feeds) => match never {},
-            never = websocket.serve(hub.handle(), inbox, allowed_origins) => match never {},
+            never = websocket.serve(hub.handle(), inbox, allowed_origins, feeds.camera.clone()) => match never {},
         }
     }
 }

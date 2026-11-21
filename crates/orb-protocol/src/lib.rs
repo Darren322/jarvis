@@ -148,11 +148,14 @@ impl From<CpuPercent> for f32 {
     }
 }
 
-/// A panel the orb can show. On the wire: `"stats"`.
+/// A panel the orb can show. On the wire: `"stats"` or `"camera"`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelName {
     Stats,
+    /// The camera's live picture. Its frames do not travel in these messages:
+    /// the UI fetches them from Jarvis's `/camera` route while this panel shows.
+    Camera,
 }
 
 /// Whether a service answered its last health check. On the wire: `"up"` or `"down"`.
@@ -189,6 +192,7 @@ where
 /// {"type":"state","state":"thinking"}
 /// {"type":"level","level":0.25,"source":"mic"}
 /// {"type":"show_panel","panel":"stats"}
+/// {"type":"show_panel","panel":"camera"}
 /// {"type":"hide_panel"}
 /// {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
 /// ```

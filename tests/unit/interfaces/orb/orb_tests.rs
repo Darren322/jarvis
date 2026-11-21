@@ -29,8 +29,23 @@ pub(super) struct Served<'a> {
     pub(super) handle: &'a mut OrbHandle,
 }
 
-/// Runs `body` beside a server on a free localhost port.
+/// A camera feed whose camera Panel is never shown, so `/camera` refuses every
+/// request.
+fn no_camera() -> crate::features::camera::CameraFeed {
+    let (panels, _no_panel_state) = crate::features::panel::channel();
+    crate::features::camera::Camera::new("unused", panels).1
+}
+
+/// Runs `body` beside a server on a free localhost port, with [`no_camera`].
 pub(super) async fn serving<T>(body: impl AsyncFnOnce(Served<'_>) -> T) -> T {
+    serving_with(no_camera(), body).await
+}
+
+/// [`serving`], with `/camera` reading `camera`.
+pub(super) async fn serving_with<T>(
+    camera: crate::features::camera::CameraFeed,
+    body: impl AsyncFnOnce(Served<'_>) -> T,
+) -> T {
     let states = StateFeed::new();
     let (mic, mic_level) = watch::channel(0.0);
     let (tap_sender, mut taps) = mpsc::channel(TAP_QUEUE);
@@ -42,6 +57,7 @@ pub(super) async fn serving<T>(body: impl AsyncFnOnce(Served<'_>) -> T) -> T {
         mic_level,
         speech_level: None,
         taps: tap_sender,
+        camera,
     };
     let served = Served {
         address,
@@ -106,6 +122,7 @@ async fn the_mic_level_is_sent_thirty_times_a_second_while_listening() {
         mic_level,
         speech_level: None,
         taps: tap_sender,
+        camera: no_camera(),
     };
     let hub = Hub::new(OrbState::Idle);
     let mut outbox = hub.handle().subscribe().unwrap();
@@ -400,6 +417,23 @@ async fn a_port_already_in_use_is_reported_once_and_serves_once_it_is_free() {
     drop(occupant);
     let (server, _handle) = OrbServer::bind(&config).unwrap();
     drop(server);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_websocket_client_that_leaves_closes_the_panel() {
+    serving(async |served| {
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(browser.read().await, state(OrbState::Idle));
+        assert!(served.handle.from_orb.try_recv().is_err(), "connected");
+
+        drop(browser);
+        assert_eq!(
+            timeout(WAIT, served.handle.from_orb.recv()).await,
+            Ok(Some(FromOrb::PanelClosed {}))
+        );
+        assert!(served.taps.try_recv().is_err());
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]

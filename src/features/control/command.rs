@@ -16,7 +16,8 @@ pub(crate) enum Command {
     Memory(MemoryCommand),
     /// "close it" or "hide that": hide the panel on the orb screen. No model call.
     Close,
-    /// "bring up the stats" and its fixed variants: show a panel. No model call.
+    /// "bring up the stats", "show the camera" and their fixed variants: show a
+    /// panel. No model call.
     Show(PanelName),
     /// `/recall <question>`: run the question as a prompt with a memory search forced.
     Recall(String),
@@ -74,6 +75,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/reset",           "clear the conversation context and start a new session"),
     ("/listen",          "speak instead of typing; Enter sends what you said"),
     ("bring up the stats", "show the stats on the screen (\"show the stats\" works too)"),
+    ("show the camera",  "put the camera's live picture on the screen (\"bring up the camera\" works too)"),
     ("close it",         "hide the panel on the screen (\"hide that\" works too)"),
     ("/stop",            "stop speaking"),
     ("/help",            "show this list"),
@@ -115,8 +117,8 @@ pub(crate) fn parse(input: String) -> Command {
     if is_close_phrase(trimmed) {
         return Command::Close;
     }
-    if is_show_stats_phrase(trimmed) {
-        return Command::Show(PanelName::Stats);
+    if let Some(panel) = shown_by_phrase(trimmed) {
+        return Command::Show(panel);
     }
 
     if is_list_facts_phrase(trimmed) {
@@ -325,6 +327,15 @@ const SHOW_STATS_PHRASES: &[&str] = &[
     "open the dashboard",
 ];
 
+/// The requests for the camera panel that skip the model, after `request_core`
+/// (jarvis-ui ticket 11, C5). Anything else ("what does the camera see?") is left
+/// to the model.
+const SHOW_CAMERA_PHRASES: &[&str] = &[
+    "show the camera",
+    "bring up the camera",
+    "show me the camera",
+];
+
 /// Polite words around a request that do not change it: a leading "please",
 /// "okay" or "jarvis", and a trailing "please" or "again".
 const LEADING_FILLERS: &[&str] = &["please ", "okay ", "ok ", "jarvis "];
@@ -352,8 +363,16 @@ fn request_core(trimmed: &str) -> String {
     core
 }
 
-fn is_show_stats_phrase(trimmed: &str) -> bool {
-    SHOW_STATS_PHRASES.contains(&request_core(trimmed).as_str())
+/// The panel a fixed show phrase asks for, if `trimmed` is one.
+fn shown_by_phrase(trimmed: &str) -> Option<PanelName> {
+    let core = request_core(trimmed);
+    if SHOW_STATS_PHRASES.contains(&core.as_str()) {
+        Some(PanelName::Stats)
+    } else if SHOW_CAMERA_PHRASES.contains(&core.as_str()) {
+        Some(PanelName::Camera)
+    } else {
+        None
+    }
 }
 
 /// "forget that", optionally followed by punctuation and/or "please".

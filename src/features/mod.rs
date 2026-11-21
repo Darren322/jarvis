@@ -1,4 +1,5 @@
 pub(crate) mod assistant;
+pub(crate) mod camera;
 pub(crate) mod control;
 pub(crate) mod conversation;
 pub(crate) mod listening;
