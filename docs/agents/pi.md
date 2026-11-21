@@ -31,7 +31,7 @@ Things that went wrong with the wrapper on 2026-11-15:
 
 | Port | What | Started as |
 | --- | --- | --- |
-| 8080 | Gemma (`unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL`) | `llama-server ... -t 4 -c 8192 --parallel 2 -b 512 -ub 128 --jinja --temp 0 --reasoning off`; 2 slots of 4,096 tokens each (with an explicit `--parallel` the context is divided between the slots). Changed 2026-11-15 from `-c 2048` with 4 automatic slots; the old unit file is `~/jarvis-gemma.service.bak-2026-11-15` |
+| 8080 | Gemma (`unsloth/gemma-4-E2B-it-qat-GGUF:UD-Q4_K_XL`) | `llama-server ... -t 4 -c 10240 --parallel 2 -b 512 -ub 128 --jinja --temp 0 --reasoning off`; 2 slots of 5,120 tokens each (with an explicit `--parallel` the context is divided between the slots). Changed 2026-11-21 from `-c 8192` (2 slots of 4,096) at Darren's request, because the tools grew (jarvis-ui 12); the previous unit file is `~/jarvis-gemma.service.bak-2026-11-21`. Changed 2026-11-15 from `-c 2048` with 4 automatic slots (`~/jarvis-gemma.service.bak-2026-11-15`) |
 | 8081 | BGE embeddings (`bge-small-en-v1.5`) | `llama-server --embedding --ctx-size 512 --parallel 1` |
 | 8082 | Speech-to-text (`whisper-medium` on the Hailo-10H) | `scripts/stt/jarvis-stt.service` |
 
