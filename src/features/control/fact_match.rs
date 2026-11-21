@@ -7,7 +7,7 @@
 /// Words that carry no meaning in a "forget" request and are dropped from the detail.
 const FILLER_WORDS: &[&str] = &[
     "that", "my", "me", "i", "the", "a", "an", "is", "are", "was", "of", "about", "please",
-    "called", "named",
+    "called", "named", "you",
 ];
 
 /// Whether `fact` is what `detail` points at: after dropping filler words from

@@ -8,6 +8,8 @@ fn a_detail_matches_when_each_meaningful_word_starts_a_word_of_the_fact() {
     let cases: &[(&str, &str, bool)] = &[
         // The transcribed sentence from the Pi.
         ("that my sister name is Mia.", SISTER, true),
+        // Whisper added a stray "you" on the Pi.
+        ("that my sister's name is Mia? you", SISTER, true),
         ("my sister name is Maya please", SISTER, false),
         // Prefixes, case and punctuation.
         ("name", SISTER, true),

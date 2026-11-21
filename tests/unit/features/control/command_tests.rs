@@ -127,6 +127,12 @@ fn parses_each_command_and_its_nearest_non_command() {
         // ...anything more is a detail to search for.
         ("forget that file from yesterday", memory(MemoryCommand::ForgetDetail("that file from yesterday".into()))),
         ("forget my preferred editor", memory(MemoryCommand::ForgetDetail("my preferred editor".into()))),
+        // As transcribed on the Pi on 2026-11-21, trailing "you" included.
+        ("Can you forget that my sister's name is Mia? you", memory(MemoryCommand::ForgetDetail("that my sister's name is Mia? you".into()))),
+        ("Jarvis, could you please forget that?", memory(MemoryCommand::ForgetFocus)),
+        ("would you forget my editor", memory(MemoryCommand::ForgetDetail("my editor".into()))),
+        ("can you forgetting", Command::Prompt("can you forgetting".into())),
+        ("can you tell me what to forget", Command::Prompt("can you tell me what to forget".into())),
         // Only a leading "forget" is a command.
         ("I forget that the model is local", Command::Prompt("I forget that the model is local".into())),
         // A mistyped command is never sent to the model; a path or a lone slash still is.

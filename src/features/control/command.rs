@@ -151,12 +151,15 @@ pub(crate) fn parse(input: String) -> Command {
         return Command::Memory(MemoryCommand::Import(path.trim_start().to_owned()));
     }
 
-    if let Some(suffix) = strip_leading_phrase(trimmed, "forget that")
+    // "Can you forget that ..." is a forget too: as a prompt, Gemma would only claim
+    // it had forgotten.
+    let request = strip_request_prefixes(trimmed);
+    if let Some(suffix) = strip_leading_phrase(request, "forget that")
         && is_deictic_suffix(suffix)
     {
         return Command::Memory(MemoryCommand::ForgetFocus);
     }
-    if let Some(detail) = strip_leading_phrase(trimmed, "forget ") {
+    if let Some(detail) = strip_leading_phrase(request, "forget ") {
         let detail = detail.trim();
         if !detail.is_empty() {
             return Command::Memory(MemoryCommand::ForgetDetail(detail.to_owned()));
@@ -209,6 +212,24 @@ fn spoken_remember(trimmed: &str) -> Option<Command> {
     } else {
         Command::Remember(fact.to_owned())
     })
+}
+
+/// Polite openings a spoken forget may have ("Can you forget that ..."), each a whole
+/// phrase followed by a space or punctuation.
+const REQUEST_PREFIXES: &[&str] = &["can you", "could you", "would you", "will you"];
+
+/// `line` without any leading `SPOKEN_PREFIXES` or `REQUEST_PREFIXES`, in any order
+/// ("Jarvis, could you please forget ..."), and the commas or spaces after them.
+fn strip_request_prefixes(line: &str) -> &str {
+    let mut line = strip_spoken_prefixes(line);
+    while let Some(rest) = REQUEST_PREFIXES
+        .iter()
+        .find_map(|prefix| strip_whole_word(line, prefix))
+    {
+        line =
+            strip_spoken_prefixes(rest.trim_start_matches(|c: char| c.is_whitespace() || c == ','));
+    }
+    line
 }
 
 /// `line` without any leading `SPOKEN_PREFIXES` and the commas or spaces after them.
