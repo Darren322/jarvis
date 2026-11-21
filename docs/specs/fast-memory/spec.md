@@ -1,7 +1,7 @@
 # Fast memory
 
 Status: active
-Resume here: 01 to 06, 08, 10 and 12 are done; 03 to 06 and 12 (the facts list and its voice fixes, through `5b16e6a`, schema v6 on the 8 GB Pi; backup `data/jarvis.sqlite3.bak-2026-11-21`) were closed by Darren on 2026-11-21 after his voice check. "What facts do you have" is the spoken phrase for the list ("list my facts" is misheard by speech-to-text). 09 (fresh conversation after 30 minutes) is in review until a model turn after a real 30-minute gap is seen in the Pi log. 07 (a recall tool) is wontfix (Darren, 2026-11-21). 11 (warm the cache after a noted fact) is needs-triage: Darren chose to measure first (2026-11-21); no clean Pi number yet, estimate in its Comments.
+Resume here: 01 to 06, 08, 10 and 12 are done; 03 to 06 and 12 (the facts list and its voice fixes, through `5b16e6a`, schema v6 on the 8 GB Pi; backup `data/jarvis.sqlite3.bak-2026-11-21`) were closed by Darren on 2026-11-21 after his voice check. "What facts do you have" is the spoken phrase for the list ("list my facts" is misheard by speech-to-text). 09 (fresh conversation after 30 minutes) is in review until a model turn after a real 30-minute gap is seen in the Pi log. 07 (a recall tool) is wontfix (Darren, 2026-11-21). 11 (warm the cache after a noted fact) is wontfix: measured 3.57 s for the one answer after a new fact, against about 0.5 s (Darren, 2026-11-21). Only 09 is open.
 
 Settled with Darren in a grilling session on 2026-11-14. This file is the source of truth for the epic. Tickets are in `issues/`; their `Status:` lines are the progress record.
 
