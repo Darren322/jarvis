@@ -3,7 +3,9 @@ use rig_agent::tool::Tool;
 use rig_core::serde_json::{self, json};
 
 use crate::tools::allowed_tool;
-use crate::tools::current_time::{CurrentTimeTool, format_current_time};
+use crate::tools::current_time::{
+    CurrentTimeArgs, CurrentTimeTool, TimePart, answer, format_current_time,
+};
 
 fn zoned(text: &str) -> Zoned {
     text.parse().expect("the test instant is valid")
@@ -162,10 +164,57 @@ fn current_time_tool_has_expected_contract() {
         CurrentTimeTool.parameters(),
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "part": {
+                    "type": "string",
+                    "enum": ["time", "date", "all"],
+                    "description": "What the question asks for."
+                }
+            },
+            "required": ["part"],
             "additionalProperties": false
         })
     );
+}
+
+#[test]
+fn each_part_returns_only_what_it_names() {
+    let at = || format_current_time(&zoned("2026-11-21T19:38:00[Asia/Singapore]"));
+    let cases = [
+        (TimePart::Time, json!({ "time": "7:38 PM" })),
+        (
+            TimePart::Date,
+            json!({ "weekday": "Saturday", "date": "21 November 2026" }),
+        ),
+        (
+            TimePart::All,
+            json!({
+                "time": "7:38 PM",
+                "weekday": "Saturday",
+                "date": "21 November 2026",
+                "time_zone": "Asia/Singapore",
+                "utc_offset": "+08:00"
+            }),
+        ),
+    ];
+    for (part, expected) in cases {
+        assert_eq!(answer(at(), part), expected, "{part:?}");
+    }
+}
+
+#[test]
+fn the_part_is_read_from_the_arguments_and_defaults_to_all() {
+    let cases = [
+        (json!({ "part": "time" }), TimePart::Time),
+        (json!({ "part": "date" }), TimePart::Date),
+        (json!({ "part": "all" }), TimePart::All),
+        (json!({}), TimePart::All),
+    ];
+    for (arguments, part) in cases {
+        let args: CurrentTimeArgs =
+            serde_json::from_value(arguments.clone()).expect("the arguments are valid");
+        assert_eq!(args.part, part, "{arguments}");
+    }
 }
 
 #[test]
@@ -177,8 +226,9 @@ fn the_description_covers_the_questions_and_the_unknown_zone() {
         "date",
         "day of the week",
         "never guess",
-        "Answer only what was asked",
-        "say just the time",
+        "Set `part`",
+        "\"time\" for the time of day",
+        "Say only what it returns",
         "Etc/Unknown",
     ] {
         assert!(description.contains(word), "{word}");
@@ -186,10 +236,24 @@ fn the_description_covers_the_questions_and_the_unknown_zone() {
 }
 
 #[test]
-fn the_rule_accepts_empty_arguments_and_rejects_unknown_ones() {
+fn the_rule_accepts_the_parts_and_rejects_anything_else() {
     let rule = allowed_tool("current_time").expect("current_time is allowed");
 
-    assert!(rule.accepts_arguments(&json!({})));
-    assert!(!rule.accepts_arguments(&json!({"zone": "UTC"})));
-    assert!(!rule.accepts_arguments(&json!(null)));
+    for accepted in [
+        json!({"part": "time"}),
+        json!({"part": "date"}),
+        json!({"part": "all"}),
+        json!({}),
+    ] {
+        assert!(rule.accepts_arguments(&accepted), "{accepted}");
+    }
+    for rejected in [
+        json!({"part": "hour"}),
+        json!({"part": "Time"}),
+        json!({"part": "time", "zone": "UTC"}),
+        json!({"zone": "UTC"}),
+        json!(null),
+    ] {
+        assert!(!rule.accepts_arguments(&rejected), "{rejected}");
+    }
 }

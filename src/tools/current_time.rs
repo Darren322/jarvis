@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use jiff::Zoned;
 use rig_agent::tool::{Tool, ToolContext};
-use rig_core::serde_json::json;
+use rig_core::serde_json::{Value, json};
 use serde::Serialize;
 
 /// 12-hour, unpadded hour, as it is said: `7:31 PM`, `12:00 AM`. Darren heard
@@ -19,7 +19,27 @@ const UNKNOWN_TIME_ZONE: &str = "Etc/Unknown";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CurrentTimeArgs {}
+pub struct CurrentTimeArgs {
+    /// Which part of the reading the question asks for. The schema requires it;
+    /// a call without it still gets the whole reading rather than failing.
+    #[serde(default)]
+    pub part: TimePart,
+}
+
+/// What the model may ask the clock for. The tool returns only that part,
+/// because a small model says everything it is given: told the date for "what
+/// time is it", it read the date out too (Darren, 2026-11-21).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimePart {
+    /// The time of day only.
+    Time,
+    /// The weekday and the date only.
+    Date,
+    /// Everything, with the time zone.
+    #[default]
+    All,
+}
 
 /// The clock reading the model is told, in the Pi's own time zone.
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -51,6 +71,15 @@ pub(crate) fn format_current_time(now: &Zoned) -> CurrentTime {
     }
 }
 
+/// The part of `reading` that `part` asks for, as the tool's JSON output.
+pub(crate) fn answer(reading: CurrentTime, part: TimePart) -> Value {
+    match part {
+        TimePart::Time => json!({ "time": reading.time }),
+        TimePart::Date => json!({ "weekday": reading.weekday, "date": reading.date }),
+        TimePart::All => json!(reading),
+    }
+}
+
 /// Tells the model the real time, so it never guesses it.
 pub(crate) struct CurrentTimeTool;
 
@@ -58,31 +87,38 @@ impl Tool for CurrentTimeTool {
     const NAME: &'static str = "current_time";
 
     type Args = CurrentTimeArgs;
-    type Output = CurrentTime;
+    type Output = Value;
     type Error = Infallible;
 
     fn description(&self) -> String {
-        "Returns the current local time, the weekday, the date, the time zone and its UTC \
-         offset, read from this Pi's clock. Use it for any question about the current time, \
-         date or day of the week, and never guess them. Answer only what was asked: for the \
-         time, say just the time as given (\"It's 7:31 PM.\"), and add the weekday, date or \
-         time zone only when the question asks for them. If the time zone is \"Etc/Unknown\", \
-         say the time zone is unknown and do not guess one."
+        "Reads this Pi's clock. Use it for any question about the current time, date or day \
+         of the week, and never guess them. Set `part` to what the question asks for: \
+         \"time\" for the time of day (\"what time is it\"), \"date\" for the day or date \
+         (\"what day is it\", \"what's the date\"), \"all\" only when both are asked or the \
+         time zone is. Say only what it returns, e.g. \"It's 7:31 PM.\" If the time zone is \
+         \"Etc/Unknown\", say the time zone is unknown and do not guess one."
             .to_string()
     }
     fn parameters(&self) -> rig_core::serde_json::Value {
         json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "part": {
+                    "type": "string",
+                    "enum": ["time", "date", "all"],
+                    "description": "What the question asks for."
+                }
+            },
+            "required": ["part"],
             "additionalProperties": false
         })
     }
     async fn call(
         &self,
         _context: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        Ok(format_current_time(&Zoned::now()))
+        Ok(answer(format_current_time(&Zoned::now()), args.part))
     }
 }
 
