@@ -2482,6 +2482,76 @@ async fn forget_that_right_after_a_save_removes_the_saved_fact() {
     assert!(harness.model.requests().is_empty());
 }
 
+async fn seed_fact(harness: &Harness, text: &str) {
+    harness
+        .session
+        .facts_repository()
+        .expect("the archive is open")
+        .insert(text, crate::storage::FactOrigin::Noted)
+        .await
+        .expect("fact is saved");
+}
+
+/// The fake speech disables itself after its first playback, so each test checks one
+/// spoken reply. Replies of memory commands go to stdout, not the presenter, so the
+/// script cannot wait for them: lines are handled in order and the `/exit` after the
+/// last one ends the loop.
+fn speech_for_one_reply() -> Option<FailingSpeech> {
+    let (release_sender, release) = oneshot::channel();
+    release_sender.send(()).expect("the receiver is alive");
+    Some(speech_that_plays_until_released(release))
+}
+
+#[tokio::test]
+async fn the_spoken_facts_listing_is_said_with_its_number_and_origin() {
+    let mut harness = harness().await;
+    seed_fact(&harness, "The user lives in Leeds.").await;
+    let mut speech = speech_for_one_reply();
+
+    run_with(&mut harness, &mut speech, async |user| {
+        user.type_(b"Hey Jarvis, what facts do you have?\n").await;
+    })
+    .await;
+
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(speech.calls, ["Fact 1, noted: The user lives in Leeds."]);
+    assert!(harness.model.requests().is_empty());
+}
+
+#[tokio::test]
+async fn a_forget_reply_is_spoken_but_a_memory_listing_is_not() {
+    let mut harness = harness().await;
+    seed_fact(&harness, "The user has a cat named Miso.").await;
+    let mut speech = speech_for_one_reply();
+
+    run_with(&mut harness, &mut speech, async |user| {
+        user.type_(b"/memories\n").await;
+        user.type_(b"Forget that my cat name is Miso.\n").await;
+    })
+    .await;
+
+    let speech = speech.expect("speech stays owned by the caller");
+    assert_eq!(
+        speech.calls,
+        ["Forgot that: The user has a cat named Miso."]
+    );
+    assert!(saved_facts(&harness).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_spoken_forget_with_loose_wording_removes_the_fact_with_speech_off() {
+    let mut harness = harness().await;
+
+    run_script(&mut harness, async |user| {
+        user.type_(b"remember that my sister is named Mia\n").await;
+        user.wait_for_notice_containing("Got it.").await;
+        user.type_(b"Forget that my sister name is Mia.\n").await;
+    })
+    .await;
+
+    assert!(saved_facts(&harness).await.is_empty());
+}
+
 /// Whether any message of the first model request mentions `text`.
 fn first_request_mentions(harness: &Harness, text: &str) -> bool {
     format!("{:?}", harness.model.requests()[0].chat_history).contains(text)

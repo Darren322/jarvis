@@ -413,8 +413,8 @@ async fn listing_facts_shows_number_origin_and_text_and_an_empty_list_says_so() 
     assert_eq!(
         listed,
         [
-            info(&format!("{} [stated] my cat is Miso", stated.0)),
-            info(&format!("{} [noted] the user lives in Leeds", noted.0)),
+            info(&format!("Fact {}, stated: my cat is Miso", stated.0)),
+            info(&format!("Fact {}, noted: the user lives in Leeds", noted.0)),
         ]
     );
 }
@@ -431,7 +431,10 @@ async fn a_fact_number_stays_the_same_after_an_earlier_fact_is_removed() {
         .await;
     let listed = fixture.run(&mut control, MemoryCommand::Facts).await;
 
-    assert_eq!(listed, [info(&format!("{} [stated] second", second.0))]);
+    assert_eq!(
+        listed,
+        [info(&format!("Fact {}, stated: second", second.0))]
+    );
 }
 
 #[tokio::test]
@@ -508,6 +511,49 @@ async fn forget_detail_removes_a_unique_fact_match_ignoring_case() {
     assert_eq!(
         fact_texts(&fixture.session).await,
         ["the user lives in Leeds"]
+    );
+}
+
+#[tokio::test]
+async fn forget_detail_finds_a_fact_by_its_words_as_transcribed() {
+    let mut fixture = Fixture::open("detail-words").await;
+    let mut control = MemoryControl::default();
+    add_fact(
+        &fixture,
+        "The user has a sister named Mia.",
+        FactOrigin::Noted,
+    )
+    .await;
+    add_fact(&fixture, "The user lives in Leeds.", FactOrigin::Noted).await;
+
+    let wrong = fixture
+        .run(
+            &mut control,
+            MemoryCommand::ForgetDetail("that my sister name is Maya please".into()),
+        )
+        .await;
+    assert!(says(&wrong, "could not find one memory or fact"));
+    assert_eq!(fact_texts(&fixture.session).await.len(), 2);
+
+    let only_filler = fixture
+        .run(&mut control, MemoryCommand::ForgetDetail("that my".into()))
+        .await;
+    assert!(says(&only_filler, "nothing was forgotten"));
+    assert_eq!(fact_texts(&fixture.session).await.len(), 2);
+
+    let right = fixture
+        .run(
+            &mut control,
+            MemoryCommand::ForgetDetail("that my sister name is Mia.".into()),
+        )
+        .await;
+    assert_eq!(
+        right,
+        [info("Forgot that: The user has a sister named Mia.")]
+    );
+    assert_eq!(
+        fact_texts(&fixture.session).await,
+        ["The user lives in Leeds."]
     );
 }
 

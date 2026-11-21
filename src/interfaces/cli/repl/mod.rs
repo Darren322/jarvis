@@ -240,7 +240,17 @@ where
                         println!("Conversation context reset.");
                     }
                     Command::Memory(command) => {
-                        print_notices(&memory_control.run(command, memory, session).await);
+                        let spoken = command.is_spoken();
+                        let notices = memory_control.run(command, memory, session).await;
+                        print_notices(&notices);
+                        if spoken && let Some(speech) = available(speech, speech_available) {
+                            // Fact replies are said as well as shown, like "Got it."
+                            let lines: Vec<&str> = notices.iter().map(Notice::text).collect();
+                            speak_lines(speech, &lines).await;
+                            if speech.is_disabled() {
+                                speech_available = false;
+                            }
+                        }
                         idle_work_due = true;
                     }
                     Command::Remember(fact) => {

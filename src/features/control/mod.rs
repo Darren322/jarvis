@@ -8,6 +8,7 @@
 //! as `/stop` or `/exit`.
 
 mod command;
+mod fact_match;
 mod memory;
 mod panel;
 mod tap;

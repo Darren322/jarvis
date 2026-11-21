@@ -43,6 +43,20 @@ pub(crate) enum MemoryCommand {
     Rebuild,
 }
 
+impl MemoryCommand {
+    /// Whether the reply is short enough to say aloud: the fact and forget commands,
+    /// whose only audible answer is on a screenless Pi. Memory listings, imports, status
+    /// and rebuild are long or technical, so they are only printed.
+    pub(crate) fn is_spoken(&self) -> bool {
+        match self {
+            Self::Facts | Self::ForgetFact(_) | Self::ForgetFocus | Self::ForgetDetail(_) => true,
+            Self::List(_) | Self::Forget(_) | Self::Import(_) | Self::Status | Self::Rebuild => {
+                false
+            }
+        }
+    }
+}
+
 /// The single list of commands; `help_text` is generated from it.
 #[rustfmt::skip]
 pub(super) const COMMANDS: &[(&str, &str)] = &[
@@ -53,7 +67,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("/recall <question>", "answer <question> after searching old conversations"),
     ("/remember <fact>", "save a fact about you (\"remember that <fact>\" works too)"),
     ("/import <path>",   "remember a .txt or .md file (up to 1 MiB)"),
-    ("/memory facts",   "list saved facts: a number, who gave it (stated or noted) and the text"),
+    ("/memory facts",   "list saved facts: a number, who gave it (stated or noted) and the text (\"list my facts\" works too)"),
     ("/memory forget <number>", "forget the fact with that number (numbers stay the same as facts come and go)"),
     ("/memory status",   "show memory counts and embedder state"),
     ("/memory rebuild",  "re-embed every memory while idle"),
@@ -103,6 +117,10 @@ pub(crate) fn parse(input: String) -> Command {
     }
     if is_show_stats_phrase(trimmed) {
         return Command::Show(PanelName::Stats);
+    }
+
+    if is_list_facts_phrase(trimmed) {
+        return Command::Memory(MemoryCommand::Facts);
     }
 
     if let Some(query) = trimmed.strip_prefix("/memories ") {
@@ -175,13 +193,7 @@ const SPOKEN_PREFIXES: &[&str] = &["hey jarvis", "jarvis", "okay", "ok", "please
 /// not a save ("remember when we...", "remember that time...", "remembering...").
 /// The fact keeps the words as said, minus the punctuation joining it to the phrase.
 fn spoken_remember(trimmed: &str) -> Option<Command> {
-    let mut line = trimmed;
-    while let Some(rest) = SPOKEN_PREFIXES
-        .iter()
-        .find_map(|prefix| strip_whole_word(line, prefix))
-    {
-        line = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
-    }
+    let line = strip_spoken_prefixes(trimmed);
     let after = strip_whole_word(line, "remember that")?;
     let first_word = after.split_whitespace().next().unwrap_or_default();
     let first_word = first_word.trim_end_matches(is_punctuation);
@@ -197,6 +209,47 @@ fn spoken_remember(trimmed: &str) -> Option<Command> {
     } else {
         Command::Remember(fact.to_owned())
     })
+}
+
+/// `line` without any leading `SPOKEN_PREFIXES` and the commas or spaces after them.
+fn strip_spoken_prefixes(line: &str) -> &str {
+    let mut line = line;
+    while let Some(rest) = SPOKEN_PREFIXES
+        .iter()
+        .find_map(|prefix| strip_whole_word(line, prefix))
+    {
+        line = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+    }
+    line
+}
+
+/// The spoken requests to list the facts, after `request_core`-style clean-up. Anything
+/// longer ("what facts do you know about the moon") is left to the model.
+const LIST_FACTS_PHRASES: &[&str] = &[
+    "what facts do you have",
+    "what facts have you saved",
+    "what facts have you noted",
+    "what have you noted",
+    "list my facts",
+    "list the facts",
+    "list facts",
+    "list all my facts",
+    "show my facts",
+    "show me my facts",
+];
+
+/// A request to list the facts, ignoring case, spoken prefixes ("hey Jarvis"),
+/// closing punctuation and a trailing "please".
+fn is_list_facts_phrase(trimmed: &str) -> bool {
+    let line = strip_spoken_prefixes(trimmed)
+        .trim_end_matches(is_punctuation)
+        .to_lowercase();
+    let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line = line
+        .strip_suffix(" please")
+        .unwrap_or(&line)
+        .trim_end_matches(|c: char| c.is_whitespace() || is_punctuation(c));
+    LIST_FACTS_PHRASES.contains(&line)
 }
 
 /// `strip_leading_phrase`, but the phrase must end at a word boundary, so "ok" does not

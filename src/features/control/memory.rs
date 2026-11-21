@@ -9,7 +9,7 @@ use crate::storage::{
     MemoryKind, MemorySummary, SourceId,
 };
 
-use super::{MemoryCommand, Notice, command::REMEMBER_USAGE};
+use super::{MemoryCommand, Notice, command::REMEMBER_USAGE, fact_match::detail_matches_fact};
 
 const UNAVAILABLE: &str = "Local memory storage is unavailable.";
 
@@ -143,7 +143,8 @@ impl MemoryControl {
         }
     }
 
-    /// `/memory facts`: one line per fact, numbered by its stable id. Listing moves
+    /// `/memory facts` or a spoken request: one line per fact, "Fact <id>, <stated|noted>:
+    /// <text>", numbered by its stable id, so it reads the same typed and spoken. Listing moves
     /// the focus off whatever it pointed at.
     async fn list_facts(&mut self, session: &ConversationSession) -> Vec<Notice> {
         self.focus = None;
@@ -159,7 +160,7 @@ impl MemoryControl {
                         FactOrigin::Stated => "stated",
                         FactOrigin::Noted => "noted",
                     };
-                    Notice::Info(format!("{} [{origin}] {}", fact.id.0, fact.text))
+                    Notice::Info(format!("Fact {}, {origin}: {}", fact.id.0, fact.text))
                 })
                 .collect(),
             Err(error) => vec![Notice::Warning(format!(
@@ -275,9 +276,9 @@ impl MemoryControl {
         self.after_forget(result, session)
     }
 
-    /// Forgets the single item, memory or fact, whose text contains `detail` (ignoring
-    /// case). Memories are searched in the last listing and then the store; facts, all
-    /// of them. Ambiguity, across both together, forgets nothing.
+    /// Forgets the single item, memory or fact, that `detail` points at. A memory's text
+    /// must contain `detail` (ignoring case) and is searched in the last listing and then
+    /// the store; a fact matches by words (`detail_matches_fact`), among all of them. Ambiguity, across both together, forgets nothing.
     async fn forget_detail(
         &mut self,
         memory: Option<&MemoryService>,
@@ -317,7 +318,7 @@ impl MemoryControl {
         };
         let matching_facts: Vec<&Fact> = facts
             .iter()
-            .filter(|fact| fact.text.to_lowercase().contains(&needle))
+            .filter(|fact| detail_matches_fact(detail, &fact.text))
             .collect();
         match (memory_ids.as_slice(), matching_facts.as_slice()) {
             ([id], []) => {
