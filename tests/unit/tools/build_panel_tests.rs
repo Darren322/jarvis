@@ -1,6 +1,6 @@
 use orb_protocol::{
     BuiltPanel, GaugeSource, MAX_LIST_ITEMS, MAX_PANEL_PARTS, MAX_PANEL_TITLE_CHARS,
-    MAX_PART_TEXT_CHARS, MIN_LIST_ITEMS, MIN_PANEL_PARTS, PanelName, PanelPart, ToOrb,
+    MAX_PART_TEXT_CHARS, PanelName, PanelPart, ToOrb,
 };
 use rig_agent::{
     AgentBuilder,
@@ -14,7 +14,7 @@ use rig_core::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use super::{BuildPanelArgs, BuildPanelError, BuildPanelTool};
+use super::{BuildPanelArgs, BuildPanelError, BuildPanelTool, LIST_TITLE, NOTE_TITLE};
 use crate::features::{
     assistant::Assistant,
     panel::{PANEL_TIMEOUT, PanelHandle, channel},
@@ -26,9 +26,7 @@ use crate::tools::allowed_tool;
 fn facts_arguments() -> Value {
     json!({
         "title": "Facts",
-        "parts": [
-            {"kind": "list", "title": "What I know", "items": ["Darren likes tea", "Darren lives in Penang"]}
-        ]
+        "items": ["Darren likes tea", "Darren lives in Penang"]
     })
 }
 
@@ -36,39 +34,31 @@ fn facts_arguments() -> Value {
 fn five_parts_arguments() -> Value {
     json!({
         "title": "Pi",
-        "parts": [
-            {"kind": "gauge", "source": "cpu"},
-            {"kind": "gauge", "source": "temperature"},
-            {"kind": "gauge", "source": "ram"},
-            {"kind": "gauge", "source": "storage"},
-            {"kind": "gauge", "source": "llama"}
-        ]
+        "gauges": ["cpu", "temperature", "ram", "storage", "llama"]
     })
 }
 
 #[test]
-fn the_argument_rule_accepts_every_catalog_part_and_rejects_anything_else() {
+fn the_argument_rule_accepts_the_flat_fields_and_rejects_anything_else() {
     let rule = allowed_tool("build_panel").expect("build_panel is allowed");
     let accepted = [
         facts_arguments(),
-        json!({"title": "Note", "parts": [{"kind": "card", "title": "Plants", "text": "Water them"}]}),
-        json!({"title": "Pi", "parts": [{"kind": "gauge", "source": "cpu"}, {"kind": "gauge", "source": "bge"}]}),
-        // Over a limit is still the right shape: the tool rejects it with a
-        // message, so the run goes on and the model can say what was wrong.
+        json!({"title": "Note", "text": "Water the plants"}),
+        json!({"title": "Pi", "gauges": ["cpu", "bge"]}),
+        json!({"title": "All", "items": ["milk"], "text": "Before six", "gauges": ["ram"]}),
+        // Over a limit, or empty, is still the right shape: the tool rejects it
+        // with a message, so the run goes on and the model can say what was wrong.
         five_parts_arguments(),
-        json!({"title": "Empty", "parts": []}),
+        json!({"title": "Empty"}),
     ];
     let rejected = [
-        json!({"title": "T", "parts": [{"kind": "chart", "title": "CPU"}]}),
-        json!({"title": "T", "parts": [{"kind": "timer", "seconds": 600}]}),
-        json!({"title": "T", "parts": [{"kind": "camera"}]}),
-        json!({"title": "T", "parts": [{"kind": "gauge", "source": "weather"}]}),
-        json!({"title": "T", "parts": [{"kind": "gauge", "source": "cpu", "value": 12}]}),
-        json!({"title": "T", "parts": [{"kind": "card", "title": "a", "text": "b", "html": "<b>"}]}),
-        json!({"title": "T", "parts": [{"kind": "list", "title": "a"}]}),
-        json!({"title": "T", "parts": [{"kind": "gauge", "source": "cpu"}], "extra": 1}),
-        json!({"parts": [{"kind": "gauge", "source": "cpu"}]}),
-        json!({"title": "T"}),
+        json!({"title": "T", "gauges": ["weather"]}),
+        json!({"title": "T", "gauges": ["CPU"]}),
+        json!({"title": "T", "items": [1, 2]}),
+        json!({"title": "T", "text": ["a", "b"]}),
+        json!({"title": "T", "items": ["a"], "extra": 1}),
+        json!({"title": "T", "parts": [{"kind": "card", "title": "a", "text": "b"}]}),
+        json!({"items": ["milk"]}),
         json!([]),
     ];
     for arguments in accepted {
@@ -76,6 +66,53 @@ fn the_argument_rule_accepts_every_catalog_part_and_rejects_anything_else() {
     }
     for arguments in rejected {
         assert!(!rule.accepts_arguments(&arguments), "{arguments}");
+    }
+}
+
+#[test]
+fn the_fields_become_a_list_a_note_and_gauges_in_that_order() {
+    let parts = |arguments: Value| {
+        from_value::<BuildPanelArgs>(arguments)
+            .expect("valid arguments")
+            .into_parts()
+    };
+    let list = |items: &[&str]| PanelPart::List {
+        title: LIST_TITLE.to_owned(),
+        items: items.iter().map(|item| (*item).to_owned()).collect(),
+    };
+    let note = |text: &str| PanelPart::Card {
+        title: NOTE_TITLE.to_owned(),
+        text: text.to_owned(),
+    };
+    let gauge = |source| PanelPart::Gauge { source };
+    let cases = [
+        (
+            facts_arguments(),
+            vec![list(&["Darren likes tea", "Darren lives in Penang"])],
+        ),
+        (
+            json!({"title": "T", "text": "Before six"}),
+            vec![note("Before six")],
+        ),
+        (
+            json!({"title": "T", "gauges": ["cpu", "temperature"]}),
+            vec![gauge(GaugeSource::Cpu), gauge(GaugeSource::Temperature)],
+        ),
+        (
+            json!({"title": "T", "gauges": ["ram"], "text": "Note", "items": ["milk"]}),
+            vec![list(&["milk"]), note("Note"), gauge(GaugeSource::Ram)],
+        ),
+        // Empty fields add nothing, so the model's "" or [] is not a part.
+        (
+            json!({"title": "T", "items": [], "text": "  ", "gauges": []}),
+            vec![],
+        ),
+        (json!({"title": "T"}), vec![]),
+    ];
+    for (arguments, expected) in cases {
+        let (title, got) = parts(arguments.clone());
+        assert_eq!(title, arguments["title"].as_str().expect("a title"));
+        assert_eq!(got, expected, "{arguments}");
     }
 }
 
@@ -93,55 +130,26 @@ fn wire_name(source: GaugeSource) -> &'static str {
 }
 
 #[test]
-fn the_schema_states_the_three_parts_their_sources_and_every_limit() {
+fn the_schema_is_flat_and_states_every_limit_and_source() {
     let (panels, _inbox) = channel();
     let schema = BuildPanelTool::new(panels).parameters();
+    // Gemma's chat template cannot show nested alternatives to the model.
+    let text = schema.to_string();
+    for nested in ["anyOf", "oneOf", "const"] {
+        assert!(!text.contains(nested), "{nested}: {text}");
+    }
     assert_eq!(schema["additionalProperties"], json!(false));
-    assert_eq!(schema["required"], json!(["title", "parts"]));
+    assert_eq!(schema["required"], json!(["title"]));
+    let field = |name: &str| &schema["properties"][name];
+    assert_eq!(field("title")["maxLength"], json!(MAX_PANEL_TITLE_CHARS));
+    assert_eq!(field("text")["maxLength"], json!(MAX_PART_TEXT_CHARS));
+    assert_eq!(field("items")["maxItems"], json!(MAX_LIST_ITEMS));
     assert_eq!(
-        schema["properties"]["title"]["maxLength"],
-        json!(MAX_PANEL_TITLE_CHARS)
-    );
-    let parts = &schema["properties"]["parts"];
-    assert_eq!(parts["minItems"], json!(MIN_PANEL_PARTS));
-    assert_eq!(parts["maxItems"], json!(MAX_PANEL_PARTS));
-
-    let kinds = parts["items"]["anyOf"]
-        .as_array()
-        .expect("the parts are alternatives");
-    let kind = |name: &str| {
-        kinds
-            .iter()
-            .find(|part| part["properties"]["kind"]["const"] == json!(name))
-            .unwrap_or_else(|| panic!("the schema has a {name} part"))
-    };
-    assert_eq!(kinds.len(), 3);
-    for part in kinds {
-        assert_eq!(part["additionalProperties"], json!(false));
-    }
-
-    let card = kind("card");
-    assert_eq!(card["required"], json!(["kind", "title", "text"]));
-    for field in ["title", "text"] {
-        assert_eq!(
-            card["properties"][field]["maxLength"],
-            json!(MAX_PART_TEXT_CHARS)
-        );
-    }
-
-    let list = kind("list");
-    assert_eq!(list["required"], json!(["kind", "title", "items"]));
-    assert_eq!(
-        list["properties"]["title"]["maxLength"],
+        field("items")["items"]["maxLength"],
         json!(MAX_PART_TEXT_CHARS)
     );
-    let items = &list["properties"]["items"];
-    assert_eq!(items["minItems"], json!(MIN_LIST_ITEMS));
-    assert_eq!(items["maxItems"], json!(MAX_LIST_ITEMS));
-    assert_eq!(items["items"]["maxLength"], json!(MAX_PART_TEXT_CHARS));
+    assert_eq!(field("gauges")["maxItems"], json!(MAX_PANEL_PARTS));
 
-    let gauge = kind("gauge");
-    assert_eq!(gauge["required"], json!(["kind", "source"]));
     let all_sources = [
         GaugeSource::Cpu,
         GaugeSource::Temperature,
@@ -151,7 +159,7 @@ fn the_schema_states_the_three_parts_their_sources_and_every_limit() {
         GaugeSource::Bge,
     ];
     let expected: Vec<_> = all_sources.into_iter().map(wire_name).collect();
-    assert_eq!(gauge["properties"]["source"]["enum"], json!(expected));
+    assert_eq!(field("gauges")["items"]["enum"], json!(expected));
     for name in expected {
         assert!(from_value::<GaugeSource>(json!(name)).is_ok(), "{name}");
     }
@@ -165,9 +173,9 @@ fn the_description_names_darrens_examples_and_says_jarvis_fills_the_gauges() {
         "show my facts as a list",
         "make me a shopping list",
         "show me the CPU and temperature as gauges",
-        "Jarvis fills in its value",
-        "never write a number",
-        "nothing on it is saved",
+        "never invent items",
+        "Jarvis fills in the gauges' values",
+        "never write or say them",
     ] {
         assert!(description.contains(phrase), "{phrase}: {description}");
     }
@@ -204,7 +212,7 @@ async fn calling_the_tool_shows_the_built_panel_and_tells_the_model() {
     let expected = BuiltPanel::new(
         "Facts".to_owned(),
         vec![PanelPart::List {
-            title: "What I know".to_owned(),
+            title: LIST_TITLE.to_owned(),
             items: vec![
                 "Darren likes tea".to_owned(),
                 "Darren lives in Penang".to_owned(),
@@ -356,7 +364,7 @@ async fn a_rejected_panel_sends_nothing_and_the_model_hears_which_limit_it_broke
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_part_not_in_the_catalog_is_stopped_by_the_argument_rule() {
+async fn arguments_of_the_wrong_shape_are_stopped_by_the_argument_rule() {
     let run = run(vec![
         call_turn(json!({"title": "T", "parts": [{"kind": "chart", "title": "CPU"}]})),
         text_turn("never reached"),
