@@ -158,3 +158,42 @@ async fn showing_with_the_panel_service_stopped_is_a_warning_not_a_crash() {
         Notice::Warning(_)
     ));
 }
+
+#[tokio::test(start_paused = true)]
+async fn close_it_closes_a_built_panel() {
+    let (panels, inbox) = channel();
+    let (to_orb, mut shown_to_orb) = mpsc::channel(16);
+    let (_events, from_orb) = mpsc::channel::<FromOrb>(16);
+    let task = tokio::spawn(async move {
+        match inbox
+            .run(Some(OrbHandle { to_orb, from_orb }), PANEL_TIMEOUT)
+            .await {}
+    });
+    let built = orb_protocol::BuiltPanel::new(
+        "Shopping".to_owned(),
+        vec![orb_protocol::PanelPart::List {
+            title: "To buy".to_owned(),
+            items: vec!["milk".to_owned()],
+        }],
+    )
+    .expect("within the limits");
+    panels
+        .show_built(built.clone())
+        .await
+        .expect("the panel task is running");
+    settle().await;
+
+    assert_eq!(parse("close it".to_owned()), Command::Close);
+    assert_eq!(
+        close_panel(&panels).await,
+        Notice::Info("Panel closed.".to_owned())
+    );
+    settle().await;
+    assert_eq!(
+        shown_to_orb.recv().await,
+        Some(ToOrb::ShowBuiltPanel(built))
+    );
+    assert_eq!(shown_to_orb.recv().await, Some(ToOrb::HidePanel {}));
+    assert_eq!(panels.shown(), None);
+    task.abort();
+}

@@ -12,6 +12,8 @@ const PANEL_CLOSED = '{"type":"panel_closed"}';
 const SHOW_STATS = '{"type":"show_panel","panel":"stats"}';
 const SHOW_CAMERA = '{"type":"show_panel","panel":"camera"}';
 const HIDE_PANEL = '{"type":"hide_panel"}';
+const SHOW_BUILT =
+  '{"type":"show_built_panel","title":"Pi","parts":[{"kind":"gauge","source":"cpu"},{"kind":"card","title":"Note","text":"<b>bold</b>"}]}';
 const STATS =
   '{"type":"stats","cpu_percent":12.5,"ram_used_bytes":2469606195,"ram_total_bytes":8464105472,"llama":"up","bge":"down"}';
 
@@ -78,6 +80,10 @@ function orbBox(): string[] {
 
 function panel(): HTMLElement | null {
   return container.querySelector<HTMLElement>('section[aria-label="Stats"]');
+}
+
+function builtPanel(): HTMLElement | null {
+  return container.querySelector<HTMLElement>('section[aria-label="Built panel"]');
 }
 
 function cameraPanel(): HTMLElement | null {
@@ -307,5 +313,83 @@ describe('re-renders', () => {
     const before = commits();
     await receive(STATS);
     expect(commits()).toBe(before + 1);
+  });
+});
+
+describe('the built Panel', () => {
+  test('ShowBuiltPanel shows its parts with the Orb in its corner, drawn on top', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_BUILT);
+    expect(orbBox()).toEqual(CORNER);
+    expect(builtPanel()?.querySelector('h2')?.textContent).toBe('Pi');
+    expect(builtPanel()?.querySelector('p')?.textContent).toBe('<b>bold</b>');
+    expect(builtPanel()?.querySelector('b')).toBeNull();
+    const order = [...container.children].map((element) => element.getAttribute('aria-label') ?? element.className);
+    expect(order).toEqual(['panel-outside', 'Built panel', 'Jarvis orb: tap to talk']);
+  });
+
+  test('its gauge waits for a reading, then shows the latest one', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_BUILT);
+    expect(allValues(container)).toEqual({ CPU: '—' });
+    await receive(STATS);
+    expect(allValues(container)).toEqual({ CPU: '13%' });
+  });
+
+  test('a reading re-renders the built Panel once', async () => {
+    const { receive, commits } = await mountScreen();
+    await receive(SHOW_BUILT);
+    const before = commits();
+    await receive(STATS);
+    expect(commits()).toBe(before + 1);
+  });
+
+  test('a tap outside it sends one PanelClosed and hides it', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_BUILT);
+    const outside = container.querySelector('.panel-outside');
+    if (outside === null) {
+      throw new Error('nothing catches taps outside the Panel');
+    }
+    await pointerDown(outside);
+    expect(socket.sent).toEqual([PANEL_CLOSED]);
+    expect(builtPanel()).toBeNull();
+    expect(orbBox()).toEqual(FULL());
+  });
+
+  test('a tap inside it sends nothing and it stays', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_BUILT);
+    const shown = builtPanel();
+    if (shown === null) {
+      throw new Error('the built Panel did not render');
+    }
+    await pointerDown(shown);
+    expect(socket.sent).toEqual([]);
+    expect(builtPanel()).not.toBeNull();
+  });
+
+  test('the stats and the camera replace it, and HidePanel closes it', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_BUILT, STATS);
+    await receive(SHOW_STATS);
+    expect(builtPanel()).toBeNull();
+    expect(allValues(container).CPU).toBe('—');
+    await receive(SHOW_BUILT);
+    await receive(SHOW_CAMERA);
+    expect(builtPanel()).toBeNull();
+    expect(cameraPanel()).not.toBeNull();
+    await receive(SHOW_BUILT);
+    await receive(HIDE_PANEL);
+    expect(builtPanel()).toBeNull();
+    expect(orbBox()).toEqual(FULL());
+  });
+
+  test('a new built Panel replaces the one shown', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_BUILT);
+    await receive('{"type":"show_built_panel","title":"Shopping","parts":[{"kind":"list","title":"To buy","items":["milk","eggs"]}]}');
+    expect(builtPanel()?.querySelector('h2')?.textContent).toBe('Shopping');
+    expect([...container.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['milk', 'eggs']);
   });
 });

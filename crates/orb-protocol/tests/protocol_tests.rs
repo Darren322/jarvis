@@ -1,6 +1,6 @@
 use orb_protocol::{
     CpuPercent, CpuPercentOutOfRange, FromOrb, Level, LevelOutOfRange, LevelSource, MAX_LINE_BYTES,
-    OrbState, PanelName, ProtocolError, ServiceHealth, StorageUsage, ToOrb,
+    MAX_TO_ORB_LINE_BYTES, OrbState, PanelName, ProtocolError, ServiceHealth, StorageUsage, ToOrb,
 };
 
 fn cpu(value: f32) -> CpuPercent {
@@ -251,15 +251,13 @@ fn widest_stats_line() -> String {
 }
 
 #[test]
-fn the_line_limit_is_the_size_of_the_widest_stats_message() {
+fn the_line_limit_from_the_orb_is_the_size_of_the_widest_stats_message() {
     let widest = widest_stats_line();
     assert_eq!(widest.len(), MAX_LINE_BYTES);
     assert!(ToOrb::decode(&widest).is_ok());
-    // One byte more (a space is valid JSON) is rejected.
-    assert!(matches!(
-        ToOrb::decode(&format!("{widest} ")),
-        Err(ProtocolError::LineTooLong { len }) if len == MAX_LINE_BYTES + 1
-    ));
+    // A line one byte over is rejected from the orb in
+    // `a_line_of_the_maximum_length_is_accepted_and_one_byte_more_is_rejected`;
+    // to the orb, the built Panel sets the limit (`built_panel_tests.rs`).
 
     // Encoding real values never exceeds the limit: sample f32 bit patterns
     // (deterministic generator) for both float fields.
@@ -446,11 +444,14 @@ fn a_line_of_the_maximum_length_is_accepted_and_one_byte_more_is_rejected() {
     let too_long = padded_tap(MAX_LINE_BYTES + 1);
     assert!(matches!(
         FromOrb::decode(&too_long),
-        Err(ProtocolError::LineTooLong { len }) if len == MAX_LINE_BYTES + 1
+        Err(ProtocolError::LineTooLong { len, limit })
+            if len == MAX_LINE_BYTES + 1 && limit == MAX_LINE_BYTES
     ));
+    // Lines to the orb have their own, larger limit.
     assert!(matches!(
-        ToOrb::decode(&too_long),
-        Err(ProtocolError::LineTooLong { .. })
+        ToOrb::decode(&padded_tap(MAX_TO_ORB_LINE_BYTES + 1)),
+        Err(ProtocolError::LineTooLong { len, limit })
+            if len == MAX_TO_ORB_LINE_BYTES + 1 && limit == MAX_TO_ORB_LINE_BYTES
     ));
 }
 

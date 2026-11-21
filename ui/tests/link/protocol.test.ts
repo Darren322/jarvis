@@ -190,3 +190,98 @@ describe('stats', () => {
     expect(parseToOrb(stats({ fan_rpm: 1200 }))).toBeNull();
   });
 });
+
+describe('the built Panel', () => {
+  // The wire examples from crates/orb-protocol/tests/built_panel_tests.rs.
+  test.each([
+    [
+      '{"type":"show_built_panel","title":"Facts","parts":[{"kind":"list","title":"Facts","items":["Darren likes tea","Darren lives in Penang"]}]}',
+      { title: 'Facts', parts: [{ kind: 'list', title: 'Facts', items: ['Darren likes tea', 'Darren lives in Penang'] }] },
+    ],
+    [
+      '{"type":"show_built_panel","title":"Note","parts":[{"kind":"card","title":"Reminder","text":"Water the plants"}]}',
+      { title: 'Note', parts: [{ kind: 'card', title: 'Reminder', text: 'Water the plants' }] },
+    ],
+    [
+      '{"type":"show_built_panel","title":"Pi","parts":[{"kind":"gauge","source":"cpu"},{"kind":"gauge","source":"temperature"},{"kind":"gauge","source":"ram"},{"kind":"gauge","source":"storage"}]}',
+      {
+        title: 'Pi',
+        parts: [
+          { kind: 'gauge', source: 'cpu' },
+          { kind: 'gauge', source: 'temperature' },
+          { kind: 'gauge', source: 'ram' },
+          { kind: 'gauge', source: 'storage' },
+        ],
+      },
+    ],
+    [
+      '{"type":"show_built_panel","title":"Servers","parts":[{"kind":"gauge","source":"llama"},{"kind":"gauge","source":"bge"}]}',
+      { title: 'Servers', parts: [{ kind: 'gauge', source: 'llama' }, { kind: 'gauge', source: 'bge' }] },
+    ],
+  ])('%s parses', (text, panel) => {
+    expect(parseToOrb(text)).toEqual({ type: 'show_built_panel', panel });
+  });
+
+  const message = (parts: string, title = '"T"') => `{"type":"show_built_panel","title":${title},"parts":[${parts}]}`;
+
+  test.each([
+    // Not in the Catalog.
+    message('{"kind":"chart","title":"x"}'),
+    message('{"kind":"timer","seconds":600}'),
+    message('{"kind":"Card","title":"a","text":"b"}'),
+    message('{"title":"a","text":"b"}'),
+    message('"card"'),
+    message('null'),
+    // Unknown gauge sources, and a model writing a gauge's number.
+    message('{"kind":"gauge","source":"weather"}'),
+    message('{"kind":"gauge","source":"CPU"}'),
+    message('{"kind":"gauge"}'),
+    message('{"kind":"gauge","source":"cpu","value":12}'),
+    // Unknown or missing fields in a part.
+    message('{"kind":"card","title":"a","text":"b","html":"<b>"}'),
+    message('{"kind":"card","title":"a"}'),
+    message('{"kind":"list","title":"a","items":["b"],"extra":1}'),
+    message('{"kind":"list","title":"a"}'),
+    message('{"kind":"list","title":"a","items":[1]}'),
+    message('{"kind":"list","title":"a","items":"b"}'),
+    // Unknown or missing fields in the message.
+    '{"type":"show_built_panel","title":"T","parts":[{"kind":"gauge","source":"cpu"}],"extra":1}',
+    '{"type":"show_built_panel","parts":[{"kind":"gauge","source":"cpu"}]}',
+    '{"type":"show_built_panel","title":"T"}',
+    message('{"kind":"gauge","source":"cpu"}', 'null'),
+    // The built Panel is never shown by name.
+    '{"type":"show_panel","panel":"built"}',
+  ])('%s is ignored', (text) => {
+    expect(parseToOrb(text)).toBeNull();
+  });
+
+  const text = (count: number, unit = 'a') => JSON.stringify(unit.repeat(count));
+  const gauges = (count: number) => Array.from({ length: count }, () => '{"kind":"gauge","source":"cpu"}').join(',');
+  const items = (count: number) => Array.from({ length: count }, () => '"milk"').join(',');
+
+  // The limits of crates/orb-protocol at their edges, as literals (jarvis-ui 12, G4).
+  // 🍎 is two UTF-16 units: counting `length` would reject its accepted row.
+  test.each([
+    ['0 parts', message(gauges(0)), false],
+    ['1 part', message(gauges(1)), true],
+    ['4 parts', message(gauges(4)), true],
+    ['5 parts', message(gauges(5)), false],
+    ['0 list items', message(`{"kind":"list","title":"a","items":[${items(0)}]}`), false],
+    ['8 list items', message(`{"kind":"list","title":"a","items":[${items(8)}]}`), true],
+    ['9 list items', message(`{"kind":"list","title":"a","items":[${items(9)}]}`), false],
+    ['card title of 120', message(`{"kind":"card","title":${text(120)},"text":"b"}`), true],
+    ['card title of 121', message(`{"kind":"card","title":${text(121)},"text":"b"}`), false],
+    ['card text of 120', message(`{"kind":"card","title":"a","text":${text(120)}}`), true],
+    ['card text of 121', message(`{"kind":"card","title":"a","text":${text(121)}}`), false],
+    ['card text of 120 🍎', message(`{"kind":"card","title":"a","text":${text(120, '🍎')}}`), true],
+    ['card text of 121 🍎', message(`{"kind":"card","title":"a","text":${text(121, '🍎')}}`), false],
+    ['list title of 120', message(`{"kind":"list","title":${text(120)},"items":["b"]}`), true],
+    ['list title of 121', message(`{"kind":"list","title":${text(121)},"items":["b"]}`), false],
+    ['list item of 120', message(`{"kind":"list","title":"a","items":["b",${text(120)}]}`), true],
+    ['list item of 121', message(`{"kind":"list","title":"a","items":["b",${text(121)}]}`), false],
+    ['panel title of 40', message(gauges(1), text(40)), true],
+    ['panel title of 41', message(gauges(1), text(41)), false],
+  ])('%s', (_, line, accepted) => {
+    expect(parseToOrb(line) !== null).toBe(accepted);
+  });
+});

@@ -80,6 +80,9 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
                 crate::features::panel::channel().0,
             ))
             .tool(crate::tools::current_time::CurrentTimeTool)
+            .tool(crate::tools::build_panel::BuildPanelTool::new(
+                crate::features::panel::channel().0,
+            ))
             .build(),
     );
     let result = assistant.respond("Check the system status.", &[]).await;
@@ -157,7 +160,13 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
     let offered: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(
         offered,
-        ["system_status", "show_panel", "close_panel", "current_time"]
+        [
+            "system_status",
+            "show_panel",
+            "close_panel",
+            "current_time",
+            "build_panel"
+        ]
     );
     assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
     assert_eq!(first.max_tokens, Some(1024));
@@ -308,6 +317,9 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
             crate::features::panel::channel().0,
         ))
         .tool(crate::tools::current_time::CurrentTimeTool)
+        .tool(crate::tools::build_panel::BuildPanelTool::new(
+            crate::features::panel::channel().0,
+        ))
         .build();
 
     let result = Assistant::new(agent)
@@ -323,7 +335,13 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         .collect();
     assert_eq!(
         offered,
-        ["system_status", "show_panel", "close_panel", "current_time"]
+        [
+            "system_status",
+            "show_panel",
+            "close_panel",
+            "current_time",
+            "build_panel"
+        ]
     );
     assert_eq!(requests.len(), 1);
 }

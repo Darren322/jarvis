@@ -219,7 +219,7 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     let first_tools = first_request["tools"]
         .as_array()
         .expect("first request should offer the system status tool");
-    assert_eq!(first_tools.len(), 4);
+    assert_eq!(first_tools.len(), 5);
     assert_eq!(
         first_tools[0],
         rig_core::serde_json::json!({

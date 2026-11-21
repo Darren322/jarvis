@@ -17,5 +17,5 @@ A panel built in advance with a known layout (for example, system stats) that Ja
 _Avoid_: stats page, screen
 
 **Catalog**:
-The fixed set of panel parts (card, chart, list, gauge, camera tile) from which Jarvis may put together a new panel on request.
+The fixed set of panel parts from which Jarvis puts together a new panel on request (the `build_panel` tool): a card (title and text), a list (title and items) and a gauge (one live figure of the stats Dashboard). A chart and a camera tile may join it later.
 _Avoid_: component library, widget set

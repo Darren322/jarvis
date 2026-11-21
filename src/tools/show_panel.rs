@@ -70,6 +70,9 @@ impl Tool for ShowPanelTool {
             PanelName::Camera => "The camera panel is now shown on the screen. It stays until \
                                   the user closes it. You cannot see its picture."
                 .to_owned(),
+            // Never reached: `"built"` never deserializes into the arguments,
+            // and `show` refuses the built Panel by name.
+            PanelName::Built => "The panel is now shown on the screen.".to_owned(),
         })
     }
 }

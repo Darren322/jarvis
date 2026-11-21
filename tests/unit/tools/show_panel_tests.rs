@@ -25,6 +25,8 @@ fn a_panel_of_stats_or_camera_is_accepted_and_nothing_else_is() {
         json!({"panel": "weather"}),
         json!({"panel": "Stats"}),
         json!({"panel": "Camera"}),
+        // The built Panel opens with its parts (`build_panel`), never by name.
+        json!({"panel": "built"}),
         json!({"panel": ""}),
         json!({"panel": null}),
         json!({}),
@@ -51,6 +53,7 @@ fn show_panel_is_on_the_allowed_list_with_the_same_argument_rules() {
     assert!(rule.accepts_arguments(&json!({"panel": "stats"})));
     assert!(rule.accepts_arguments(&json!({"panel": "camera"})));
     assert!(!rule.accepts_arguments(&json!({"panel": "weather"})));
+    assert!(!rule.accepts_arguments(&json!({"panel": "built"})));
     assert!(!rule.accepts_arguments(&json!({"panel": "stats", "extra": 1})));
 }
 

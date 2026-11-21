@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use orb_protocol::{FromOrb, PanelName, ToOrb};
+use orb_protocol::{BuiltPanel, FromOrb, GaugeSource, PanelName, PanelPart, ToOrb};
 use tokio::{
     sync::mpsc::{self, error::TryRecvError},
     task::{JoinHandle, yield_now},
 };
 
-use super::{PANEL_TIMEOUT, PanelHandle, channel, timeout_for};
+use super::{PANEL_TIMEOUT, PanelError, PanelHandle, channel, timeout_for};
 use crate::features::{
     control::{TapAction, tap_action},
     state::AssistantState,
@@ -63,12 +63,40 @@ impl Rig {
         );
     }
 
+    async fn show_built(&mut self) {
+        self.panels
+            .show_built(facts())
+            .await
+            .expect("the panel task is running");
+        assert_eq!(
+            self.shown_to_orb.recv().await,
+            Some(ToOrb::ShowBuiltPanel(facts()))
+        );
+    }
+
     fn nothing_sent(&mut self) {
         assert!(matches!(
             self.shown_to_orb.try_recv(),
             Err(TryRecvError::Empty)
         ));
     }
+}
+
+/// A small built Panel: Darren's facts as a list, and a gauge.
+fn facts() -> BuiltPanel {
+    BuiltPanel::new(
+        "Facts".to_owned(),
+        vec![
+            PanelPart::List {
+                title: "Facts".to_owned(),
+                items: vec!["Darren likes tea".to_owned()],
+            },
+            PanelPart::Gauge {
+                source: GaugeSource::Cpu,
+            },
+        ],
+    )
+    .expect("within the limits")
 }
 
 #[test]
@@ -258,4 +286,109 @@ async fn the_configured_timeout_decides_when_the_panel_hides() {
     settle().await;
     assert_eq!(panels.shown(), None);
     task.abort();
+}
+
+#[test]
+fn a_built_panel_times_out_with_the_stats_timeout() {
+    let timeout = Duration::from_secs(7);
+    assert_eq!(timeout_for(PanelName::Built, timeout), Some(timeout));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_built_panel_is_shown_with_its_parts_until_the_stats_timeout() {
+    let mut rig = start();
+    rig.show_built().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Built));
+
+    tokio::time::advance(PANEL_TIMEOUT - ONE_MILLISECOND).await;
+    settle().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Built));
+    rig.nothing_sent();
+
+    tokio::time::advance(ONE_MILLISECOND).await;
+    settle().await;
+    assert_eq!(rig.shown_to_orb.try_recv(), Ok(ToOrb::HidePanel {}));
+    assert_eq!(rig.panels.shown(), None);
+    rig.nothing_sent();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_built_panel_closes_on_panel_closed_without_a_reply() {
+    let mut rig = start();
+    rig.show_built().await;
+
+    rig.from_orb
+        .send(FromOrb::PanelClosed {})
+        .await
+        .expect("the panel task is running");
+    settle().await;
+
+    assert_eq!(rig.panels.shown(), None);
+    tokio::time::advance(PANEL_TIMEOUT * 2).await;
+    settle().await;
+    rig.nothing_sent();
+}
+
+#[tokio::test(start_paused = true)]
+async fn closing_hides_a_built_panel() {
+    let mut rig = start();
+    rig.show_built().await;
+    rig.panels.close().await.expect("the panel task is running");
+    settle().await;
+    assert_eq!(rig.shown_to_orb.try_recv(), Ok(ToOrb::HidePanel {}));
+    assert_eq!(rig.panels.shown(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_stats_or_the_camera_replace_a_built_panel_and_a_built_panel_replaces_them() {
+    let mut rig = start();
+    rig.show_built().await;
+    rig.show_stats().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Stats));
+
+    rig.show_built().await;
+    rig.show(PanelName::Camera).await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Camera));
+    // The built Panel's deadline went with it: the camera stays.
+    tokio::time::advance(PANEL_TIMEOUT * 2).await;
+    settle().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Camera));
+    rig.nothing_sent();
+
+    // A built Panel over the camera brings the timeout back.
+    rig.show_built().await;
+    tokio::time::advance(PANEL_TIMEOUT).await;
+    settle().await;
+    assert_eq!(rig.shown_to_orb.try_recv(), Ok(ToOrb::HidePanel {}));
+    assert_eq!(rig.panels.shown(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn showing_a_built_panel_again_replaces_it_and_restarts_the_timeout() {
+    let mut rig = start();
+    rig.show_built().await;
+    tokio::time::advance(PANEL_TIMEOUT - ONE_MILLISECOND).await;
+    settle().await;
+
+    rig.show_built().await;
+    tokio::time::advance(PANEL_TIMEOUT - ONE_MILLISECOND).await;
+    settle().await;
+    assert_eq!(rig.panels.shown(), Some(PanelName::Built));
+    rig.nothing_sent();
+
+    tokio::time::advance(ONE_MILLISECOND).await;
+    settle().await;
+    assert_eq!(rig.shown_to_orb.try_recv(), Ok(ToOrb::HidePanel {}));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_built_panel_cannot_be_shown_by_name() {
+    let mut rig = start();
+    assert!(matches!(
+        rig.panels.show(PanelName::Built).await,
+        Err(PanelError::BuiltByName)
+    ));
+    settle().await;
+    assert_eq!(rig.panels.shown(), None);
+    rig.nothing_sent();
 }

@@ -7,6 +7,8 @@
  *   {"type":"level","level":0.25,"source":"mic"}
  *   {"type":"show_panel","panel":"stats"}
  *   {"type":"show_panel","panel":"camera"}
+ *   {"type":"show_built_panel","title":"Shopping","parts":[{"kind":"list","title":"To buy","items":["milk","eggs"]},
+ *    {"kind":"gauge","source":"cpu"}]}
  *   {"type":"hide_panel"}
  *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,
  *    "storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
@@ -14,8 +16,8 @@
  *   {"type":"tap"}
  *   {"type":"panel_closed"}
  *
- * Parsing is as strict as the Rust decoder (`deny_unknown_fields`, `CpuPercent`):
- * anything else parses to `null` and is ignored.
+ * Parsing is as strict as the Rust decoder (`deny_unknown_fields`, `CpuPercent`,
+ * the built Panel's limits): anything else parses to `null` and is ignored.
  */
 
 /** What Jarvis is doing. Mirrors `orb_protocol::OrbState`. */
@@ -27,9 +29,39 @@ export type LevelSource = 'speech' | 'mic';
 /**
  * A Panel the UI can show. Mirrors `orb_protocol::PanelName`. The camera's
  * picture does not come over the WebSocket: the camera Panel loads it from
- * Jarvis's `/camera` route.
+ * Jarvis's `/camera` route. A built Panel opens with `show_built_panel`, which
+ * carries its parts, never by name.
  */
-export type PanelName = 'stats' | 'camera';
+export type PanelName = 'stats' | 'camera' | 'built';
+
+/** A Panel a `show_panel` message may name: every Panel but the built one. */
+export type NamedPanel = Exclude<PanelName, 'built'>;
+
+/** A live figure a gauge shows, filled from the latest Stats. Mirrors `orb_protocol::GaugeSource`. */
+export type GaugeSource = 'cpu' | 'temperature' | 'ram' | 'storage' | 'llama' | 'bge';
+
+/** One part of a built Panel: the Catalog. Mirrors `orb_protocol::PanelPart`. Text is shown as text, never as markup. */
+export type PanelPart =
+  | { readonly kind: 'card'; readonly title: string; readonly text: string }
+  | { readonly kind: 'list'; readonly title: string; readonly items: readonly string[] }
+  | { readonly kind: 'gauge'; readonly source: GaugeSource };
+
+/** A Panel the model built, within the limits below. Mirrors `orb_protocol::BuiltPanel`. */
+export interface BuiltPanel {
+  readonly title: string;
+  readonly parts: readonly PanelPart[];
+}
+
+/** The most characters in a built Panel's title. Mirrors `MAX_PANEL_TITLE_CHARS`. */
+export const MAX_PANEL_TITLE_CHARS = 40;
+/** The fewest and most parts of a built Panel. Mirror `MIN_PANEL_PARTS` and `MAX_PANEL_PARTS`. */
+export const MIN_PANEL_PARTS = 1;
+export const MAX_PANEL_PARTS = 4;
+/** The fewest and most items in a list part. Mirror `MIN_LIST_ITEMS` and `MAX_LIST_ITEMS`. */
+export const MIN_LIST_ITEMS = 1;
+export const MAX_LIST_ITEMS = 8;
+/** The most characters in a card's title or text, a list's title, or one item. Mirrors `MAX_PART_TEXT_CHARS`. */
+export const MAX_PART_TEXT_CHARS = 120;
 
 /** Whether a service answered its last health check. Mirrors `orb_protocol::ServiceHealth`. */
 export type ServiceHealth = 'up' | 'down';
@@ -67,7 +99,8 @@ export type OrbMessage =
 
 /** The messages that open, fill and close a Panel. */
 export type PanelMessage =
-  | { readonly type: 'show_panel'; readonly panel: PanelName }
+  | { readonly type: 'show_panel'; readonly panel: NamedPanel }
+  | { readonly type: 'show_built_panel'; readonly panel: BuiltPanel }
   | { readonly type: 'hide_panel' }
   | { readonly type: 'stats'; readonly stats: Stats };
 
@@ -82,7 +115,8 @@ export const MAX_CPU_PERCENT = 100;
 
 const ORB_STATES: readonly string[] = ['idle', 'listening', 'transcribing', 'thinking', 'speaking'];
 const LEVEL_SOURCES: readonly string[] = ['speech', 'mic'];
-const PANEL_NAMES: readonly string[] = ['stats', 'camera'];
+const NAMED_PANELS: readonly string[] = ['stats', 'camera'];
+const GAUGE_SOURCES: readonly string[] = ['cpu', 'temperature', 'ram', 'storage', 'llama', 'bge'];
 const SERVICE_HEALTHS: readonly string[] = ['up', 'down'];
 
 const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'] as const;
@@ -100,8 +134,25 @@ function isLevelSource(value: unknown): value is LevelSource {
   return typeof value === 'string' && LEVEL_SOURCES.includes(value);
 }
 
-function isPanelName(value: unknown): value is PanelName {
-  return typeof value === 'string' && PANEL_NAMES.includes(value);
+function isNamedPanel(value: unknown): value is NamedPanel {
+  return typeof value === 'string' && NAMED_PANELS.includes(value);
+}
+
+function isGaugeSource(value: unknown): value is GaugeSource {
+  return typeof value === 'string' && GAUGE_SOURCES.includes(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A string of at most `limit` characters, counted as Unicode code points as
+ * Rust's `chars()` counts them (a string's `length` counts UTF-16 units: an
+ * emoji is 2).
+ */
+function isText(value: unknown, limit: number): value is string {
+  return typeof value === 'string' && [...value].length <= limit;
 }
 
 function isServiceHealth(value: unknown): value is ServiceHealth {
@@ -141,6 +192,57 @@ function parseStorage(value: unknown): StorageSpace | undefined {
     return undefined;
   }
   return { availableBytes: record.available_bytes, totalBytes: record.total_bytes };
+}
+
+/** One built-Panel part, exactly as `orb_protocol::PanelPart` decodes it, or `null`. */
+function parsePart(value: unknown): PanelPart | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  switch (value.kind) {
+    case 'card':
+      return hasExactKeys(value, ['kind', 'title', 'text']) &&
+        isText(value.title, MAX_PART_TEXT_CHARS) &&
+        isText(value.text, MAX_PART_TEXT_CHARS)
+        ? { kind: 'card', title: value.title, text: value.text }
+        : null;
+    case 'list': {
+      const items = value.items;
+      return hasExactKeys(value, ['kind', 'title', 'items']) &&
+        isText(value.title, MAX_PART_TEXT_CHARS) &&
+        Array.isArray(items) &&
+        items.length >= MIN_LIST_ITEMS &&
+        items.length <= MAX_LIST_ITEMS &&
+        items.every((item) => isText(item, MAX_PART_TEXT_CHARS))
+        ? { kind: 'list', title: value.title, items: items as string[] }
+        : null;
+    }
+    case 'gauge':
+      return hasExactKeys(value, ['kind', 'source']) && isGaugeSource(value.source)
+        ? { kind: 'gauge', source: value.source }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** A ShowBuiltPanel: a title and 1 to `MAX_PANEL_PARTS` parts, every one valid; otherwise `null`. */
+function parseBuiltPanel(record: Record<string, unknown>): PanelMessage | null {
+  const parts = record.parts;
+  if (
+    !hasExactKeys(record, ['type', 'title', 'parts']) ||
+    !isText(record.title, MAX_PANEL_TITLE_CHARS) ||
+    !Array.isArray(parts) ||
+    parts.length < MIN_PANEL_PARTS ||
+    parts.length > MAX_PANEL_PARTS
+  ) {
+    return null;
+  }
+  const parsed = parts.map(parsePart);
+  if (parsed.some((part) => part === null)) {
+    return null;
+  }
+  return { type: 'show_built_panel', panel: { title: record.title, parts: parsed as PanelPart[] } };
 }
 
 function parseStats(record: Record<string, unknown>): PanelMessage | null {
@@ -183,8 +285,9 @@ function parseStats(record: Record<string, unknown>): PanelMessage | null {
 /**
  * Reads one message from Jarvis. Returns `null` for anything that is not a
  * well-formed ToOrb: not JSON, not an object, an unknown type or Panel name, a
- * missing or extra field (in a Stats `storage` object too), a level that is
- * not a finite number, or a Stats reading out of range. A finite level outside 0 to 1 is kept as sent; the
+ * missing or extra field (in a Stats `storage` object or a built Panel's part
+ * too), a level that is not a finite number, a Stats reading out of range, or
+ * a built Panel with a part not in the Catalog or over a limit. A finite level outside 0 to 1 is kept as sent; the
  * display clamps it.
  */
 export function parseToOrb(text: string): ToOrb | null {
@@ -214,10 +317,12 @@ export function parseToOrb(text: string): ToOrb | null {
       }
       return null;
     case 'show_panel':
-      if (hasExactKeys(record, ['type', 'panel']) && isPanelName(record.panel)) {
+      if (hasExactKeys(record, ['type', 'panel']) && isNamedPanel(record.panel)) {
         return { type: 'show_panel', panel: record.panel };
       }
       return null;
+    case 'show_built_panel':
+      return parseBuiltPanel(record);
     case 'hide_panel':
       return hasExactKeys(record, ['type']) ? { type: 'hide_panel' } : null;
     case 'stats':

@@ -35,3 +35,9 @@ test('the Panels run no animation loop of their own', () => {
     expect([path, /requestAnimationFrame/.test(text)]).toEqual([path, false]);
   }
 });
+
+test('nothing renders model text as markup: no innerHTML in the Orb, the link or the Panels', () => {
+  for (const [path, text] of Object.entries(SOURCES)) {
+    expect([path, /dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML/.test(text)]).toEqual([path, false]);
+  }
+});

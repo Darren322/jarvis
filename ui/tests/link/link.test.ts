@@ -178,6 +178,21 @@ describe('the Panel', () => {
     expect(link.display).toBe(display);
   });
 
+  test('a built Panel reaches the Panel with its parts, and readings feed its gauges', () => {
+    const { link, sockets } = connectedLink();
+    const socket = latest(sockets);
+    socket.receive('{"type":"show_built_panel","title":"Pi","parts":[{"kind":"gauge","source":"cpu"}]}');
+    expect([link.shownPanel, link.builtPanel, link.stats]).toEqual([
+      'built',
+      { title: 'Pi', parts: [{ kind: 'gauge', source: 'cpu' }] },
+      null,
+    ]);
+    socket.receive(STATS);
+    expect(link.stats).toEqual(READING);
+    socket.receive(SHOW_STATS);
+    expect([link.shownPanel, link.builtPanel, link.stats]).toEqual(['stats', null, null]);
+  });
+
   test('a dropped connection hides the Panel and drops the reading', () => {
     const { link, sockets } = connectedLink();
     latest(sockets).receive(SHOW_STATS);

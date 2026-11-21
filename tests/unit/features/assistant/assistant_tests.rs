@@ -461,8 +461,8 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     assert!(requests[0].documents.is_empty());
     assert!(requests[1].documents.is_empty());
     assert_eq!(requests[0].max_tokens, Some(1024));
-    assert_eq!(requests[0].tools.len(), 4);
-    assert_eq!(requests[1].tools.len(), 4);
+    assert_eq!(requests[0].tools.len(), 5);
+    assert_eq!(requests[1].tools.len(), 5);
     let memory_message = Message::User {
         content: vec![UserContent::document(
             document.to_string(),

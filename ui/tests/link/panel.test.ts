@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import { applyPanelMessage, NO_PANEL, type PanelView } from '../../src/link/panel';
-import type { Stats } from '../../src/link/protocol';
+import type { BuiltPanel, Stats } from '../../src/link/protocol';
 
 const FIRST: Stats = {
   cpuPercent: 12.5,
@@ -60,4 +60,22 @@ test('reopening after HidePanel never shows the old reading', () => {
 test('a dropped reading or a repeated HidePanel returns the same view, so nothing re-renders', () => {
   expect(applyPanelMessage(NO_PANEL, reading(FIRST))).toBe(NO_PANEL);
   expect(applyPanelMessage(NO_PANEL, HIDE)).toBe(NO_PANEL);
+});
+
+const FACTS: BuiltPanel = { title: 'Facts', parts: [{ kind: 'list', title: 'Facts', items: ['Darren likes tea'] }] };
+const GAUGES: BuiltPanel = { title: 'Pi', parts: [{ kind: 'gauge', source: 'cpu' }] };
+const build = (panel: BuiltPanel) => ({ type: 'show_built_panel', panel }) as const;
+const BUILT_WAITING: PanelView = { kind: 'built', panel: GAUGES, reading: null };
+
+test.each([
+  ['ShowBuiltPanel opens its parts with no reading yet', NO_PANEL, build(GAUGES), BUILT_WAITING],
+  ['a reading while a built Panel shows feeds its gauges', BUILT_WAITING, reading(FIRST), { ...BUILT_WAITING, reading: FIRST }],
+  ['a built Panel replaces the Dashboard and drops its reading', { kind: 'stats', reading: FIRST }, build(GAUGES), BUILT_WAITING],
+  ['a built Panel replaces the camera', CAMERA, build(GAUGES), BUILT_WAITING],
+  ['a new built Panel replaces the old one and its reading', { ...BUILT_WAITING, reading: FIRST }, build(FACTS), { kind: 'built', panel: FACTS, reading: null }],
+  ['the Dashboard replaces a built Panel', { ...BUILT_WAITING, reading: FIRST }, SHOW, WAITING],
+  ['the camera replaces a built Panel', BUILT_WAITING, SHOW_CAMERA, CAMERA],
+  ['HidePanel closes a built Panel', { ...BUILT_WAITING, reading: FIRST }, HIDE, NO_PANEL],
+] as const)('%s', (_, before, message, after) => {
+  expect(applyPanelMessage(before, message)).toEqual(after);
 });

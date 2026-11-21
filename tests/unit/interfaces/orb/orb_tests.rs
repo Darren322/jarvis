@@ -370,8 +370,8 @@ async fn a_message_from_a_feature_reaches_every_client_and_is_remembered() {
         let message = ToOrb::State {
             state: OrbState::Thinking,
         };
-        served.handle.to_orb.send(message).await.unwrap();
-        assert_eq!(first.read().await, Read::Message(message));
+        served.handle.to_orb.send(message.clone()).await.unwrap();
+        assert_eq!(first.read().await, Read::Message(message.clone()));
         assert_eq!(second.read().await, Read::Message(message));
 
         // An orb that connects later is told the state the feature set.

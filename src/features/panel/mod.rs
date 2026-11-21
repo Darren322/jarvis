@@ -1,16 +1,17 @@
 //! The panel on the orb screen: which one shows, and when it goes away.
 //!
-//! One panel shows at a time. Whatever asks for one (the `show_panel` tool) or
-//! closes it (the "close it" phrase) uses a [`PanelHandle`]; the [`PanelInbox`]
-//! owns the state, sends `ShowPanel` and `HidePanel` through the orb handle, hears
-//! `PanelClosed` from the orb and hides a panel whose time is up.
+//! One panel shows at a time. Whatever asks for one (the `show_panel` and
+//! `build_panel` tools) or closes it (the "close it" phrase) uses a
+//! [`PanelHandle`]; the [`PanelInbox`] owns the state, sends `ShowPanel`,
+//! `ShowBuiltPanel` and `HidePanel` through the orb handle, hears `PanelClosed`
+//! from the orb and hides a panel whose time is up.
 //!
 //! A tap on the orb never reaches this module: it means listen
 //! (`control::tap_action`) and leaves the panel as it is.
 
 use std::{convert::Infallible, future, time::Duration};
 
-use orb_protocol::{FromOrb, PanelName, ToOrb};
+use orb_protocol::{BuiltPanel, FromOrb, PanelName, ToOrb};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, watch},
@@ -19,18 +20,20 @@ use tokio::{
 
 use crate::interfaces::orb::OrbHandle;
 
-/// How long the stats panel stays up when nobody closes it (spec proposal P2).
+/// How long the stats panel, or a built one, stays up when nobody closes it
+/// (spec proposal P2, jarvis-ui 12 G6).
 /// The default of the configurable value.
 pub(crate) const PANEL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Requests waiting for the panel state. Showing or closing waits when it is full.
 const REQUEST_QUEUE: usize = 4;
 
-/// How long `panel` stays up, if it times out at all. The camera returns
-/// `None`: it stays until closed (jarvis-ui D8).
+/// How long `panel` stays up, if it times out at all. A built Panel times out
+/// like the stats one (G6); the camera returns `None`: it stays until closed
+/// (jarvis-ui D8).
 pub(crate) fn timeout_for(panel: PanelName, dashboard_timeout: Duration) -> Option<Duration> {
     match panel {
-        PanelName::Stats => Some(dashboard_timeout),
+        PanelName::Stats | PanelName::Built => Some(dashboard_timeout),
         PanelName::Camera => None,
     }
 }
@@ -39,11 +42,18 @@ pub(crate) fn timeout_for(panel: PanelName, dashboard_timeout: Duration) -> Opti
 pub(crate) enum PanelError {
     #[error("the panel service is not running")]
     Unavailable,
+    /// A built Panel opens with its parts (`show_built`), never by name.
+    #[error("a built panel is shown with its parts, not by name")]
+    BuiltByName,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum Request {
-    Show(PanelName),
+    /// Show `panel` by sending `message`, which opens it on the orb.
+    Show {
+        panel: PanelName,
+        message: ToOrb,
+    },
     Close,
 }
 
@@ -55,18 +65,38 @@ pub(crate) struct PanelHandle {
 }
 
 impl PanelHandle {
-    /// Shows `panel`, replacing the one already shown.
+    /// Shows `panel`, replacing the one already shown. The built Panel has no
+    /// content to show by name, so asking for it is [`PanelError::BuiltByName`].
     pub(crate) async fn show(&self, panel: PanelName) -> Result<(), PanelError> {
-        self.requests
-            .send(Request::Show(panel))
-            .await
-            .map_err(|_| PanelError::Unavailable)
+        match panel {
+            PanelName::Stats | PanelName::Camera => {
+                self.send(Request::Show {
+                    panel,
+                    message: ToOrb::ShowPanel { panel },
+                })
+                .await
+            }
+            PanelName::Built => Err(PanelError::BuiltByName),
+        }
+    }
+
+    /// Shows `built`, replacing the panel already shown, with the stats timeout.
+    pub(crate) async fn show_built(&self, built: BuiltPanel) -> Result<(), PanelError> {
+        self.send(Request::Show {
+            panel: PanelName::Built,
+            message: ToOrb::ShowBuiltPanel(built),
+        })
+        .await
     }
 
     /// Hides the panel that is shown; nothing happens when none is.
     pub(crate) async fn close(&self) -> Result<(), PanelError> {
+        self.send(Request::Close).await
+    }
+
+    async fn send(&self, request: Request) -> Result<(), PanelError> {
         self.requests
-            .send(Request::Close)
+            .send(request)
             .await
             .map_err(|_| PanelError::Unavailable)
     }
@@ -135,13 +165,13 @@ impl PanelInbox {
                 biased;
                 // `None` means every handle is gone; the branch then stays off.
                 Some(request) = self.requests.recv() => match request {
-                    Request::Show(panel) => {
+                    Request::Show { panel, message } => {
                         // State first: a send that waits must not leave the old deadline.
                         // A timeout too long to add to the clock never fires.
                         deadline = timeout_for(panel, dashboard_timeout)
                             .and_then(|timeout| Instant::now().checked_add(timeout));
                         self.shown.send_replace(Some(panel));
-                        let _ = to_orb.send(ToOrb::ShowPanel { panel }).await;
+                        let _ = to_orb.send(message).await;
                     }
                     Request::Close => {
                         deadline = None;

@@ -2,7 +2,8 @@
 //! llama and BGE on the 16 GB Pi answer their health checks.
 //!
 //! [`StatsSource::run`] pushes one `ToOrb::Stats` every [`STATS_INTERVAL`] while
-//! the Dashboard is shown and nothing while it is hidden. The UI never polls.
+//! the Dashboard or a built Panel is shown and nothing while neither is. The UI
+//! never polls.
 
 pub(crate) mod machine;
 
@@ -21,7 +22,7 @@ use machine::{Machine, MachineReading};
 /// Time between two Stats messages while the Dashboard is shown.
 pub(crate) const STATS_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Whether the stats Dashboard is on screen.
+/// Whether a panel that reads the stats is on screen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StatsVisibility {
     Shown,
@@ -29,11 +30,13 @@ pub(crate) enum StatsVisibility {
 }
 
 impl StatsVisibility {
-    /// The Dashboard is on screen exactly while the stats panel is the shown one.
+    /// Stats are wanted exactly while the stats panel or a built one shows: a
+    /// built Panel's gauges read the same `Stats` messages as the Dashboard
+    /// (jarvis-ui 12, G5), whichever parts it has.
     /// Exhaustive on purpose: a new panel must say whether it needs these stats.
     pub(crate) fn of_panel(shown: Option<PanelName>) -> Self {
         match shown {
-            Some(PanelName::Stats) => Self::Shown,
+            Some(PanelName::Stats | PanelName::Built) => Self::Shown,
             Some(PanelName::Camera) | None => Self::Hidden,
         }
     }

@@ -25,6 +25,9 @@ pub(crate) async fn show_panel(panels: &PanelHandle, panel: PanelName) -> Notice
         Ok(()) => Notice::Info(match panel {
             PanelName::Stats => "Showing the stats.".to_owned(),
             PanelName::Camera => "Showing the camera.".to_owned(),
+            // Never reached: `show` refuses the built Panel by name, and no
+            // phrase names it.
+            PanelName::Built => "Showing the panel.".to_owned(),
         }),
         Err(error) => Notice::Warning(format!("could not show the panel: {error}")),
     }

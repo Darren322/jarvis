@@ -345,6 +345,56 @@ fn the_dashboard_is_visible_exactly_while_the_stats_panel_is_shown() {
     );
 }
 
+#[test]
+fn a_built_panel_wants_the_stats_its_gauges_read() {
+    assert_eq!(
+        StatsVisibility::of_panel(Some(PanelName::Built)),
+        StatsVisibility::Shown
+    );
+}
+
+/// A built Panel with one gauge, as the `build_panel` tool would show it.
+fn a_built_panel() -> orb_protocol::BuiltPanel {
+    orb_protocol::BuiltPanel::new(
+        "Pi".to_owned(),
+        vec![orb_protocol::PanelPart::Gauge {
+            source: orb_protocol::GaugeSource::Cpu,
+        }],
+    )
+    .expect("within the limits")
+}
+
+#[tokio::test(start_paused = true)]
+async fn stats_flow_while_a_built_panel_is_shown_and_stop_when_it_closes() {
+    let rig = Panels::start();
+    let (to_orb, mut messages) = mpsc::channel(16);
+    let (visibility, shown) = watch::channel(StatsVisibility::Hidden);
+    let source = StatsSource::new(Scripted(reading()), check(DEAD_SERVER), check(DEAD_SERVER));
+    tokio::spawn(source.run(shown, to_orb));
+    tokio::spawn(mirror_panel(rig.panels.watch_shown(), visibility));
+    rig.settle().await;
+    assert!(messages.try_recv().is_err());
+
+    rig.panels
+        .show_built(a_built_panel())
+        .await
+        .expect("the panel state is running");
+    rig.settle().await;
+    tokio::time::advance(STATS_INTERVAL * 2).await;
+    rig.settle().await;
+    assert!(matches!(messages.try_recv(), Ok(ToOrb::Stats { .. })));
+
+    rig.panels
+        .close()
+        .await
+        .expect("the panel state is running");
+    rig.settle().await;
+    while messages.try_recv().is_ok() {}
+    tokio::time::advance(STATS_INTERVAL * 5).await;
+    rig.settle().await;
+    assert!(messages.try_recv().is_err());
+}
+
 #[tokio::test(start_paused = true)]
 async fn showing_the_stats_panel_shows_the_dashboard_and_closing_it_hides_it() {
     let mut rig = Panels::start();

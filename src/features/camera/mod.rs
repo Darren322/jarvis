@@ -69,7 +69,7 @@ impl CameraUnavailable {
 pub(crate) fn is_camera(shown: Option<PanelName>) -> bool {
     match shown {
         Some(PanelName::Camera) => true,
-        Some(PanelName::Stats) | None => false,
+        Some(PanelName::Stats | PanelName::Built) | None => false,
     }
 }
 

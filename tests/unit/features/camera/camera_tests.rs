@@ -506,5 +506,6 @@ async fn hiding_ends_the_reading_before_a_frame_that_is_ready() {
 fn only_the_camera_panel_films() {
     assert!(is_camera(Some(PanelName::Camera)));
     assert!(!is_camera(Some(PanelName::Stats)));
+    assert!(!is_camera(Some(PanelName::Built)));
     assert!(!is_camera(None));
 }

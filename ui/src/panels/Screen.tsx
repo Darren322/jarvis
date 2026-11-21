@@ -3,6 +3,7 @@ import { CAMERA_URL, type OrbSource, type PanelSource } from '../link/link';
 import type { PanelName } from '../link/protocol';
 import { type FrameScheduler, Orb, type OrbSize } from '../orb/Orb';
 import type { CreateOrbRenderer } from '../orb/renderer';
+import { Built } from './Built';
 import { Camera } from './Camera';
 import { Dashboard } from './Dashboard';
 import { orbPlacement, PANEL_INSETS } from './layout';
@@ -30,6 +31,16 @@ function LiveDashboard({ source }: { readonly source: PanelSource }) {
   return <Dashboard reading={reading} />;
 }
 
+/**
+ * A built Panel, fed from the source: its parts, and the latest reading for its
+ * gauges. Only this re-renders when a reading arrives.
+ */
+function LiveBuilt({ source }: { readonly source: PanelSource }) {
+  const panel = useSyncExternalStore(source.subscribePanel, () => source.builtPanel ?? null);
+  const reading = useSyncExternalStore(source.subscribePanel, () => source.stats);
+  return panel === null ? null : <Built panel={panel} reading={reading} />;
+}
+
 /** What the Panel shows inside its frame. */
 function PanelContent({ panel, source }: { readonly panel: PanelName; readonly source: PanelSource }) {
   switch (panel) {
@@ -37,6 +48,8 @@ function PanelContent({ panel, source }: { readonly panel: PanelName; readonly s
       return <LiveDashboard source={source} />;
     case 'camera':
       return <Camera url={source.cameraUrl ?? CAMERA_URL} />;
+    case 'built':
+      return <LiveBuilt source={source} />;
   }
 }
 
@@ -53,7 +66,7 @@ function PanelFrame({ panel, source }: { readonly panel: PanelName; readonly sou
   );
 }
 
-const PANEL_LABELS: Readonly<Record<PanelName, string>> = { stats: 'Stats', camera: 'Camera' };
+const PANEL_LABELS: Readonly<Record<PanelName, string>> = { stats: 'Stats', camera: 'Camera', built: 'Built panel' };
 
 export interface ScreenProps {
   /** Where the Orb's state and the Panel come from: the link, or a fixture in the preview. */
@@ -72,7 +85,8 @@ export interface ScreenProps {
  * behind the Panel catches taps outside it, which close the Panel. The Orb is
  * drawn last, so it stays on top and a tap on it is still a Tap. This
  * re-renders only when the shown Panel or the window changes: state and level
- * messages never reach React, and readings re-render only the Dashboard.
+ * messages never reach React, and readings re-render only the Dashboard or the
+ * built Panel.
  */
 export function Screen({ source, onTap, createRenderer, frames }: ScreenProps) {
   const panel = useSyncExternalStore(source.subscribePanel, () => source.shownPanel);

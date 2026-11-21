@@ -6,7 +6,7 @@
  * what a tap means (jarvis-ui D2). The store has two parts:
  * - the display (state and level), read by the Orb's frame loop directly, so
  *   the loudness (about 30 messages a second) never goes through React state;
- * - the Panel (which one shows, and its latest reading), which React reads with
+ * - the Panel (which one shows, its latest reading and a built Panel's parts), which React reads with
  *   `useSyncExternalStore`. Only Panel messages notify its subscribers.
  *
  * Nothing polls: the only timer is the reconnect timer, started when a
@@ -15,7 +15,7 @@
 
 import { applyMessage, CONNECTED, type Display, OFFLINE } from './display';
 import { applyPanelMessage, NO_PANEL, type PanelView } from './panel';
-import { encodeFromOrb, type FromOrb, type PanelName, parseToOrb, type Stats } from './protocol';
+import { type BuiltPanel, encodeFromOrb, type FromOrb, type PanelName, parseToOrb, type Stats } from './protocol';
 
 /**
  * The port of Jarvis's WebSocket. It must match `DEFAULT_PORT` (8765, the
@@ -89,8 +89,10 @@ export interface PanelSource {
   readonly subscribePanel: (listener: () => void) => () => void;
   /** The Panel Jarvis asked for, or `null`. */
   readonly shownPanel: PanelName | null;
-  /** The Dashboard's latest reading; `null` before the first one and while no Panel shows. */
+  /** The latest reading for the Dashboard or a built Panel's gauges; `null` before the first one and while neither shows. */
   readonly stats: Stats | null;
+  /** The built Panel's title and parts while it shows; otherwise `null` (or absent, for a source that never builds one). */
+  readonly builtPanel?: BuiltPanel | null;
   /** Darren tapped outside the Panel: tell Jarvis once and hide it here. */
   readonly closePanel: () => void;
   /** Where the camera Panel's picture comes from; default `CAMERA_URL`. */
@@ -131,7 +133,11 @@ export class JarvisLink implements OrbSource, PanelSource {
   }
 
   get stats(): Stats | null {
-    return this.#panel.kind === 'stats' ? this.#panel.reading : null;
+    return this.#panel.kind === 'stats' || this.#panel.kind === 'built' ? this.#panel.reading : null;
+  }
+
+  get builtPanel(): BuiltPanel | null {
+    return this.#panel.kind === 'built' ? this.#panel.panel : null;
   }
 
   /** An arrow function, so `useSyncExternalStore` can be given it as it is. */
@@ -230,6 +236,7 @@ export class JarvisLink implements OrbSource, PanelSource {
           this.#display = applyMessage(this.#display, message);
           return;
         case 'show_panel':
+        case 'show_built_panel':
         case 'hide_panel':
         case 'stats':
           this.#setPanel(applyPanelMessage(this.#panel, message));

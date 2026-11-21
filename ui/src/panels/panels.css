@@ -230,6 +230,122 @@
   color: var(--panel-ink-dim);
 }
 
+/* A long title is cut, never wrapped: the heading keeps its one line. */
+.panel-heading-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * A built Panel: its title, then its parts in a fixed grid that fills the rest
+ * of the frame and never grows past it. One part fills the grid, two sit side
+ * by side, three or four make two rows of two (a third spans its row). The
+ * gaps are the Dashboard's.
+ */
+.panel-built {
+  justify-content: flex-start;
+  gap: 18px;
+}
+
+.built-parts {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 24px 40px;
+}
+
+.built-parts-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.built-parts-3,
+.built-parts-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.built-parts-3 > :last-child {
+  grid-column: span 2;
+}
+
+.built-part {
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+.built-part dd {
+  margin: 0;
+}
+
+.built-part-title {
+  margin: 0 0 10px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The model's text, cut with an ellipsis after the lines its cell has room for. */
+.built-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 9;
+  margin: 0;
+  overflow: hidden;
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 32px;
+  overflow-wrap: anywhere;
+}
+
+.built-parts-3 .built-text,
+.built-parts-4 .built-text {
+  -webkit-line-clamp: 5;
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.built-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One line per item, cut with an ellipsis; a short tick in the accent marks it. */
+.built-item {
+  position: relative;
+  padding-left: 18px;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 34px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.built-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 8px;
+  height: 2px;
+  background: var(--panel-accent);
+}
+
+/* Eight items still fit a row of two: 8 x 17 px under the title. */
+.built-parts-3 .built-item,
+.built-parts-4 .built-item {
+  font-size: 15px;
+  line-height: 17px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .panel {
     animation: none;
