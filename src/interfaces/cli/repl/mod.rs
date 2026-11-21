@@ -127,7 +127,7 @@ where
             let with_idle_work = mem::take(&mut idle_work_due);
             let read = async {
                 if with_idle_work {
-                    read_line_during_idle_work(&mut input, memory).await
+                    read_line_during_idle_work(&mut input, memory, presenter).await
                 } else {
                     read_input_line(&mut input).await.map(|line| (line, None))
                 }

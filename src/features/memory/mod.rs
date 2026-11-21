@@ -1,6 +1,7 @@
 mod embedder;
 mod facts;
 mod import;
+mod noting;
 mod recall;
 mod types;
 
@@ -13,6 +14,7 @@ use crate::storage::{
 
 pub(crate) use embedder::{EmbedError, EmbedderState};
 pub(crate) use facts::facts_message;
+pub(crate) use noting::FactNoter;
 pub(crate) use recall::{RecallMode, wants_memory_search};
 pub(crate) use types::{IdlePass, MemoryError, MemoryStatus, RecallSnapshot};
 
@@ -28,6 +30,8 @@ const IDLE_PAGE_SIZE: usize = 4;
 pub(crate) struct MemoryService {
     repository: MemoryRepository,
     embedder: Embedder,
+    /// Notes facts from turns while idle; `None` leaves the idle time to embedding.
+    noter: Option<FactNoter>,
 }
 
 impl MemoryService {
@@ -36,7 +40,19 @@ impl MemoryService {
         Self {
             repository,
             embedder: Embedder::connect(embeddings),
+            noter: None,
         }
+    }
+
+    /// Lets the idle time also examine turns for facts (see [`FactNoter`]).
+    pub(crate) fn with_fact_noting(mut self, noter: FactNoter) -> Self {
+        self.noter = Some(noter);
+        self
+    }
+
+    /// The idle noting pass, when the service was given one.
+    pub(crate) fn fact_noter(&self) -> Option<&FactNoter> {
+        self.noter.as_ref()
     }
 
     pub(crate) async fn recall(&self, query: &str, excluded: &[SourceId]) -> RecallSnapshot {

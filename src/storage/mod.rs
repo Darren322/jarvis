@@ -3,6 +3,7 @@ mod chunking;
 mod error;
 mod facts;
 mod memory_repository;
+mod noting;
 mod schema;
 mod sqlite_vec;
 mod time;
@@ -18,3 +19,4 @@ pub(crate) use facts::{
     MAX_FACT_BYTES, MAX_FACTS_BYTES,
 };
 pub(crate) use memory_repository::*;
+pub(crate) use noting::{Examination, TurnId};

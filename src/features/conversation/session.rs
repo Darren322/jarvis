@@ -85,7 +85,8 @@ impl ConversationSession {
             .map(ConversationArchive::memory_repository)
     }
 
-    /// Where facts are added and removed ("remember that" and "forget that" use it).
+    /// Where facts are added and removed: "remember that" and "forget that", and the
+    /// idle noting pass (fast-memory 05).
     pub(crate) fn facts_repository(&self) -> Option<FactsRepository> {
         self.archive
             .as_ref()

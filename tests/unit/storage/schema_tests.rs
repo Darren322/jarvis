@@ -1,7 +1,8 @@
 use rusqlite::Connection;
 
 use super::{
-    CREATE_SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, OpenResult, SCHEMA_VERSION, initialize,
+    CREATE_SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V4_TO_V5, OpenResult,
+    SCHEMA_VERSION, initialize,
 };
 
 /// A v3 database with one of each case the migration must handle.
@@ -258,6 +259,95 @@ fn migrates_v4_to_v5_keeping_every_row_and_adding_an_empty_facts_table() {
             "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'fact'"
         ),
         0
+    );
+}
+
+/// A v5 database as Jarvis has run it: the v4 fixture, the facts table, and the facts
+/// it holds (one Darren gave, one noted by a model).
+fn v5_database() -> Connection {
+    let connection = v4_database();
+    connection
+        .execute_batch(MIGRATE_V4_TO_V5)
+        .expect("v5 schema builds");
+    connection
+        .execute_batch(
+            "INSERT INTO facts (text, origin, created_at_unix_ms) VALUES
+                 ('My sister is called Mia.', 'stated', 301),
+                 ('Darren likes hiking.', 'noted', 302);",
+        )
+        .expect("v5 fixture rows insert");
+    assert_eq!(count(&connection, "PRAGMA user_version"), 5);
+    connection
+}
+
+#[test]
+fn migrates_v5_to_v6_marking_every_existing_turn_examined_and_keeping_every_row() {
+    let mut connection = v5_database();
+    let before = |connection: &Connection| {
+        [
+            "SELECT COUNT(*) FROM turns",
+            "SELECT COUNT(*) FROM sources",
+            "SELECT COUNT(*) FROM memories",
+            "SELECT COUNT(*) FROM facts",
+            "SELECT COUNT(*) FROM facts WHERE origin = 'noted'",
+        ]
+        .map(|sql| count(connection, sql))
+    };
+    let rows_before = before(&connection);
+    assert_eq!(rows_before, [6, 6, 6, 2, 1]);
+
+    assert!(matches!(
+        initialize(&mut connection, 400).expect("migration runs"),
+        OpenResult::Ready(_)
+    ));
+
+    assert_eq!(count(&connection, "PRAGMA user_version"), SCHEMA_VERSION);
+    assert_eq!(before(&connection), rows_before);
+    // The turns the database already held are not mined on the first idle.
+    assert_eq!(count(&connection, "SELECT COUNT(*) FROM turns"), 6);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM turns WHERE facts_examined = 1"
+        ),
+        6
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT user_text = 'My cat is called Miso.' FROM turns WHERE id = 1"
+        ),
+        1,
+        "turn text is intact"
+    );
+
+    // A turn archived afterwards is waiting to be examined; the flag is 0 or 1 only.
+    connection
+        .execute(
+            "INSERT INTO turns (session_id, created_at_unix_ms, user_text, assistant_text, outcome)
+             VALUES (1, 500, 'My dog is called Rex.', 'Good boy.', 'completed')",
+            [],
+        )
+        .expect("a new turn inserts");
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM turns WHERE facts_examined = 0"
+        ),
+        1
+    );
+    assert!(
+        connection
+            .execute("UPDATE turns SET facts_examined = 2 WHERE id = 1", [])
+            .is_err(),
+        "the flag is constrained"
+    );
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'turns_awaiting_facts'"
+        ),
+        1
     );
 }
 

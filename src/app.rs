@@ -14,10 +14,10 @@ use crate::config::{
     AppConfig, CueConfig, CueVolume, OptionalTtsConfig, OrbConfig, PanelConfig, TtsConfig,
 };
 use crate::features::{
-    assistant::{Assistant, SYSTEM_PREAMBLE},
+    assistant::{Assistant, FactExtractor, SYSTEM_PREAMBLE},
     conversation::ConversationSession,
     listening::{Listener, Recorder, run_level_meter},
-    memory::MemoryService,
+    memory::{FactNoter, MemoryService},
     panel::{self, PanelHandle, PanelInbox},
     speech::{CueSounds, SpeechOutput, run_state_cues},
     state::StateFeed,
@@ -126,7 +126,17 @@ impl App {
         }
         let repository = session.memory_repository();
         let memory = match repository {
-            Some(repository) => Some(MemoryService::open(repository, self.embeddings.clone())),
+            Some(repository) => {
+                let service = MemoryService::open(repository, self.embeddings.clone());
+                // The idle time also notes facts, with its own tool-free model run.
+                Some(match session.facts_repository() {
+                    Some(facts) => service.with_fact_noting(FactNoter::new(
+                        FactExtractor::new(self.local_llm.model()),
+                        facts,
+                    )),
+                    None => service,
+                })
+            }
             None => {
                 eprintln!(
                     "Warning: local memory storage is unavailable; continuing with normal chat."

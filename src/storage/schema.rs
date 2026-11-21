@@ -2,7 +2,7 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 
 use super::chunking::{MAX_CHUNK_BYTES, conversation_text, split};
 
-pub(super) const SCHEMA_VERSION: i64 = 5;
+pub(super) const SCHEMA_VERSION: i64 = 6;
 
 const CREATE_SCHEMA_V1: &str = r#"
 CREATE TABLE sessions (
@@ -253,6 +253,22 @@ CREATE TABLE facts (
 PRAGMA user_version = 5;
 "#;
 
+/// v6 lets Jarvis note facts by itself while idle (fast-memory 05): each turn
+/// carries whether that pass has examined it yet. Turns that exist when the
+/// database is migrated are marked examined: the pass looks at what is said from
+/// now on, and does not start a Gemma run for every past turn on the first idle.
+/// (To read the old turns anyway: `UPDATE turns SET facts_examined = 0`.)
+/// The partial index keeps "the oldest turn still to examine" cheap on a large
+/// archive; the query in `storage/noting.rs` repeats its predicate.
+const MIGRATE_V5_TO_V6: &str = r#"
+ALTER TABLE turns ADD COLUMN facts_examined INTEGER NOT NULL DEFAULT 0
+    CHECK (facts_examined IN (0, 1));
+UPDATE turns SET facts_examined = 1;
+CREATE INDEX turns_awaiting_facts ON turns(id)
+    WHERE facts_examined = 0 AND outcome = 'completed';
+PRAGMA user_version = 6;
+"#;
+
 pub(super) enum OpenResult {
     Ready(i64),
     Unsupported(i64),
@@ -287,6 +303,9 @@ pub(super) fn initialize(
     }
     if version < 5 {
         transaction.execute_batch(MIGRATE_V4_TO_V5)?;
+    }
+    if version < 6 {
+        transaction.execute_batch(MIGRATE_V5_TO_V6)?;
     }
     let session_id = create_session(&transaction, started_at_unix_ms)?;
 

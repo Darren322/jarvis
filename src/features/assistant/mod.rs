@@ -1,4 +1,5 @@
 mod error;
+mod note_facts;
 mod policy;
 mod policy_hook;
 mod run_observer;
@@ -22,6 +23,7 @@ use rig_core::{
 use tokio::sync::mpsc;
 
 pub(crate) use error::AssistantError;
+pub(crate) use note_facts::FactExtractor;
 pub(crate) use run_report::{AssistantRun, AssistantRunError, CallUsage, ModelStage, RunReport};
 
 use policy_hook::JarvisPolicyHook;

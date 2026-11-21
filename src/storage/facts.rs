@@ -116,17 +116,7 @@ impl FactsRepository {
         text: &str,
         origin: FactOrigin,
     ) -> Result<AddedFact, FactError> {
-        let text = text.trim();
-        if text.is_empty() {
-            return Err(FactError::Empty);
-        }
-        if text.contains(['\n', '\r']) {
-            return Err(FactError::NotOneLine);
-        }
-        if text.len() > MAX_FACT_BYTES {
-            return Err(FactError::TooLong);
-        }
-        let text = text.to_owned();
+        let text = validated(text)?.to_owned();
         let created_at_unix_ms = unix_time_ms()?;
         self.connection
             .call(move |connection| {
@@ -173,7 +163,22 @@ impl FactsRepository {
     }
 }
 
-fn list_all(connection: &rusqlite::Connection) -> rusqlite::Result<Vec<Fact>> {
+/// The trimmed text, if it is a fact: not empty, one line, within `MAX_FACT_BYTES`.
+pub(super) fn validated(text: &str) -> Result<&str, FactError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(FactError::Empty);
+    }
+    if text.contains(['\n', '\r']) {
+        return Err(FactError::NotOneLine);
+    }
+    if text.len() > MAX_FACT_BYTES {
+        return Err(FactError::TooLong);
+    }
+    Ok(text)
+}
+
+pub(super) fn list_all(connection: &rusqlite::Connection) -> rusqlite::Result<Vec<Fact>> {
     let mut statement =
         connection.prepare("SELECT id, text, origin, created_at_unix_ms FROM facts ORDER BY id")?;
     statement
@@ -190,7 +195,7 @@ fn list_all(connection: &rusqlite::Connection) -> rusqlite::Result<Vec<Fact>> {
 
 /// D8 inside the caller's transaction. The outer `Result` is SQLite failing; the
 /// inner one is the refusal, decided before anything is deleted.
-fn insert_within(
+pub(super) fn insert_within(
     transaction: &Transaction<'_>,
     text: &str,
     origin: FactOrigin,
