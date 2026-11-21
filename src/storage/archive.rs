@@ -5,7 +5,10 @@ use tokio_rusqlite::Connection;
 
 use super::error::StorageError;
 use super::time::unix_time_ms;
-use super::{MemoryRepository, MemorySaveState, SourceId, memory_repository, schema, sqlite_vec};
+use super::{
+    FactsRepository, MemoryRepository, MemorySaveState, SourceId, memory_repository, schema,
+    sqlite_vec,
+};
 
 // LEARNING: Raw SQL stays in this storage seam. Services receive typed values
 // and a cloned connection handle, while this module owns archive transactions.
@@ -46,6 +49,12 @@ impl ConversationArchive {
 
     pub(crate) fn memory_repository(&self) -> MemoryRepository {
         MemoryRepository {
+            connection: self.connection.clone(),
+        }
+    }
+
+    pub(crate) fn facts_repository(&self) -> FactsRepository {
+        FactsRepository {
             connection: self.connection.clone(),
         }
     }

@@ -2,7 +2,7 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 
 use super::chunking::{MAX_CHUNK_BYTES, conversation_text, split};
 
-pub(super) const SCHEMA_VERSION: i64 = 4;
+pub(super) const SCHEMA_VERSION: i64 = 5;
 
 const CREATE_SCHEMA_V1: &str = r#"
 CREATE TABLE sessions (
@@ -238,6 +238,21 @@ DROP TABLE memory_state;
 PRAGMA user_version = 4;
 "#;
 
+/// v5 adds the facts list: short facts about the user that go into every request.
+/// Facts are their own table, never rows in `memories`, so no search returns them.
+/// The per-fact byte limit and the list cap are enforced in Rust (see
+/// `storage/facts.rs`), not here, so raising one never needs a table rebuild.
+/// `AUTOINCREMENT` keeps a removed fact's id from ever naming a later fact.
+const MIGRATE_V4_TO_V5: &str = r#"
+CREATE TABLE facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) >= 1),
+    origin TEXT NOT NULL CHECK (origin IN ('stated', 'noted')),
+    created_at_unix_ms INTEGER NOT NULL
+);
+PRAGMA user_version = 5;
+"#;
+
 pub(super) enum OpenResult {
     Ready(i64),
     Unsupported(i64),
@@ -269,6 +284,9 @@ pub(super) fn initialize(
     }
     if version < 4 {
         migrate_v3_to_v4(&transaction)?;
+    }
+    if version < 5 {
+        transaction.execute_batch(MIGRATE_V4_TO_V5)?;
     }
     let session_id = create_session(&transaction, started_at_unix_ms)?;
 

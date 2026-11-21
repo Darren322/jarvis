@@ -1,4 +1,5 @@
 mod embedder;
+mod facts;
 mod import;
 mod recall;
 mod types;
@@ -11,6 +12,7 @@ use crate::storage::{
 };
 
 pub(crate) use embedder::{EmbedError, EmbedderState};
+pub(crate) use facts::facts_message;
 pub(crate) use recall::{RecallMode, wants_memory_search};
 pub(crate) use types::{IdlePass, MemoryError, MemoryStatus, RecallSnapshot};
 

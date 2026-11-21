@@ -47,14 +47,28 @@ const WARMUP_RESPONSE_TOKENS: u64 = 1;
 /// after the history is trimmed the next request would be read from the system
 /// prompt on. `prompt` is the stored prompt of the last exchange and `history` is
 /// everything before it: that is exactly how the next request begins.
+///
+/// The facts message (see `request_history`) is part of that start, so a warm-up
+/// carries the facts the session sent: without them it would warm another prefix.
 pub(crate) struct CacheWarmup {
+    facts: Option<Message>,
     history: Vec<Message>,
     prompt: Message,
 }
 
 impl CacheWarmup {
     pub(crate) fn new(history: Vec<Message>, prompt: Message) -> Self {
-        Self { history, prompt }
+        Self {
+            facts: None,
+            history,
+            prompt,
+        }
+    }
+
+    /// Adds the facts message the next request will carry, `None` for no facts.
+    pub(crate) fn with_facts(mut self, facts: Option<Message>) -> Self {
+        self.facts = facts;
+        self
     }
 }
 
@@ -76,15 +90,17 @@ impl Assistant {
 
     /// Run Rig's native multi-turn stream and forward only visible text.
     ///
-    /// `earlier_history` and `latest_exchange` are the stored conversation
-    /// split before its last whole exchange; recalled `documents` are sent
-    /// between them (see `history_with_recall`).
+    /// `facts` is the facts message (`None` for an empty list). It starts the
+    /// request, directly after the system prompt. `earlier_history` and
+    /// `latest_exchange` are the stored conversation split before its last whole
+    /// exchange; recalled `documents` are sent between them (see `request_history`).
     ///
     /// The caller owns both this future and the bounded receiver, so dropping
     /// either side cannot leave a detached producer running in the background.
     pub(crate) async fn respond_stream(
         &self,
         prompt: &str,
+        facts: Option<&Message>,
         earlier_history: &[Message],
         latest_exchange: &[Message],
         documents: &[Document],
@@ -100,6 +116,7 @@ impl Assistant {
             let stream = self
                 .configured_runner(
                     prompt,
+                    facts,
                     earlier_history,
                     latest_exchange,
                     documents,
@@ -129,8 +146,8 @@ impl Assistant {
     /// Nothing is reported, archived or added to any history. The returned future
     /// borrows nothing, so it can run beside the conversation; dropping it only
     /// stops Jarvis waiting, and whatever the server had read by then stays cached.
-    /// It carries the same system prompt and tools as a real run, because both are
-    /// part of the cached prompt.
+    /// It carries the same system prompt, tools and facts message as a real run,
+    /// because all three are part of the cached prompt.
     pub(crate) fn warm_cache(
         &self,
         warmup: CacheWarmup,
@@ -138,7 +155,12 @@ impl Assistant {
         let runner = self
             .agent
             .runner(warmup.prompt)
-            .history(warmup.history)
+            .history(request_history(
+                warmup.facts.as_ref(),
+                &warmup.history,
+                &[],
+                &[],
+            ))
             .max_turns(1)
             .tool_concurrency(1)
             .max_tokens(WARMUP_RESPONSE_TOKENS)
@@ -162,6 +184,7 @@ impl Assistant {
     fn configured_runner(
         &self,
         prompt: &str,
+        facts: Option<&Message>,
         earlier_history: &[Message],
         latest_exchange: &[Message],
         documents: &[Document],
@@ -171,10 +194,10 @@ impl Assistant {
         // turn decision. Put the passive observer first so it records the
         // completed model call even when Jarvis policy rejects that turn.
         // Rig's `run.messages()` (and so `PromptResponse::messages`) holds only
-        // the prompt and the turns after it, never the input history. The recall
-        // message rides inside that input history, so it is structurally absent
-        // from the batch the session replays, without inspecting text.
-        let request_history = history_with_recall(earlier_history, latest_exchange, documents);
+        // the prompt and the turns after it, never the input history. The facts and
+        // recall messages ride inside that input history, so they are structurally
+        // absent from the batch the session replays, without inspecting text.
+        let request_history = request_history(facts, earlier_history, documents, latest_exchange);
         self.agent
             .runner(prompt)
             .history(request_history)
@@ -188,29 +211,36 @@ impl Assistant {
     }
 }
 
-/// Returns the input history with the recalled memories as one user message
-/// placed between the earlier conversation and its last whole exchange.
+/// Returns the input history of a request: `[facts, earlier history, memories,
+/// latest exchange]`, and Rig then appends the prompt. A real run and a cache
+/// warm-up both build their request through this function, so the warm-up reads
+/// exactly the start the next request has.
 ///
-/// The request order is `[earlier history, memories, latest exchange]`, and
-/// Rig then appends the prompt. The placement serves two needs:
-///
-/// - llama.cpp reuses a cached prefix only up to the first token that differs.
-///   Recall changes on almost every turn, so Rig's `.documents()` (which inserts
-///   right after the system message) made the whole history miss the cache.
-///   Here the system prompt and the earlier history stay byte-identical.
+/// - The facts message comes first, directly after the system prompt. It changes
+///   only when a fact does, so it stays in the model server's cache. With no facts
+///   no message is added.
+/// - The memories are one user message placed between the earlier conversation
+///   and its last whole exchange. llama.cpp reuses a cached prefix only up to the
+///   first token that differs. Recall changes on almost every turn, so Rig's
+///   `.documents()` (which inserts right after the system message) made the whole
+///   history miss the cache. Here the system prompt, the facts and the earlier
+///   history stay byte-identical.
 /// - The latest exchange stays next to the question, so a reference such as
-///   "there" resolves to the conversation. With the memories directly before
-///   the prompt, Gemma copied an old recalled answer instead.
+///   "there" resolves to the conversation. With the memories directly before the
+///   prompt, Gemma copied an old recalled answer instead.
 ///
 /// With no history the memories go directly before the prompt, and with no
-/// documents no message is added. The message is built exactly as Rig builds it
-/// for `.documents()`, so the wire text is unchanged.
-fn history_with_recall(
+/// documents no message is added. The memories message is built exactly as Rig
+/// builds it for `.documents()`, so the wire text is unchanged.
+fn request_history(
+    facts: Option<&Message>,
     earlier_history: &[Message],
-    latest_exchange: &[Message],
     documents: &[Document],
+    latest_exchange: &[Message],
 ) -> Vec<Message> {
-    let mut messages = earlier_history.to_vec();
+    let mut messages = Vec::new();
+    messages.extend(facts.cloned());
+    messages.extend_from_slice(earlier_history);
     if !documents.is_empty() {
         let content = documents
             .iter()

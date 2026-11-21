@@ -22,9 +22,9 @@ use crate::{
     config::EmbeddingConfig,
     features::{
         assistant::Assistant,
-        memory::{MemoryService, RecallMode},
+        memory::{MemoryService, RecallMode, facts_message},
     },
-    storage::{ArchiveOutcome, MemoryEligibility, MemorySaveState},
+    storage::{ArchiveOutcome, FactOrigin, MemoryEligibility, MemorySaveState},
 };
 
 use super::{ConversationSession, ConversationTurn, merge_source_dependencies};
@@ -664,4 +664,165 @@ async fn requests_between_trims_share_their_history_and_a_trim_hands_back_the_wa
     assert_eq!(next.len(), 2 * LOWER + 1);
     assert_eq!(next[..warm.len()], warm[..]);
     assert_eq!(next.last(), Some(&user_message("question after")));
+}
+
+fn mock_assistant(turns: usize) -> (Assistant, MockCompletionModel) {
+    let model = MockCompletionModel::from_stream_turns(
+        (1..=turns).map(|number| answer(&format!("answer {number}"))),
+    );
+    let handle = model.clone();
+    let assistant = Assistant::new(
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
+    );
+    (assistant, handle)
+}
+
+/// How many messages of a request are the facts message.
+fn facts_messages_in(history: &[Message]) -> usize {
+    history
+        .iter()
+        .filter(|message| format!("{message:?}").contains("Saved facts about the user"))
+        .count()
+}
+
+#[tokio::test]
+async fn every_request_reads_the_facts_list_so_changes_show_in_the_next_one() {
+    let (assistant, model) = mock_assistant(4);
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_ok());
+    let facts = session.facts_repository().expect("archive is open");
+
+    let empty = session.respond(&assistant, "question 1").await;
+    let sister = facts
+        .insert("My sister is called Mia.", FactOrigin::Stated)
+        .await
+        .expect("fact is added");
+    facts
+        .insert("I wake at six.", FactOrigin::Noted)
+        .await
+        .expect("fact is added");
+    let listed = facts.list().await.expect("facts list");
+    let both = session.respond(&assistant, "question 2").await;
+    facts.remove(sister.id).await.expect("fact is removed");
+    let one = session.respond(&assistant, "question 3").await;
+    let remaining = facts.list().await.expect("facts list");
+    facts
+        .remove(remaining[0].id)
+        .await
+        .expect("fact is removed");
+    let none = session.respond(&assistant, "question 4").await;
+
+    for turn in [&empty, &both, &one, &none] {
+        assert!(turn.run.is_ok());
+        assert_eq!(turn.context_warning, None);
+    }
+    let requests = model.requests();
+    let first_message = |index: usize| requests[index].chat_history.first().cloned();
+    // No facts: no message, and the conversation starts with the first prompt.
+    assert_eq!(first_message(0), Some(user_message("question 1")));
+    // Facts added after the first turn are in the second request, in id order.
+    let second = requests[1].chat_history.to_vec();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(facts_messages_in(&second), 1);
+    assert_eq!(Some(second[0].clone()), facts_message(&listed));
+    assert!(
+        format!("{:?}", second[0]).find("Mia") < format!("{:?}", second[0]).find("wake"),
+        "oldest first"
+    );
+    // A removed fact is absent from the very next request.
+    let third = requests[2].chat_history.to_vec();
+    assert_eq!(facts_messages_in(&third), 1);
+    assert!(!format!("{:?}", third[0]).contains("Mia"));
+    assert!(format!("{:?}", third[0]).contains("I wake at six."));
+    // Once the list is empty again no message is sent, and none was ever stored
+    // in the conversation: the history in the last request holds only exchanges.
+    let fourth = requests[3].chat_history.to_vec();
+    assert_eq!(facts_messages_in(&fourth), 0);
+    assert_eq!(fourth.first(), Some(&user_message("question 1")));
+    assert_eq!(fourth.len(), 7);
+
+    drop(session);
+    remove_archive(&path);
+}
+
+#[tokio::test]
+async fn a_failed_facts_read_warns_and_the_turn_goes_out_without_facts() {
+    let (assistant, model) = mock_assistant(1);
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_ok());
+    // Break the table from outside, as a damaged database would.
+    Connection::open(&path)
+        .expect("archive database opens")
+        .execute_batch("DROP TABLE facts;")
+        .expect("facts table is dropped");
+
+    let turn = session.respond(&assistant, "question 1").await;
+
+    assert!(turn.run.is_ok(), "a facts failure never fails the turn");
+    assert!(
+        turn.context_warning
+            .is_some_and(|warning| warning.contains("facts list is unavailable"))
+    );
+    assert_eq!(
+        model.requests()[0].chat_history.to_vec(),
+        [user_message("question 1")]
+    );
+
+    drop(session);
+    remove_archive(&path);
+}
+
+#[tokio::test]
+async fn a_trim_warm_up_carries_the_facts_the_next_request_starts_with() {
+    const UPPER: usize = 12;
+    let trimming_turn = UPPER + 1;
+    let (assistant, model) = mock_assistant(trimming_turn + 2);
+    let path = archive_path();
+    let mut session = ConversationSession::new(path.clone());
+    assert!(session.reset().await.is_ok());
+    session
+        .facts_repository()
+        .expect("archive is open")
+        .insert("My sister is called Mia.", FactOrigin::Stated)
+        .await
+        .expect("fact is added");
+
+    for number in 1..=trimming_turn {
+        let turn = session
+            .respond(&assistant, &format!("question {number}"))
+            .await;
+        assert!(turn.run.is_ok());
+        if let Some(warmup) = turn.cache_warmup {
+            assistant
+                .warm_cache(warmup)
+                .await
+                .expect("the scripted warm-up succeeds");
+        }
+    }
+    let after_trim = session.respond(&assistant, "question after").await;
+    assert!(after_trim.run.is_ok());
+
+    let requests = model.requests();
+    let warm = requests[trimming_turn].chat_history.to_vec();
+    let next = requests[trimming_turn + 1].chat_history.to_vec();
+    assert_eq!(facts_messages_in(&warm), 1);
+    assert!(format!("{:?}", warm[0]).contains("My sister is called Mia."));
+    assert_eq!(
+        next[..warm.len()],
+        warm[..],
+        "the warm-up is byte-identical to the start of the next request, facts included"
+    );
+    // Before the trim, every request began with the same facts message.
+    for request in &requests[..trimming_turn] {
+        assert_eq!(request.chat_history[0], warm[0]);
+    }
+
+    drop(session);
+    remove_archive(&path);
 }

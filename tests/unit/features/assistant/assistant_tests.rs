@@ -57,10 +57,30 @@ impl Assistant {
         latest_exchange: &[Message],
         documents: &[Document],
     ) -> Result<AssistantRun, Box<AssistantRunError>> {
+        self.respond_with_facts(prompt, None, earlier_history, latest_exchange, documents)
+            .await
+    }
+
+    /// Same, with the facts message the session reads for the request.
+    async fn respond_with_facts(
+        &self,
+        prompt: &str,
+        facts: Option<&Message>,
+        earlier_history: &[Message],
+        latest_exchange: &[Message],
+        documents: &[Document],
+    ) -> Result<AssistantRun, Box<AssistantRunError>> {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
         let (result, ()) = tokio::join!(
-            self.respond_stream(prompt, earlier_history, latest_exchange, documents, deltas),
+            self.respond_stream(
+                prompt,
+                facts,
+                earlier_history,
+                latest_exchange,
+                documents,
+                deltas
+            ),
             drain
         );
         result
@@ -193,7 +213,7 @@ async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
     let (delta_tx, _delta_rx) = mpsc::channel(2);
 
     let error = assistant
-        .respond_stream("Hello", &[], &[], &[], delta_tx)
+        .respond_stream("Hello", None, &[], &[], &[], delta_tx)
         .await
         .expect_err("pending provider stream should hit the Assistant deadline");
 
@@ -404,6 +424,7 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     let run = assistant
         .respond_stream(
             "Check the system status.",
+            None,
             &earlier_history,
             &latest_exchange,
             std::slice::from_ref(&document),
@@ -540,7 +561,7 @@ async fn streaming_policy_rejection_still_records_the_completed_model_call() {
     let (delta_tx, _delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Call status twice", &[], &[], &[], delta_tx)
+        .respond_stream("Call status twice", None, &[], &[], &[], delta_tx)
         .await
         .expect_err("policy must reject multiple tool calls");
 
@@ -573,7 +594,7 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
     let (delta_tx, mut delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Hello", &[], &[], &[], delta_tx)
+        .respond_stream("Hello", None, &[], &[], &[], delta_tx)
         .await
         .expect_err("midstream provider failure must not produce success");
 
@@ -1019,4 +1040,212 @@ async fn a_warm_up_stops_waiting_at_its_deadline() {
 
     assert!(matches!(result, Err(AssistantError::RunTimeout)));
     assert_eq!(started.elapsed(), super::WARMUP_DEADLINE);
+}
+
+/// A facts message as the session builds it, in a short form for these tests.
+fn facts_message_for_tests() -> Message {
+    Message::user("Saved facts about the user.\n- My sister is called Mia.\n")
+}
+
+#[tokio::test]
+async fn the_facts_message_starts_every_request_and_stays_out_of_history() {
+    let model = MockCompletionModel::from_stream_turns([
+        streamed_text("first answer", Usage::new()),
+        streamed_text("second answer", Usage::new()),
+        streamed_text("third answer", Usage::new()),
+    ]);
+    let model_handle = model.clone();
+    let assistant = Assistant::new(
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+        )
+        .build(),
+    );
+    let facts = facts_message_for_tests();
+
+    let first = assistant
+        .respond_with_facts("first question", Some(&facts), &[], &[], &[])
+        .await
+        .expect("the first run succeeds");
+    // Two runs with the same list: the second adds history behind the same start.
+    assistant
+        .respond_with_facts(
+            "second question",
+            Some(&facts),
+            &[],
+            &exchange("first question", "first answer"),
+            &[recalled("m1", "Miso is a cat.")],
+        )
+        .await
+        .expect("the second run succeeds");
+    // An empty list: no facts message at all.
+    assistant
+        .respond_with_facts("third question", None, &[], &[], &[])
+        .await
+        .expect("the third run succeeds");
+
+    let requests = model_handle.requests();
+    let history = |index: usize| -> Vec<Message> { requests[index].chat_history.to_vec() };
+    assert_eq!(
+        history(0),
+        [facts.clone(), Message::user("first question")],
+        "the facts message is the first message, before the prompt"
+    );
+    // Facts, the recalled memories (no earlier history), the last exchange, the prompt.
+    assert_eq!(history(1).len(), 5);
+    assert_eq!(history(1)[0], facts);
+    assert_eq!(history(1)[2], Message::user("first question"));
+    assert_eq!(
+        history(0)[..1],
+        history(1)[..1],
+        "the same list sends an identical prefix"
+    );
+    assert_eq!(history(2), [Message::user("third question")]);
+
+    // Rig returns the prompt and what follows it, never the input history the
+    // facts rode in on, so the conversation the session stores never holds them.
+    let messages = first
+        .response
+        .messages()
+        .expect("native streamed response includes the Rig transcript");
+    assert_eq!(messages.first(), Some(&Message::user("first question")));
+    assert!(!messages.contains(&facts));
+}
+
+#[tokio::test]
+async fn the_facts_message_sits_directly_after_the_system_prompt_on_the_wire() {
+    let facts = facts_message_for_tests();
+    let facts_text = "Saved facts about the user.\n- My sister is called Mia.\n";
+    let system = || wire("system", "system prompt");
+
+    struct Case {
+        name: &'static str,
+        facts: Option<Message>,
+        earlier: Vec<Message>,
+        latest: Vec<Message>,
+        documents: Vec<Document>,
+        expected: WireMessages,
+    }
+    let cases = [
+        Case {
+            name: "no history",
+            facts: Some(facts.clone()),
+            earlier: vec![],
+            latest: vec![],
+            documents: vec![],
+            expected: vec![
+                system(),
+                wire("user", facts_text),
+                wire("user", "new question"),
+            ],
+        },
+        Case {
+            name: "history and recalled memories: the facts still come first",
+            facts: Some(facts.clone()),
+            earlier: exchange("q1", "a1"),
+            latest: exchange("q2", "a2"),
+            documents: vec![recalled("m1", "My cat is Miso.")],
+            expected: vec![
+                system(),
+                wire("user", facts_text),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", "<file id: m1>\nMy cat is Miso.\n</file>\n"),
+                wire("user", "q2"),
+                wire("assistant", "a2"),
+                wire("user", "new question"),
+            ],
+        },
+        Case {
+            name: "an empty list adds no message",
+            facts: None,
+            earlier: exchange("q1", "a1"),
+            latest: exchange("q2", "a2"),
+            documents: vec![],
+            expected: vec![
+                system(),
+                wire("user", "q1"),
+                wire("assistant", "a1"),
+                wire("user", "q2"),
+                wire("assistant", "a2"),
+                wire("user", "new question"),
+            ],
+        },
+    ];
+
+    for case in cases {
+        let server = answering_server("ok").await;
+        let assistant = wire_assistant(&server);
+        assistant
+            .respond_with_facts(
+                "new question",
+                case.facts.as_ref(),
+                &case.earlier,
+                &case.latest,
+                &case.documents,
+            )
+            .await
+            .expect("the run should succeed");
+
+        assert_eq!(
+            wire_messages(&server).await,
+            vec![case.expected],
+            "{}",
+            case.name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_warm_up_carries_the_facts_message_so_it_begins_like_the_next_request() {
+    let facts = facts_message_for_tests();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(truncated_response())
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_response("answer"))
+        .mount(&server)
+        .await;
+    let assistant = wire_assistant(&server);
+    let earlier = [exchange("q1", "a1"), exchange("q2", "a2")].concat();
+    let latest = tool_exchange("q3", "a3");
+
+    // What the session hands over after a trim, with the facts it sent that turn.
+    let warmup =
+        super::CacheWarmup::new(earlier.clone(), latest[0].clone()).with_facts(Some(facts.clone()));
+    assistant
+        .warm_cache(warmup)
+        .await
+        .expect("a truncated answer is all a warm-up needs");
+    assistant
+        .respond_with_facts("new question", Some(&facts), &earlier, &latest, &[])
+        .await
+        .expect("the run should succeed");
+
+    let messages = wire_messages(&server).await;
+    let (warm, next) = (&messages[0], &messages[1]);
+    assert_eq!(
+        *warm,
+        [
+            wire("system", "system prompt"),
+            wire(
+                "user",
+                "Saved facts about the user.\n- My sister is called Mia.\n"
+            ),
+            wire("user", "q1"),
+            wire("assistant", "a1"),
+            wire("user", "q2"),
+            wire("assistant", "a2"),
+            wire("user", "q3"),
+        ]
+    );
+    assert_eq!(*warm, next[..warm.len()], "byte-identical, facts included");
+    let bodies = wire_bodies(&server).await;
+    assert_eq!(bodies[0]["tools"], bodies[1]["tools"]);
 }

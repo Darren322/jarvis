@@ -159,6 +159,108 @@ fn migrates_v3_memory_into_the_v4_store() {
     );
 }
 
+/// A v4 database as Jarvis has run it: the migrated v3 fixture, then more turns
+/// archived and indexed the v4 way, so every memory table holds real rows.
+fn v4_database() -> Connection {
+    let mut connection = v3_database();
+    let transaction = connection
+        .transaction()
+        .expect("fixture transaction starts");
+    super::migrate_v3_to_v4(&transaction).expect("v3 fixture migrates to v4");
+    transaction.commit().expect("v4 fixture commits");
+    connection
+        .execute_batch(
+            "INSERT INTO sessions (id, started_at_unix_ms) VALUES (2, 200);
+             INSERT INTO turns (id, session_id, created_at_unix_ms, user_text, assistant_text, outcome)
+             VALUES
+                 (5, 2, 201, 'My sister is called Mia.', 'Lovely name, master.', 'completed'),
+                 (6, 2, 202, 'What is the time?', 'Nearly tea time.', 'completed');
+             INSERT INTO sources (id, kind, turn_id, created_at_unix_ms) VALUES
+                 (20, 'conversation', 5, 201),
+                 (21, 'conversation', 6, 202);
+             INSERT INTO source_links (source_id, depends_on_source_id) VALUES (21, 20);
+             INSERT INTO memories (source_id, kind, text, created_at_unix_ms, embedding_model) VALUES
+                 (20, 'excerpt', 'My sister is called Mia. Lovely name, master.', 201, 'bge-test'),
+                 (21, 'excerpt', 'What is the time? Nearly tea time.', 202, NULL);
+             PRAGMA user_version = 4;",
+        )
+        .expect("v4 fixture rows insert");
+    assert_eq!(count(&connection, "PRAGMA user_version"), 4);
+    connection
+}
+
+#[test]
+fn migrates_v4_to_v5_keeping_every_row_and_adding_an_empty_facts_table() {
+    let mut connection = v4_database();
+    let before = |connection: &Connection| {
+        [
+            "SELECT COUNT(*) FROM sessions",
+            "SELECT COUNT(*) FROM turns",
+            "SELECT COUNT(*) FROM sources",
+            "SELECT COUNT(*) FROM source_links",
+            "SELECT COUNT(*) FROM memories",
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'mia'",
+        ]
+        .map(|sql| count(connection, sql))
+    };
+    let rows_before = before(&connection);
+    assert_eq!(rows_before, [2, 6, 6, 2, 6, 1]);
+
+    assert!(matches!(
+        initialize(&mut connection, 300).expect("migration runs"),
+        OpenResult::Ready(_)
+    ));
+
+    assert_eq!(count(&connection, "PRAGMA user_version"), SCHEMA_VERSION);
+    // The new initialization opens one more session; everything else is as it was.
+    let mut rows_after = before(&connection);
+    assert_eq!(rows_after[0], rows_before[0] + 1);
+    rows_after[0] = rows_before[0];
+    assert_eq!(rows_after, rows_before);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM memories WHERE embedding_model = 'bge-test'"
+        ),
+        1
+    );
+
+    // The facts table exists, is empty, and enforces its origin and its ids.
+    assert_eq!(count(&connection, "SELECT COUNT(*) FROM facts"), 0);
+    connection
+        .execute(
+            "INSERT INTO facts (text, origin, created_at_unix_ms) VALUES ('a fact', 'stated', 1)",
+            [],
+        )
+        .expect("a stated fact inserts");
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO facts (text, origin, created_at_unix_ms) VALUES ('a fact', 'guessed', 1)",
+                [],
+            )
+            .is_err(),
+        "origin is constrained"
+    );
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO facts (text, origin, created_at_unix_ms) VALUES ('', 'noted', 1)",
+                [],
+            )
+            .is_err(),
+        "an empty fact is refused"
+    );
+    // Facts are not memories: no search table holds them.
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH 'fact'"
+        ),
+        0
+    );
+}
+
 #[test]
 fn fresh_databases_start_at_the_current_version() {
     crate::storage::sqlite_vec::register();

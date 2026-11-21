@@ -1,15 +1,16 @@
 use std::{path::PathBuf, time::Duration};
 
+use rig_core::message::Message;
 use tokio::{sync::mpsc, time::Instant};
 
 use super::history::{History, Recorded, merge_source_dependencies};
 use crate::features::assistant::{
     Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta, CacheWarmup,
 };
-use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot};
+use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot, facts_message};
 use crate::storage::{
-    ArchiveOutcome, ConversationArchive, MemoryEligibility, MemoryRepository, MemorySaveState,
-    SourceId, StorageError,
+    ArchiveOutcome, ConversationArchive, FactsRepository, MemoryEligibility, MemoryRepository,
+    MemorySaveState, SourceId, StorageError,
 };
 
 const SUPPRESSED_LINEAGE_WARNING: &str = "Recent conversation context was cleared because a recalled memory changed while the answer was being saved.";
@@ -84,6 +85,17 @@ impl ConversationSession {
             .map(ConversationArchive::memory_repository)
     }
 
+    /// Where facts are added and removed; the commands of fast-memory 04 to 06 use it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "fast-memory 04 to 06 add the callers")
+    )]
+    pub(crate) fn facts_repository(&self) -> Option<FactsRepository> {
+        self.archive
+            .as_ref()
+            .map(ConversationArchive::facts_repository)
+    }
+
     pub(crate) fn clear_history(&mut self) {
         self.history.clear();
     }
@@ -92,6 +104,9 @@ impl ConversationSession {
     /// one run-local message before the last whole exchange. `Skip` makes no search
     /// and no warning. Either way the canonical final is archived only after the
     /// native stream completes.
+    ///
+    /// Every request starts with the facts list, read from storage now, so a fact
+    /// added or removed since the last turn shows in this request.
     pub(crate) async fn respond_stream(
         &mut self,
         assistant: &Assistant,
@@ -108,7 +123,8 @@ impl ConversationSession {
                 "local memory storage is unavailable; normal chat is continuing",
             ),
         };
-        let context_warning = recall.warning.clone();
+        let (facts, facts_warning) = self.facts_for_request().await;
+        let context_warning = join_warnings(recall.warning.clone(), facts_warning);
         let (earlier_history, latest_exchange) = self.history.split_last_exchange();
 
         // LEARNING: These Documents are request context, not Message history.
@@ -120,6 +136,7 @@ impl ConversationSession {
         let run = assistant
             .respond_stream(
                 prompt,
+                facts.as_ref(),
                 &earlier_history,
                 &latest_exchange,
                 &recall.documents,
@@ -172,7 +189,7 @@ impl ConversationSession {
         };
         let (history_warning, cache_warmup) = match recorded {
             Recorded::Kept => (None, None),
-            Recorded::Trimmed => (None, self.cache_warmup()),
+            Recorded::Trimmed => (None, self.cache_warmup(facts)),
             Recorded::Cleared(warning) => (Some(warning), None),
         };
         let context_warning = combine_warnings(context_warning, history_warning);
@@ -195,13 +212,33 @@ impl ConversationSession {
         }
     }
 
-    /// How the next request begins: every stored message up to and including the
-    /// last exchange's prompt. The answer after it cannot be sent ahead, because a
-    /// request has to end with a prompt.
-    fn cache_warmup(&self) -> Option<CacheWarmup> {
+    /// The facts message for one request, read from storage, and a warning when
+    /// that failed. With no archive there is no list and no warning: startup
+    /// already said so, and a turn must not repeat it. A failed read sends the
+    /// request without facts; it never fails the turn.
+    async fn facts_for_request(&self) -> (Option<Message>, Option<String>) {
+        let Some(archive) = self.archive.as_ref() else {
+            return (None, None);
+        };
+        match archive.facts_repository().list().await {
+            Ok(facts) => (facts_message(&facts), None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "the facts list is unavailable: {error}; normal chat is continuing"
+                )),
+            ),
+        }
+    }
+
+    /// How the next request begins: the facts message, then every stored message up
+    /// to and including the last exchange's prompt. The answer after it cannot be
+    /// sent ahead, because a request has to end with a prompt. `facts` is what the
+    /// turn that just ended sent; the list is read again when the next turn starts.
+    fn cache_warmup(&self, facts: Option<Message>) -> Option<CacheWarmup> {
         let (earlier_history, latest_exchange) = self.history.split_last_exchange();
         let prompt = latest_exchange.into_iter().next()?;
-        Some(CacheWarmup::new(earlier_history, prompt))
+        Some(CacheWarmup::new(earlier_history, prompt).with_facts(facts))
     }
 
     /// Saves a safe, non-eligible outcome when terminal output fails mid-stream.
@@ -229,6 +266,14 @@ fn archive_outcome(error: &AssistantRunError) -> ArchiveOutcome {
         | AssistantError::DeltaReceiverClosed => ArchiveOutcome::PromptFailed,
         AssistantError::RunTimeout => ArchiveOutcome::TimedOut,
         AssistantError::InvalidResponse => ArchiveOutcome::InvalidResponse,
+    }
+}
+
+fn join_warnings(first: Option<String>, second: Option<String>) -> Option<String> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(format!("{first} {second}")),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
     }
 }
 

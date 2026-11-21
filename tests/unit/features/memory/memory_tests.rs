@@ -8,7 +8,9 @@ use wiremock::{
 
 use crate::clients::remote_embeddings::RemoteEmbeddings;
 use crate::config::EmbeddingConfig;
-use crate::storage::{ArchiveOutcome, ConversationArchive, MemoryEligibility, SourceId};
+use crate::storage::{
+    ArchiveOutcome, ConversationArchive, FactOrigin, MemoryEligibility, SourceId,
+};
 
 use super::{EmbedderState, MemoryService};
 
@@ -103,6 +105,29 @@ async fn recall_falls_back_to_keywords_when_the_embedder_is_unavailable() {
 
     let pass = memory.run_idle_pass().await.expect("idle pass runs");
     assert!(!pass.has_made_progress());
+
+    drop(memory);
+    drop(archive);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn a_recall_search_never_returns_a_fact() {
+    let server = embedding_server(503).await;
+    let (path, archive, memory, cat) = open_with_one_memory("facts-not-recalled", &server).await;
+    archive
+        .facts_repository()
+        .insert("My dog is called Rex.", FactOrigin::Stated)
+        .await
+        .expect("fact is added");
+
+    let dog = memory.recall("What is my dog called Rex?", &[]).await;
+    assert!(dog.documents.is_empty());
+    assert!(dog.source_ids.is_empty());
+
+    // The same search still finds a conversation memory.
+    let cat_recall = memory.recall("What is my cat called?", &[]).await;
+    assert_eq!(cat_recall.source_ids, vec![cat]);
 
     drop(memory);
     drop(archive);
