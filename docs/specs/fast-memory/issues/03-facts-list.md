@@ -1,6 +1,6 @@
 # 03: The facts list, stored and sent with every request
 
-Status: in-review
+Status: done
 Stories: US4
 Blocked by: 01
 Assignee: Sonnet agent, high effort (2026-11-21)
@@ -27,3 +27,4 @@ Owns: src/storage/** for a new facts module and the schema step, src/features/me
 - **Changed expectation:** `archive_tests::rejects_newer_schema...` used version 5 as "too new"; it now uses 6.
 - **Only the Pi proves:** that `cached_input` covers the facts on the second request; that the migration runs on Darren's real database (back it up first).
 - 2026-11-21 (coordinator): deployed to the 8 GB Pi with 03 to 06 at `e2bc1a8` (Darren: "yes build restart etc"). Built while Jarvis ran (45.9 s); stopped it at 16:28:35, backed up the database with `sqlite3 .backup` to `data/jarvis.sqlite3.bak-2026-11-21` (integrity check ok; version 4, 366 turns, 344 memories), started it. After start, read-only: `user_version` 6, 366 turns and 344 memories, 0 facts, all 366 turns `facts_examined = 1`; the screen reconnected. Waiting for Darren's voice checks.
+- 2026-11-21 (coordinator): closed by Darren after his voice check of `5b16e6a` ("voice check of 5b16e6a is good").

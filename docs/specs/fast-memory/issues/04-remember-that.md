@@ -1,6 +1,6 @@
 # 04: "Remember that…" saves a fact
 
-Status: in-review
+Status: done
 Stories: US5
 Blocked by: 03
 Assignee: Sonnet agent (2026-11-21)
@@ -24,3 +24,4 @@ Owns: src/features/control/**, src/interfaces/cli/repl/mod.rs, and their tests u
 - **Lint:** the `expect(dead_code)` on `ConversationSession::facts_repository` was removed (now used).
 - **Only the Pi proves:** a spoken "remember that…" through speech-to-text, and how the spoken "Got it." sounds.
 - 2026-11-21 (coordinator): deployed to the 8 GB Pi with 03 to 06 at `e2bc1a8` (Darren: "yes build restart etc"). Built while Jarvis ran (45.9 s); stopped it at 16:28:35, backed up the database with `sqlite3 .backup` to `data/jarvis.sqlite3.bak-2026-11-21` (integrity check ok; version 4, 366 turns, 344 memories), started it. After start, read-only: `user_version` 6, 366 turns and 344 memories, 0 facts, all 366 turns `facts_examined = 1`; the screen reconnected. Waiting for Darren's voice checks.
+- 2026-11-21 (coordinator): closed by Darren after his voice check of `5b16e6a` ("voice check of 5b16e6a is good").

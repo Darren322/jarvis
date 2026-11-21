@@ -1,6 +1,6 @@
 # 05: Note facts by itself while idle
 
-Status: in-review
+Status: done
 Stories: US6
 Blocked by: 03
 Assignee: Sonnet agent, high effort (2026-11-21)
@@ -28,3 +28,4 @@ Owns: src/features/memory/** for the noting pass, src/features/assistant/** for 
 - **Only the Pi proves:** what a real Gemma notes from real talk and whether it keeps the `FACT:` format; pass duration; which server slot the extraction uses and whether it evicts the conversation's cache; whether dropping the stream stops generation; the reread cost after a new fact; the v6 migration on the real database (back up first).
 - 2026-11-21 (coordinator): Darren read the extraction prompt and kept "the user" wording: "I will add user auth via voice and face. So shal lsee". Facts are global today (no owner column); per-person spaces (roadmap 12D) will need one.
 - 2026-11-21 (coordinator): deployed to the 8 GB Pi with 03 to 06 at `e2bc1a8` (Darren: "yes build restart etc"). Built while Jarvis ran (45.9 s); stopped it at 16:28:35, backed up the database with `sqlite3 .backup` to `data/jarvis.sqlite3.bak-2026-11-21` (integrity check ok; version 4, 366 turns, 344 memories), started it. After start, read-only: `user_version` 6, 366 turns and 344 memories, 0 facts, all 366 turns `facts_examined = 1`; the screen reconnected. Waiting for Darren's voice checks.
+- 2026-11-21 (coordinator): closed by Darren after his voice check of `5b16e6a` ("voice check of 5b16e6a is good").
