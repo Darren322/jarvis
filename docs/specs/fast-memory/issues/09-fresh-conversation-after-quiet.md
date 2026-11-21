@@ -1,6 +1,6 @@
 # 09: A fresh conversation after 30 minutes of quiet
 
-Status: in-review
+Status: done
 Stories: none (added 2026-11-16 at Darren's request: "sure lets add 30 minutes of quiet")
 Blocked by: None
 Assignee: Sonnet agent (2026-11-21)
@@ -39,3 +39,5 @@ Owns: src/features/conversation/history.rs, src/features/conversation/session.rs
 - **Not verified.** The Pi: a real 30-minute gap with Jarvis running there.
 - 2026-11-21 (coordinator): committed as `cf112ae` and pushed at Darren's request ("just deploy it"). Deployed to the 8 GB Pi: Jarvis idle since 14:09, `git pull` to `cf112ae`, `cargo build --release --locked` (42.4 s), `systemctl --user restart jarvis` at 14:26:42; the service is active and the screen reconnected (one WebSocket client on 8765). The 30-minute reset has not yet been seen there.
 - 2026-11-21 (coordinator): read-only look at `journalctl --user-unit jarvis` on the 8 GB Pi. The only quiet gap of 30 minutes or more since the deploy (17:25:14 to 18:24:01) was followed by "Hey Jarvis, forget that you're Jarvis.", a forget command that sends no model request, so the reset has still not been seen on a model turn. Stays in review. To check: after 30 minutes or more of quiet, ask anything, and the next `Model stage:` line should show a small `input` (about 1,000 tokens: system prompt, tools, facts and the new prompt only).
+- 2026-11-21 (coordinator): **seen on the Pi.** From `journalctl --user-unit jarvis` (the release build of `5b16e6a`): the last answer before the gap was at 17:25:08 (input 1,165 tokens, five exchanges in); at 18:28:59 Darren asked "Do you remember what to your life?" by voice and the log shows `New conversation after 63 minutes of quiet.` before `[thinking]`. That turn's request read 1,036 tokens (1,023 cached): the system prompt, tools, facts and the new prompt only, so the old exchanges were gone. The next three answers grew from there (1,069, 1,108, 1,141). Ready for Darren to close.
+- 2026-11-21 (coordinator): closed by Darren ("sure") on the evidence above.
