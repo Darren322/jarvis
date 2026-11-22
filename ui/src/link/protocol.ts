@@ -10,11 +10,13 @@
  *   {"type":"show_built_panel","title":"Shopping","parts":[{"kind":"list","title":"To buy","items":["milk","eggs"]},
  *    {"kind":"gauge","source":"cpu"}]}
  *   {"type":"hide_panel"}
+ *   {"type":"timers","timers":[{"id":3,"label":"Time to sleep","ends_at_ms":1763830800000,"state":"running"}]}
  *   {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,
  *    "storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
  * The UI to Jarvis (FromOrb):
  *   {"type":"tap"}
  *   {"type":"panel_closed"}
+ *   {"type":"cancel_timer","id":3}   (also "confirm_timer" and "reject_timer")
  *
  * Parsing is as strict as the Rust decoder (`deny_unknown_fields`, `CpuPercent`,
  * the built Panel's limits): anything else parses to `null` and is ignored.
@@ -63,6 +65,23 @@ export const MAX_LIST_ITEMS = 8;
 /** The most characters in a card's title or text, a list's title, or one item. Mirrors `MAX_PART_TEXT_CHARS`. */
 export const MAX_PART_TEXT_CHARS = 120;
 
+/** Where a timer is. Mirrors `orb_protocol::TimerState`; a cancelled timer is not on the wire. */
+export type TimerState = 'pending' | 'running' | 'ended';
+
+/** One timer on the screen. Mirrors `orb_protocol::Timer`. */
+export interface Timer {
+  /** Jarvis's stored id, a non-negative integer the UI sends back unchanged. */
+  readonly id: number;
+  /** `null` when the timer has no label (the wire omits the key). */
+  readonly label: string | null;
+  /** Unix milliseconds, a non-negative integer. */
+  readonly endsAtMs: number;
+  readonly state: TimerState;
+}
+
+/** The most characters in a timer's label. Mirrors `MAX_TIMER_LABEL_CHARS`. */
+export const MAX_TIMER_LABEL_CHARS = 60;
+
 /** Whether a service answered its last health check. Mirrors `orb_protocol::ServiceHealth`. */
 export type ServiceHealth = 'up' | 'down';
 
@@ -104,11 +123,19 @@ export type PanelMessage =
   | { readonly type: 'hide_panel' }
   | { readonly type: 'stats'; readonly stats: Stats };
 
-/** Jarvis to the UI. Mirrors `orb_protocol::ToOrb`. */
-export type ToOrb = OrbMessage | PanelMessage;
+/** Every timer to show, as Jarvis sends it on each change; an empty list clears the strip. */
+export type TimerMessage = { readonly type: 'timers'; readonly timers: readonly Timer[] };
 
-/** The UI to Jarvis. Mirrors `orb_protocol::FromOrb`. */
-export type FromOrb = { readonly type: 'tap' } | { readonly type: 'panel_closed' };
+/** Jarvis to the UI. Mirrors `orb_protocol::ToOrb`. */
+export type ToOrb = OrbMessage | PanelMessage | TimerMessage;
+
+/** The UI to Jarvis. Mirrors `orb_protocol::FromOrb`. The UI decides nothing: Jarvis checks each id. */
+export type FromOrb =
+  | { readonly type: 'tap' }
+  | { readonly type: 'panel_closed' }
+  | { readonly type: 'cancel_timer'; readonly id: number }
+  | { readonly type: 'confirm_timer'; readonly id: number }
+  | { readonly type: 'reject_timer'; readonly id: number };
 
 /** The highest CPU percent `orb_protocol::CpuPercent` accepts. */
 export const MAX_CPU_PERCENT = 100;
@@ -117,6 +144,7 @@ const ORB_STATES: readonly string[] = ['idle', 'listening', 'transcribing', 'thi
 const LEVEL_SOURCES: readonly string[] = ['speech', 'mic'];
 const NAMED_PANELS: readonly string[] = ['stats', 'camera'];
 const GAUGE_SOURCES: readonly string[] = ['cpu', 'temperature', 'ram', 'storage', 'llama', 'bge'];
+const TIMER_STATES: readonly string[] = ['pending', 'running', 'ended'];
 const SERVICE_HEALTHS: readonly string[] = ['up', 'down'];
 
 const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 'llama', 'bge'] as const;
@@ -124,6 +152,7 @@ const STATS_KEYS = ['type', 'cpu_percent', 'ram_used_bytes', 'ram_total_bytes', 
 const TEMPERATURE_KEY = 'temperature_c';
 /** Optional in Stats: omitted when Jarvis could not read the filesystem. */
 const STORAGE_KEY = 'storage';
+const TIMER_KEYS = ['id', 'ends_at_ms', 'state'] as const;
 const STORAGE_KEYS = ['available_bytes', 'total_bytes'] as const;
 
 function isOrbState(value: unknown): value is OrbState {
@@ -155,6 +184,10 @@ function isText(value: unknown, limit: number): value is string {
   return typeof value === 'string' && [...value].length <= limit;
 }
 
+function isTimerState(value: unknown): value is TimerState {
+  return typeof value === 'string' && TIMER_STATES.includes(value);
+}
+
 function isServiceHealth(value: unknown): value is ServiceHealth {
   return typeof value === 'string' && SERVICE_HEALTHS.includes(value);
 }
@@ -166,6 +199,15 @@ function isFiniteNumber(value: unknown): value is number {
 /** A `u64` on the Rust side. */
 function isByteCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/**
+ * A `u64` on the Rust side that JavaScript reads exactly: a non-negative safe
+ * integer. Ids and times are far below 2^53; Rust accepts larger ones, which
+ * the UI rejects rather than misread.
+ */
+function isWireInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** A finite number from 0 to `MAX_CPU_PERCENT` inclusive, as `CpuPercent::new` accepts. */
@@ -243,6 +285,42 @@ function parseBuiltPanel(record: Record<string, unknown>): PanelMessage | null {
     return null;
   }
   return { type: 'show_built_panel', panel: { title: record.title, parts: parsed as PanelPart[] } };
+}
+
+/** One timer, exactly as `orb_protocol::Timer` decodes it, or `null`. */
+function parseTimer(value: unknown): Timer | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const hasLabel = Object.hasOwn(value, 'label');
+  if (
+    !hasExactKeys(value, [...TIMER_KEYS, ...(hasLabel ? ['label'] : [])]) ||
+    !isWireInteger(value.id) ||
+    !isWireInteger(value.ends_at_ms) ||
+    !isTimerState(value.state) ||
+    (hasLabel && !isText(value.label, MAX_TIMER_LABEL_CHARS))
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    label: hasLabel ? (value.label as string) : null,
+    endsAtMs: value.ends_at_ms,
+    state: value.state,
+  };
+}
+
+/** A `timers` message: an array (possibly empty) of valid timers; otherwise `null`. */
+function parseTimers(record: Record<string, unknown>): TimerMessage | null {
+  const timers = record.timers;
+  if (!hasExactKeys(record, ['type', 'timers']) || !Array.isArray(timers)) {
+    return null;
+  }
+  const parsed = timers.map(parseTimer);
+  if (parsed.some((timer) => timer === null)) {
+    return null;
+  }
+  return { type: 'timers', timers: parsed as Timer[] };
 }
 
 function parseStats(record: Record<string, unknown>): PanelMessage | null {
@@ -325,6 +403,8 @@ export function parseToOrb(text: string): ToOrb | null {
       return parseBuiltPanel(record);
     case 'hide_panel':
       return hasExactKeys(record, ['type']) ? { type: 'hide_panel' } : null;
+    case 'timers':
+      return parseTimers(record);
     case 'stats':
       return parseStats(record);
     default:

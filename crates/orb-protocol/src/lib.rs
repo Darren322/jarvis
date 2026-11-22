@@ -54,16 +54,51 @@ const WIDEST_PART_BYTES: usize = r#"{"kind":"list","title":"#.len()
     + (MAX_LIST_ITEMS - 1)
     + "]}".len();
 
-/// The longest line Jarvis sends the orb (a [`ToOrb`]), in bytes, not counting
-/// the newline: the widest [`ToOrb::ShowBuiltPanel`] the limits allow, with the
-/// most parts, each the widest part, and every character escaped to six bytes.
-/// A bound by construction; a test builds that line and checks it equals this.
-pub const MAX_TO_ORB_LINE_BYTES: usize = r#"{"type":"show_built_panel","title":"#.len()
+/// The most characters in a timer's label (timers 05). Labels are short spoken
+/// names ("Time to sleep" is 13); 60 fits a strip row on the screen and keeps the
+/// widest `timers` line (5 timers, every character escaped to six bytes, about
+/// 2.3 KB, 2,283 bytes) far under [`MAX_TO_ORB_LINE_BYTES`].
+pub const MAX_TIMER_LABEL_CHARS: usize = 60;
+/// The most timers a `timers` message lists (timers D3, pending ones included).
+pub const MAX_TIMERS: usize = 5;
+
+/// The widest timer: the largest id and `ends_at_ms` (`u64::MAX`, 20 digits), a
+/// label of the most characters at six bytes each, and the longest state
+/// (`"pending"` and `"running"`, 9 bytes with quotes).
+const WIDEST_TIMER_BYTES: usize = r#"{"id":"#.len()
+    + u64::MAX.ilog10() as usize
+    + 1
+    + r#","label":"#.len()
+    + widest_string(MAX_TIMER_LABEL_CHARS)
+    + r#","ends_at_ms":"#.len()
+    + u64::MAX.ilog10() as usize
+    + 1
+    + r#","state":"pending"}"#.len();
+
+/// The widest [`ToOrb::Timers`]: the most timers, each the widest timer.
+const WIDEST_TIMERS_BYTES: usize = r#"{"type":"timers","timers":["#.len()
+    + MAX_TIMERS * WIDEST_TIMER_BYTES
+    + (MAX_TIMERS - 1)
+    + "]}".len();
+
+/// The bytes of the widest [`ToOrb::ShowBuiltPanel`] the limits allow: the most
+/// parts, each the widest part, and every character escaped to six bytes.
+const WIDEST_BUILT_PANEL_LINE_BYTES: usize = r#"{"type":"show_built_panel","title":"#.len()
     + widest_string(MAX_PANEL_TITLE_CHARS)
     + r#","parts":["#.len()
     + MAX_PANEL_PARTS * WIDEST_PART_BYTES
     + (MAX_PANEL_PARTS - 1)
     + "]}".len();
+
+/// The longest line Jarvis sends the orb (a [`ToOrb`]), in bytes, not counting
+/// the newline: the wider of the widest [`ToOrb::ShowBuiltPanel`] and the widest
+/// [`ToOrb::Timers`] the limits allow. A bound by construction; tests build both
+/// lines and check the larger equals this.
+pub const MAX_TO_ORB_LINE_BYTES: usize = if WIDEST_BUILT_PANEL_LINE_BYTES > WIDEST_TIMERS_BYTES {
+    WIDEST_BUILT_PANEL_LINE_BYTES
+} else {
+    WIDEST_TIMERS_BYTES
+};
 
 /// What Jarvis is doing, as the orb shows it. On the wire: `"idle"`,
 /// `"listening"`, `"transcribing"`, `"thinking"`, `"speaking"`.
@@ -396,6 +431,117 @@ where
     StorageUsage::deserialize(deserializer).map(Some)
 }
 
+/// Where a timer is. On the wire: `"pending"` (heard but waiting for a yes),
+/// `"running"` or `"ended"`. A cancelled timer is not on the wire: it is simply
+/// absent from the list.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerState {
+    Pending,
+    Running,
+    Ended,
+}
+
+/// One timer on the screen, with a label within [`MAX_TIMER_LABEL_CHARS`] by
+/// construction. Decoding checks the limit too. On the wire, with `label`
+/// omitted when there is none:
+///
+/// ```text
+/// {"id":3,"label":"Time to sleep","ends_at_ms":1763830800000,"state":"running"}
+/// ```
+///
+/// The id is a `u64`, so a negative id never decodes. It is Jarvis's stored id,
+/// which the UI sends back unchanged.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "UncheckedTimer")]
+pub struct Timer {
+    id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    /// Unix milliseconds.
+    ends_at_ms: u64,
+    state: TimerState,
+}
+
+/// A timer as it arrives, before its label is checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedTimer {
+    id: u64,
+    #[serde(default, deserialize_with = "present_label")]
+    label: Option<String>,
+    ends_at_ms: u64,
+    state: TimerState,
+}
+
+/// Reads a `label` that is present: a JSON `null` is invalid. No label is the
+/// key being absent.
+fn present_label<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+/// A timer label over [`MAX_TIMER_LABEL_CHARS`].
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[error("a timer label has at most {MAX_TIMER_LABEL_CHARS} characters, not {chars}")]
+pub struct TimerLabelTooLong {
+    pub chars: usize,
+}
+
+impl Timer {
+    pub fn new(
+        id: u64,
+        label: Option<String>,
+        ends_at_ms: u64,
+        state: TimerState,
+    ) -> Result<Self, TimerLabelTooLong> {
+        if let Some(chars) = label
+            .as_deref()
+            .and_then(|text| over_limit(text, MAX_TIMER_LABEL_CHARS))
+        {
+            return Err(TimerLabelTooLong { chars });
+        }
+        Ok(Self {
+            id,
+            label,
+            ends_at_ms,
+            state,
+        })
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// When the timer ends, in unix milliseconds.
+    pub fn ends_at_ms(&self) -> u64 {
+        self.ends_at_ms
+    }
+
+    pub fn state(&self) -> TimerState {
+        self.state
+    }
+}
+
+impl TryFrom<UncheckedTimer> for Timer {
+    type Error = TimerLabelTooLong;
+
+    fn try_from(unchecked: UncheckedTimer) -> Result<Self, Self::Error> {
+        Self::new(
+            unchecked.id,
+            unchecked.label,
+            unchecked.ends_at_ms,
+            unchecked.state,
+        )
+    }
+}
+
 /// Jarvis to the orb.
 ///
 /// ```text
@@ -405,6 +551,7 @@ where
 /// {"type":"show_panel","panel":"camera"}
 /// {"type":"show_built_panel","title":"Shopping","parts":[{"kind":"list","title":"To buy","items":["milk","eggs"]},{"kind":"gauge","source":"cpu"}]}
 /// {"type":"hide_panel"}
+/// {"type":"timers","timers":[{"id":3,"label":"Time to sleep","ends_at_ms":1763830800000,"state":"running"}]}
 /// {"type":"stats","cpu_percent":12.5,"temperature_c":55.0,"ram_used_bytes":2,"ram_total_bytes":8,"storage":{"available_bytes":207517036544,"total_bytes":251416899584},"llama":"up","bge":"down"}
 /// ```
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -422,6 +569,9 @@ pub enum ToOrb {
     ShowBuiltPanel(BuiltPanel),
     /// Closes whatever panel is open.
     HidePanel {},
+    /// Every timer to show, sent on every change and when the UI connects. An
+    /// empty list clears the strip.
+    Timers { timers: Vec<Timer> },
     /// A reading of the Pi's health. A missing temperature sensor is an absent
     /// `temperature_c`, and an unreadable filesystem an absent `storage`, never 0.
     Stats {
@@ -445,6 +595,7 @@ pub enum ToOrb {
 ///
 /// ```text
 /// {"type":"tap"}
+/// {"type":"cancel_timer","id":3}
 /// ```
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -454,6 +605,13 @@ pub enum FromOrb {
     Tap {},
     /// Darren tapped outside the open panel, and the orb closed it.
     PanelClosed {},
+    /// Darren tapped a timer's cancel (or an ended row). Jarvis checks the id
+    /// against its own storage; the UI decides nothing.
+    CancelTimer { id: u64 },
+    /// Darren answered yes to a pending timer.
+    ConfirmTimer { id: u64 },
+    /// Darren answered no to a pending timer.
+    RejectTimer { id: u64 },
 }
 
 #[derive(Debug, Error)]
