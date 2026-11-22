@@ -1,7 +1,7 @@
 # Timers
 
 Status: active
-Resume here: the spec was written on 2026-11-22 from Darren's grilling answers; no tickets yet. Next: `/to-tickets` (the likely split is under Further Notes), then Darren reviews the tickets.
+Resume here: tickets 01 to 09 were written on 2026-11-22 and are `ready-for-agent` (03 and 08 the coordinator's). Further Notes' ticket 7 became 05 (protocol) and 07 (Rust side). Two chains can start at once: 01 (Sonnet) and 05 (Sonnet); 09 (Opus, UI) follows 05. Darren still has to pick the timer-ended WAV (D21).
 
 Written 2026-11-22 from Darren's decisions (grilling on jarvis-ui ticket 17, rounds Q1 to Q20; "Sure no problem"). Replaces [jarvis-ui 17](../jarvis-ui/issues/17-timer-panel.md). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
@@ -44,7 +44,7 @@ Settled with Darren on 2026-11-22.
 | D3 | **At most 5 timers** (`MAX_TIMERS`), pending ones included. A 6th is refused and Jarvis says why. |
 | D4 | **Darren confirms every new timer** (roadmap 8B's approval, tied to this one timer). `set_timer` only creates a *pending* timer. The strip shows it with **Set** and **Don't**, and Jarvis says a fixed line: "Set 'Time to sleep' for 11:00 pm tomorrow? Say yes or tap Set." Saying "yes", or tapping Set, within 30 seconds (`TIMER_CONFIRM_WINDOW`) sets it. "No", tapping Don't, or the window running out drops it. `control::parse` understands "yes" and "no" only while a timer is pending; the model never confirms anything. Anything else said while a timer is pending goes to the model as usual, and the window keeps running. |
 | D5 | **Access level on `ToolRule`.** This is the first tool that writes or acts (the AGENTS.md trigger), so `ToolRule` gains an access level. `set_timer` is marked as needing approval; `cancel_timer` and `list_timers` are not. The approval prompt belongs to the interface, not the tool. |
-| D6 | **At zero:** a new sound cue plays at once (a WAV in `data/sounds/`, loaded like the state sounds) and the row flashes. Once Jarvis is idle, it starts a model run on its own. The run gets a fixed line from Jarvis ("The timer 'Time to sleep', set at 10:30 pm, has ended.") plus the normal history and facts list. It may call **no tools**, so a label cannot make Jarvis act. Its answer is spoken, and archived and added to the history like any other turn. The ended row stays until tapped away or 2 minutes pass (`ENDED_TIMER_SHOWN_FOR`). |
+| D6 | **At zero:** a new sound cue plays at once (a WAV in `data/sounds/`, loaded like the state sounds) and the row flashes. Once Jarvis is idle, it starts a model run on its own. The run gets a fixed line from Jarvis ("The timer 'Time to sleep', set at 10:30 pm, has ended.") plus the normal history and facts list. It may call **no tools** (as D20), so a label cannot make Jarvis act. Its answer is spoken, and archived and added to the history like any other turn. The ended row stays until tapped away or 2 minutes pass (`ENDED_TIMER_SHOWN_FOR`). |
 | D7 | **Busy at zero:** if Jarvis is recording, thinking or speaking, the model run waits until idle, like the announcements of jarvis-ui 11 (C6, read only in the REPL's idle `select!`). The strip shows the timer as ended right away. |
 | D8 | **The 30-minute rule applies:** a timer run is a prompt like any other for fast-memory 09. After 30 minutes of quiet it starts a fresh conversation first, and its answer counts as the last answer. |
 | D9 | **Timers that ended while Jarvis was off:** at start, one less than 1 hour overdue (`MISSED_TIMER_GRACE`) runs late and says so ("ended 40 minutes ago while I was off"). One more overdue is dropped, with a printed notice. |
@@ -54,6 +54,13 @@ Settled with Darren on 2026-11-22.
 | D13 | **Storage:** its own `storage/timers/` module with its own types (a `TimerId` newtype, label, end time, state `pending` / `running` / `ended` / `cancelled`), at schema v7. It comes after a refactor ticket that moves each migration's SQL into `storage/migrations/vN.sql` (the "about six versions" trigger), with no change in behaviour. Darren backs up the database before v7 runs on the Pi. |
 | D14 | **Screen contract**, in `crates/orb-protocol` (jarvis-ui D3). Jarvis sends `{"type":"timers","timers":[{"id":3,"label":"Time to sleep","ends_at_ms":…,"state":"running"}]}` on every change and whenever the UI connects. The UI sends `{"type":"cancel_timer","id":3}`, `{"type":"confirm_timer","id":3}` and `{"type":"reject_timer","id":3}`. Jarvis checks each id against storage; the UI decides nothing (jarvis-ui D2). |
 | D15 | **The strip** sits at the top right whether or not a Panel is open, and stays clear of the Orb when the Orb is in its corner. The UI works out the remaining time from `ends_at_ms` and its own clock (same Pi, same clock). Darren judges the look on the Pi; an Opus agent builds it with the UI skills. |
+| D16 | **After a run that proposed a timer, Jarvis speaks only the fixed line of D4.** The model's own reply is still printed and kept in the history unchanged; the fixed line is the one place the wording must be exact, because it is what Darren says "yes" to. (Settled 2026-11-22, Q21.) |
+| D17 | **Tapping an ended row** sends `cancel_timer` with its id; Jarvis removes the row and says nothing. (Q22.) |
+| D18 | **`set_timer`'s `at` is 24-hour `"HH:MM"`.** The model turns "11 pm" into `"23:00"`; Jarvis's own code decides today or tomorrow (D2). (Q23.) |
+| D19 | **Jarvis removes an ended row after 2 minutes** and sends the new list; the UI only draws what it is sent. (Q24.) |
+| D20 | **"No tools" in D6 means the tool list stays in the request with tool choice `none`**, as on the second turn, so Gemma's prompt cache stays warm (fast-memory 10); a tool call in the answer is rejected and runs nothing. Not a request with no tools listed: that would start this run, and the next question, from a cold cache. (Q25, "lets go with option 1".) |
+| D21 | **Darren picks the timer-ended sound**, a WAV next to the state sounds in `data/sounds/` on the Pi (not in git). Until it is there the cue is a warning and silence. (Q26.) |
+| D22 | **A timer still pending when Jarvis restarts is deleted at start**, with no spoken line; its 30-second window is over. (Q27.) |
 
 ## Testing Decisions
 
@@ -61,7 +68,7 @@ Settled with Darren on 2026-11-22.
 - Limits are tested at their boundaries: 5 vs 6 timers, the confirm window at 30 s vs just past it, missed timers at just under vs just over 1 hour, the ended row at 2 minutes.
 - The timer service is tested with `#[tokio::test(start_paused = true)]`; nothing waits on the wall clock. Races (a timer ending during a recording, confirm against expiry) pass `scripts/verify.sh --repeat` 20 times.
 - The v7 migration test builds a v6 database with realistic rows (AGENTS.md "Changing the schema"). The migration-file refactor shows the same `cargo test -- --list` inventory and identical schema results before and after.
-- The model run at zero is scripted with `MockCompletionModel::from_stream_turns`, and a test checks that it offers no tools.
+- The model run at zero is scripted with `MockCompletionModel::from_stream_turns`, and a test checks that it lists every tool with tool choice `none` (D6 read with D12: the cache-safe way to forbid a call) and that a tool call in its answer runs nothing.
 - Only the Pi can show that Gemma picks the right tool and arguments for Darren's sentences, and that the strip looks right.
 
 ## Out of Scope
