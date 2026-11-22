@@ -1,16 +1,22 @@
 /**
- * Dev-only preview of the Orb and the Dashboard, without Jarvis: run `npx vite`
- * in `ui/`, then open `/preview.html?state=thinking&level=0.08`, or
+ * Dev-only preview of the Orb, the Panels and the timer strip, without Jarvis:
+ * run `npx vite` in `ui/`, then open `/preview.html?state=thinking&level=0.08`,
  * `/preview.html?panel=stats&reading=widest&t=2` for the whole screen with the
- * Dashboard. Not part of the production build (Vite builds only `index.html`).
+ * Dashboard, or `/preview.html?panel=stats&timers=five` with the timer strip
+ * too. Not part of the production build (Vite builds only `index.html`).
  *
  * URL parameters:
  * - `state`: `offline`, `idle`, `listening`, `transcribing`, `thinking` or `speaking` (default `idle`).
  * - `level`: the raw loudness, clamped to 0 to 1 (default 0.08, typical speech).
  * - `w`, `h`: the Orb's size in CSS pixels (default: the window). Ignored with `panel`.
  * - `x`, `y`: its top-left corner (default 0, 0). Ignored with `panel`.
- * - `panel`: `stats` shows the whole screen as Jarvis would, with the Dashboard
- *   and the Orb in its corner.
+ * - `panel`: `stats`, `built` (`BUILT_PANEL` in `fixtures.ts`) or `camera` (its
+ *   picture fails without Jarvis) shows the whole screen as Jarvis would, with
+ *   that Panel and the Orb in its corner.
+ * - `timers`: the timer strip's rows, one of `TIMER_FIXTURES` in `fixtures.ts`:
+ *   `none`, `one`, `pending`, `running`, `ended`, `five`, `longest`,
+ *   `five-pending`. Shows the whole screen, with or without `panel`. Its
+ *   countdowns run on the real clock; a tap logs the message it would send.
  * - `reading`: the Dashboard's reading, one of `READINGS` in `fixtures.ts`:
  *   `typical` (default), `no-temperature`, `no-storage`, `waiting`, `service-down`,
  *   `widest`, `widest-unavailable`.
@@ -23,12 +29,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Display } from '../link/display';
-import type { OrbSource, PanelSource } from '../link/link';
+import type { OrbSource, PanelSource, TimerSource } from '../link/link';
+import type { PanelName } from '../link/protocol';
 import { clampLevel, VIEWS, type View } from '../orb/look';
 import { createOrbRenderer } from '../orb/drawing';
 import { type FrameScheduler, Orb } from '../orb/Orb';
 import { Screen } from '../panels/Screen';
-import { READINGS } from './fixtures';
+import { BUILT_PANEL, READINGS, TIMER_FIXTURES } from './fixtures';
 
 /** The raw level used when the URL gives none: a typical speech loudness. */
 const DEFAULT_LEVEL = 0.08;
@@ -76,15 +83,36 @@ function frozenFrames(seconds: number): FrameScheduler {
   };
 }
 
-/** A Panel source that shows the stats Dashboard with one fixed reading and never changes. */
-function fixedPanel(readingName: string | null): PanelSource {
+const PANEL_NAMES: readonly string[] = ['stats', 'built', 'camera'];
+
+function isPanelName(value: string | null): value is PanelName {
+  return value !== null && PANEL_NAMES.includes(value);
+}
+
+/** A Panel source that shows `panel` (or none) with one fixed reading and never changes. */
+function fixedPanel(panel: PanelName | null, readingName: string | null): PanelSource {
   const name = readingName ?? 'typical';
   const stats = Object.hasOwn(READINGS, name) ? (READINGS[name] ?? null) : null;
   return {
     subscribePanel: () => () => undefined,
-    shownPanel: 'stats',
+    shownPanel: panel,
     stats,
+    builtPanel: panel === 'built' ? BUILT_PANEL : null,
     closePanel: () => undefined,
+  };
+}
+
+/** A timer source with the fixture `name` (none if unknown), ending relative to now; a tap logs what Jarvis would get. */
+function fixedTimers(name: string | null): TimerSource {
+  const nowMs = Date.now();
+  const timers = name !== null && Object.hasOwn(TIMER_FIXTURES, name) ? (TIMER_FIXTURES[name]?.(nowMs) ?? []) : [];
+  const log = (type: string) => (id: number) => console.info(JSON.stringify({ type, id }));
+  return {
+    subscribeTimers: () => () => undefined,
+    shownTimers: { timers, receivedAtMs: nowMs },
+    confirmTimer: log('confirm_timer'),
+    rejectTimer: log('reject_timer'),
+    cancelTimer: log('cancel_timer'),
   };
 }
 
@@ -111,10 +139,14 @@ if (font !== null) {
   document.documentElement.style.setProperty('--panel-font', font);
 }
 
+const panelParam = params.get('panel');
+const panel = isPanelName(panelParam) ? panelParam : null;
+const timersParam = params.get('timers');
+
 const screen =
-  params.get('panel') === 'stats' ? (
+  panel !== null || timersParam !== null ? (
     <Screen
-      source={{ ...source, ...fixedPanel(params.get('reading')) }}
+      source={{ ...source, ...fixedPanel(panel, params.get('reading')), ...fixedTimers(timersParam) }}
       onTap={() => undefined}
       createRenderer={createOrbRenderer}
       frames={frames}

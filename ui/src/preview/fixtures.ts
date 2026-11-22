@@ -1,9 +1,9 @@
 /**
- * Fixed Stats readings for the dev-only preview, so the Dashboard can be seen
- * and screenshotted without Jarvis.
+ * Fixed Stats readings, a built Panel and timers for the dev-only preview, so
+ * the Panels and the timer strip can be seen and screenshotted without Jarvis.
  */
 
-import type { Stats, StorageSpace } from '../link/protocol';
+import type { BuiltPanel, Stats, StorageSpace, Timer } from '../link/protocol';
 
 /** About what `free -h` calls 7.9 GiB: the 8 GB Pi's total RAM. */
 const PI_RAM_TOTAL_BYTES = 8_464_105_472;
@@ -45,4 +45,54 @@ export const READINGS: Readonly<Record<string, Stats | null>> = {
   widest: WIDEST,
   // The widest values with both temperature and storage "Unavailable".
   'widest-unavailable': { ...WIDEST, temperatureC: null, storage: null },
+};
+
+/** A built Panel with every kind of part, to see a built Panel beside the timer strip. */
+export const BUILT_PANEL: BuiltPanel = {
+  title: 'Shopping',
+  parts: [
+    { kind: 'list', title: 'To buy', items: ['Milk', 'Eggs', 'Bread', 'Coffee beans'] },
+    { kind: 'card', title: 'Note', text: 'The shop on the corner closes at 9 pm on Sundays.' },
+    { kind: 'gauge', source: 'cpu' },
+  ],
+};
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/** A label of exactly `MAX_TIMER_LABEL_CHARS` (60) characters: the longest Jarvis sends. */
+export const LONGEST_TIMER_LABEL = 'Call Mum back about Sunday lunch and ask what to bring along';
+
+/**
+ * Each set of timers by its `timers` URL parameter, as a function of the
+ * preview's clock (Unix milliseconds) so the countdowns are live.
+ */
+export const TIMER_FIXTURES: Readonly<Record<string, (nowMs: number) => readonly Timer[]>> = {
+  none: () => [],
+  one: (nowMs) => [{ id: 1, label: 'Time to sleep', endsAtMs: nowMs + 25 * MINUTE_MS, state: 'running' }],
+  pending: (nowMs) => [{ id: 1, label: 'Time to sleep', endsAtMs: nowMs + 2 * HOUR_MS, state: 'pending' }],
+  running: (nowMs) => [{ id: 1, label: 'Time to do work', endsAtMs: nowMs + HOUR_MS - 1000, state: 'running' }],
+  ended: (nowMs) => [{ id: 1, label: 'Time to sleep', endsAtMs: nowMs - 20_000, state: 'ended' }],
+  // The most timers (MAX_TIMERS), every state, an unlabelled one and one about to end.
+  five: (nowMs) => [
+    { id: 1, label: 'Time to sleep', endsAtMs: nowMs + 2 * HOUR_MS + 5 * MINUTE_MS, state: 'pending' },
+    { id: 2, label: 'Time to do work', endsAtMs: nowMs + 25 * MINUTE_MS, state: 'running' },
+    { id: 3, label: null, endsAtMs: nowMs + 75 * MINUTE_MS, state: 'running' },
+    { id: 4, label: 'Tea', endsAtMs: nowMs + 3000, state: 'running' },
+    { id: 5, label: 'Pasta', endsAtMs: nowMs - 40_000, state: 'ended' },
+  ],
+  // The longest label in each state, and 23:59:59, the widest countdown.
+  longest: (nowMs) => [
+    { id: 1, label: LONGEST_TIMER_LABEL, endsAtMs: nowMs + 24 * HOUR_MS - 1000, state: 'running' },
+    { id: 2, label: LONGEST_TIMER_LABEL, endsAtMs: nowMs + HOUR_MS, state: 'pending' },
+    { id: 3, label: LONGEST_TIMER_LABEL, endsAtMs: nowMs, state: 'ended' },
+  ],
+  // Five pending rows with the longest label: the tallest the strip can be.
+  'five-pending': (nowMs) =>
+    [1, 2, 3, 4, 5].map((id) => ({
+      id,
+      label: LONGEST_TIMER_LABEL,
+      endsAtMs: nowMs + id * HOUR_MS,
+      state: 'pending' as const,
+    })),
 };

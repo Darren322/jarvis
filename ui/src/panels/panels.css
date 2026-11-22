@@ -346,6 +346,28 @@
   line-height: 17px;
 }
 
+/*
+ * Beside the timer strip the Panel is 432 px wide, not 596: less padding and
+ * gap, and memory and storage smaller, so "9999 / 9999 GB" still fits a column.
+ * The camera keeps its picture edge to edge.
+ */
+.panel-beside-timers:not(.panel-camera) {
+  padding-right: 22px;
+  padding-left: 22px;
+}
+
+.panel-beside-timers :is(.dashboard-metrics, .dashboard-services) {
+  column-gap: 24px;
+}
+
+.panel-beside-timers .dashboard-metric-compact .dashboard-value {
+  font-size: 36px;
+}
+
+.panel-beside-timers .dashboard-metric-compact .dashboard-unit {
+  font-size: 15px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .panel {
     animation: none;

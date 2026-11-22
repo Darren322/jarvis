@@ -7,7 +7,9 @@
  * - the display (state and level), read by the Orb's frame loop directly, so
  *   the loudness (about 30 messages a second) never goes through React state;
  * - the Panel (which one shows, its latest reading and a built Panel's parts), which React reads with
- *   `useSyncExternalStore`. Only Panel messages notify its subscribers.
+ *   `useSyncExternalStore`. Only Panel messages notify its subscribers;
+ * - the timers of the last `timers` message, read the same way by the timer
+ *   strip. Only `timers` messages (and a drop) notify its subscribers.
  *
  * Nothing polls: the only timer is the reconnect timer, started when a
  * connection closes or fails.
@@ -15,7 +17,15 @@
 
 import { applyMessage, CONNECTED, type Display, OFFLINE } from './display';
 import { applyPanelMessage, NO_PANEL, type PanelView } from './panel';
-import { type BuiltPanel, encodeFromOrb, type FromOrb, type PanelName, parseToOrb, type Stats } from './protocol';
+import {
+  type BuiltPanel,
+  encodeFromOrb,
+  type FromOrb,
+  type PanelName,
+  parseToOrb,
+  type Stats,
+  type Timer,
+} from './protocol';
 
 /**
  * The port of Jarvis's WebSocket. It must match `DEFAULT_PORT` (8765, the
@@ -99,12 +109,41 @@ export interface PanelSource {
   readonly cameraUrl?: string;
 }
 
+/**
+ * The timers of the last `timers` message, and when it arrived by the UI's own
+ * clock (Unix milliseconds). The strip counts down from each `endsAtMs` with
+ * that clock (timers D15); the arrival time lets a new message show the right
+ * second at once, before the strip's next tick.
+ */
+export interface ShownTimers {
+  readonly timers: readonly Timer[];
+  readonly receivedAtMs: number;
+}
+
+/** No timers: before the first `timers` message and while not connected. */
+export const NO_TIMERS: ShownTimers = { timers: [], receivedAtMs: 0 };
+
+/** What the timer strip reads, through React, and the answers it sends back with a timer's id. */
+export interface TimerSource {
+  /** Calls `listener` after every change to `shownTimers`; returns the unsubscribe. */
+  readonly subscribeTimers: (listener: () => void) => () => void;
+  readonly shownTimers: ShownTimers;
+  /** Darren tapped Set on a pending timer. Jarvis checks the id (timers D14). */
+  readonly confirmTimer: (id: number) => void;
+  /** Darren tapped Don't on a pending timer. */
+  readonly rejectTimer: (id: number) => void;
+  /** Darren confirmed cancelling a running timer, or tapped an ended one away (timers D11, D17). */
+  readonly cancelTimer: (id: number) => void;
+}
+
 const browserSocket: CreateSocket = (url) => new WebSocket(url);
 
-export class JarvisLink implements OrbSource, PanelSource {
+export class JarvisLink implements OrbSource, PanelSource, TimerSource {
   #display: Display = OFFLINE;
   #panel: PanelView = NO_PANEL;
   readonly #panelListeners = new Set<() => void>();
+  #timers: ShownTimers = NO_TIMERS;
+  readonly #timerListeners = new Set<() => void>();
   #status: LinkStatus = 'offline';
   #socket: SocketLike | null = null;
   #retry: ReturnType<typeof setTimeout> | null = null;
@@ -140,11 +179,23 @@ export class JarvisLink implements OrbSource, PanelSource {
     return this.#panel.kind === 'built' ? this.#panel.panel : null;
   }
 
+  get shownTimers(): ShownTimers {
+    return this.#timers;
+  }
+
   /** An arrow function, so `useSyncExternalStore` can be given it as it is. */
   readonly subscribePanel = (listener: () => void): (() => void) => {
     this.#panelListeners.add(listener);
     return () => {
       this.#panelListeners.delete(listener);
+    };
+  };
+
+  /** An arrow function, so `useSyncExternalStore` can be given it as it is. */
+  readonly subscribeTimers = (listener: () => void): (() => void) => {
+    this.#timerListeners.add(listener);
+    return () => {
+      this.#timerListeners.delete(listener);
     };
   };
 
@@ -187,6 +238,18 @@ export class JarvisLink implements OrbSource, PanelSource {
     return this.#send({ type: 'panel_closed' });
   };
 
+  /** Sends one ConfirmTimer with `id` if connected; returns false and sends nothing otherwise. */
+  readonly confirmTimer = (id: number): boolean => this.#send({ type: 'confirm_timer', id });
+
+  /** Sends one RejectTimer with `id` if connected; returns false and sends nothing otherwise. */
+  readonly rejectTimer = (id: number): boolean => this.#send({ type: 'reject_timer', id });
+
+  /**
+   * Sends one CancelTimer with `id` if connected; returns false and sends
+   * nothing otherwise. The row stays until Jarvis sends the new list.
+   */
+  readonly cancelTimer = (id: number): boolean => this.#send({ type: 'cancel_timer', id });
+
   #send(message: FromOrb): boolean {
     const socket = this.#socket;
     if (this.#status !== 'connected' || socket === null) {
@@ -202,6 +265,16 @@ export class JarvisLink implements OrbSource, PanelSource {
     }
     this.#panel = next;
     for (const listener of [...this.#panelListeners]) {
+      listener();
+    }
+  }
+
+  #setTimers(next: ShownTimers): void {
+    if (next === this.#timers) {
+      return;
+    }
+    this.#timers = next;
+    for (const listener of [...this.#timerListeners]) {
       listener();
     }
   }
@@ -241,6 +314,9 @@ export class JarvisLink implements OrbSource, PanelSource {
         case 'stats':
           this.#setPanel(applyPanelMessage(this.#panel, message));
           return;
+        case 'timers':
+          this.#setTimers({ timers: message.timers, receivedAtMs: Date.now() });
+          return;
       }
     };
     // A failed connection fires `error` and then `close`, so only `close` acts.
@@ -250,13 +326,14 @@ export class JarvisLink implements OrbSource, PanelSource {
     };
   }
 
-  /** Forgets the socket (closing it if open), shows offline and hides the Panel. */
+  /** Forgets the socket (closing it if open), shows offline and hides the Panel and the timers; Jarvis sends them again on connect. */
   #drop(): void {
     const socket = this.#socket;
     this.#socket = null;
     this.#status = 'offline';
     this.#display = OFFLINE;
     this.#setPanel(NO_PANEL);
+    this.#setTimers(NO_TIMERS);
     if (socket !== null) {
       socket.onopen = null;
       socket.onmessage = null;

@@ -1,0 +1,196 @@
+/*
+ * The timer strip (timers D15): small frames in the Panels' HUD look, stacked
+ * at the top right. Colours are the Panels' custom properties (`palette.ts`),
+ * set on `.timers`. Nothing here runs in a loop except an ended row's flash
+ * (opacity only, so the compositor draws it without layout or paint; off with
+ * reduced motion); an ended row lasts at most 2 minutes (timers D19).
+ */
+
+.timers {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--panel-ink);
+  font-family: var(--panel-font, system-ui, 'Piboto', 'Roboto', 'Noto Sans', 'DejaVu Sans', sans-serif);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.timers-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* One frame per timer: the Panel's thin line and fill, over black so it reads on top of the full-size Orb. */
+.timer {
+  position: relative;
+  box-sizing: border-box;
+  border: 1px solid var(--panel-line);
+  background: linear-gradient(var(--panel-fill), var(--panel-fill)), rgb(0 0 0 / 0.82);
+}
+
+/* The Panels' HUD bracket over the top-left corner. */
+.timer::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 10px;
+  height: 10px;
+  border: 0 solid var(--panel-accent);
+  border-top-width: 2px;
+  border-left-width: 2px;
+  pointer-events: none;
+}
+
+.timer-pending,
+.timer-question {
+  padding: 8px 10px;
+}
+
+.timer-pending {
+  border-color: var(--panel-accent);
+}
+
+.timer-question {
+  border-color: var(--panel-alert);
+}
+
+/* A running or ended row is one button the size of its frame. */
+.timer-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 62px;
+  margin: 0;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * The label as Darren said it (not upper case, so "Time to do work" fits):
+ * one line, cut with an ellipsis; the full text stays in the page for a
+ * screen reader.
+ */
+.timer-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 18px;
+  letter-spacing: 0.02em;
+  color: var(--panel-label);
+}
+
+.timer-pending .timer-name {
+  margin-bottom: 6px;
+}
+
+/* The time left, or "Ended". "23:59:59" fits the frame. */
+.timer-value {
+  font-size: 30px;
+  font-weight: 300;
+  line-height: 36px;
+  white-space: nowrap;
+}
+
+.timer-question-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin: 0 0 6px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.timer-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* At least 44 px high: a finger, not a pointer. */
+.timer-button {
+  min-height: 44px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid var(--panel-line);
+  background: none;
+  color: var(--panel-ink);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.timer-button-yes {
+  border-color: var(--panel-reading);
+  color: var(--panel-reading);
+}
+
+.timer-button-alert {
+  border-color: var(--panel-alert);
+  color: var(--panel-alert);
+}
+
+.timer-row:active,
+.timer-button:active {
+  background: var(--panel-track);
+}
+
+.timer-row:focus-visible,
+.timer-button:focus-visible {
+  outline: 2px solid var(--panel-accent);
+  outline-offset: -2px;
+}
+
+/* Ended: an amber frame that pulses over the row; the text stays steady. */
+.timer-ended {
+  border-color: var(--panel-alert);
+}
+
+.timer-ended .timer-value {
+  color: var(--panel-alert);
+}
+
+.timer-ended::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 2px solid var(--panel-alert);
+  box-shadow: 0 0 14px var(--panel-alert);
+  pointer-events: none;
+  animation: timer-flash 800ms ease-in-out infinite alternate;
+}
+
+@keyframes timer-flash {
+  to {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timer-ended::after {
+    animation: none;
+  }
+}

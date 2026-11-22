@@ -5,6 +5,11 @@
  * the Orb shrinks into the top-left corner, where it keeps showing state and
  * taking taps, and the Panel takes the rest of the screen, inset from the
  * edges so there is room around it to tap outside and close it.
+ *
+ * The timer strip (timers D15) sits at the top right, Panel or not, in a
+ * column that mirrors the corner Orb's: the same inset and width. While it has
+ * rows and a Panel shows, the Panel's right edge moves left of that column, so
+ * the strip never covers the Panel's frame and the Orb's corner stays clear.
  */
 
 import type { PanelName } from '../link/protocol';
@@ -40,6 +45,27 @@ export interface PanelInsets {
   readonly bottom: number;
 }
 
+/** The timer strip's width, in CSS pixels: the corner Orb's, so the screen reads as Orb, Panel, timers. */
+export const TIMER_STRIP_WIDTH = CORNER_ORB_SIDE;
+
+/** The gap between the timer strip and the window's top and right edges, in CSS pixels: the corner Orb's. */
+export const TIMER_STRIP_INSET = CORNER_ORB_INSET;
+
+/** The Panel's right inset while the timer strip has rows: just left of the strip, with the Orb's gap. */
+export const PANEL_RIGHT_BESIDE_TIMERS = TIMER_STRIP_INSET + TIMER_STRIP_WIDTH + ORB_PANEL_GAP;
+
+/**
+ * Where the timer strip sits, the same whether or not a Panel shows:
+ * distances from the window's top and right edges, its width, and the
+ * window-relative cap on its height (the inset kept above and below), as CSS.
+ */
+export const TIMER_STRIP_BOX = {
+  top: TIMER_STRIP_INSET,
+  right: TIMER_STRIP_INSET,
+  width: TIMER_STRIP_WIDTH,
+  maxHeight: `calc(100vh - ${2 * TIMER_STRIP_INSET}px)`,
+} as const;
+
 const ORIGIN: OrbPosition = { left: 0, top: 0 };
 const CORNER_POSITION: OrbPosition = { left: CORNER_ORB_INSET, top: CORNER_ORB_INSET };
 const CORNER_SIZE: OrbSize = { width: CORNER_ORB_SIDE, height: CORNER_ORB_SIDE };
@@ -51,6 +77,11 @@ export const PANEL_INSETS: PanelInsets = {
   right: PANEL_INSET,
   bottom: PANEL_INSET,
 };
+
+/** The Panel's place while the timer strip has rows (`hasTimers`) or not. */
+export function panelInsets(hasTimers: boolean): PanelInsets {
+  return hasTimers ? { ...PANEL_INSETS, right: PANEL_RIGHT_BESIDE_TIMERS } : PANEL_INSETS;
+}
 
 /** The Orb's size and top-left corner for a window of `windowSize` with `panel` shown (`null` for none). */
 export function orbPlacement(windowSize: OrbSize, panel: PanelName | null): OrbPlacement {

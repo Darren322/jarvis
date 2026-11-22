@@ -391,3 +391,75 @@ describe('reconnecting', () => {
     expect(sockets).toHaveLength(2);
   });
 });
+
+describe('timers', () => {
+  const TIMERS =
+    '{"type":"timers","timers":[{"id":3,"label":"Time to sleep","ends_at_ms":1763830800000,"state":"running"},{"id":4,"ends_at_ms":5,"state":"pending"}]}';
+
+  test('no timers until the first timers message, which keeps its rows and the UI clock at arrival', () => {
+    vi.setSystemTime(1_763_829_000_000);
+    const { link, sockets } = connectedLink();
+    expect(link.shownTimers).toEqual({ timers: [], receivedAtMs: 0 });
+    latest(sockets).receive(TIMERS);
+    expect(link.shownTimers).toEqual({
+      timers: [
+        { id: 3, label: 'Time to sleep', endsAtMs: 1763830800000, state: 'running' },
+        { id: 4, label: null, endsAtMs: 5, state: 'pending' },
+      ],
+      receivedAtMs: 1_763_829_000_000,
+    });
+    latest(sockets).receive('{"type":"timers","timers":[]}');
+    expect(link.shownTimers.timers).toEqual([]);
+  });
+
+  test('a timers message notifies timer subscribers once and Panel subscribers never; other messages never notify timer subscribers', () => {
+    const { link, sockets } = connectedLink();
+    let timerCalls = 0;
+    let panelCalls = 0;
+    link.subscribeTimers(() => (timerCalls += 1));
+    link.subscribePanel(() => (panelCalls += 1));
+    latest(sockets).receive(TIMERS);
+    expect([timerCalls, panelCalls]).toEqual([1, 0]);
+    latest(sockets).receive(SHOW_STATS);
+    latest(sockets).receive(STATS);
+    latest(sockets).receive('{"type":"state","state":"thinking"}');
+    latest(sockets).receive('{"type":"timers","timers":[{"id":1,"ends_at_ms":2,"state":"cancelled"}]}');
+    expect(timerCalls).toBe(1);
+    expect(link.shownTimers.timers).toHaveLength(2);
+  });
+
+  test('a dropped connection clears the timers once; Jarvis sends them again on connect', () => {
+    const { link, sockets } = connectedLink();
+    latest(sockets).receive(TIMERS);
+    let calls = 0;
+    link.subscribeTimers(() => (calls += 1));
+    latest(sockets).fail();
+    expect(link.shownTimers.timers).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  test('each answer sends exactly one message with the id, as the Rust side expects', () => {
+    const { link, sockets } = connectedLink();
+    expect(link.confirmTimer(3)).toBe(true);
+    expect(link.rejectTimer(4)).toBe(true);
+    expect(link.cancelTimer(5)).toBe(true);
+    expect(latest(sockets).sent).toEqual([
+      '{"type":"confirm_timer","id":3}',
+      '{"type":"reject_timer","id":4}',
+      '{"type":"cancel_timer","id":5}',
+    ]);
+  });
+
+  test('an answer while connecting or offline sends nothing', () => {
+    const { create, sockets } = socketFactory();
+    const link = new JarvisLink({ createSocket: create });
+    link.start();
+    const answers = () => [link.confirmTimer(3), link.rejectTimer(3), link.cancelTimer(3)];
+    expect(answers()).toEqual([false, false, false]);
+    latest(sockets).open();
+    latest(sockets).fail();
+    expect(answers()).toEqual([false, false, false]);
+    expect(latest(sockets).sent).toEqual([]);
+    link.stop();
+  });
+});

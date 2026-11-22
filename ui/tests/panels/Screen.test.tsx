@@ -393,3 +393,96 @@ describe('the built Panel', () => {
     expect([...container.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['milk', 'eggs']);
   });
 });
+
+describe('the timer strip', () => {
+  const TIMERS =
+    '{"type":"timers","timers":[{"id":3,"label":"Time to sleep","ends_at_ms":9007199254740991,"state":"pending"},{"id":4,"ends_at_ms":0,"state":"ended"}]}';
+  const NO_TIMERS = '{"type":"timers","timers":[]}';
+
+  function strip(): HTMLElement | null {
+    return container.querySelector<HTMLElement>('section[aria-label="Timers"]');
+  }
+
+  function order(): string[] {
+    return [...container.children].map((element) => element.getAttribute('aria-label') ?? element.className);
+  }
+
+  async function click(name: string) {
+    const button = [...container.querySelectorAll('button')].find(
+      (element) => (element.getAttribute('aria-label') ?? element.textContent) === name,
+    );
+    if (button === undefined) {
+      throw new Error(`no button named ${name}`);
+    }
+    await act(async () => button.click());
+  }
+
+  test('it shows at the top right over the full-size Orb, drawn last so a tap reaches it', async () => {
+    const { receive } = await mountScreen();
+    await receive(TIMERS);
+    expect(order()).toEqual(['Jarvis orb: tap to talk', 'Timers']);
+    const { top, right, width } = strip()?.style ?? {};
+    expect([top, right, width]).toEqual(['12px', '12px', '160px']);
+    expect(orbBox()).toEqual(FULL());
+  });
+
+  test('with a Panel it stays, drawn last, and the Panel narrows to leave it room', async () => {
+    const { receive } = await mountScreen();
+    await receive(SHOW_STATS, TIMERS);
+    expect(order()).toEqual(['panel-outside', 'Stats', 'Jarvis orb: tap to talk', 'Timers']);
+    expect(panel()?.style.right).toBe('184px');
+    expect(panel()?.classList.contains('panel-beside-timers')).toBe(true);
+    expect(orbBox()).toEqual(CORNER);
+    await receive(NO_TIMERS);
+    expect(strip()).toBeNull();
+    expect(panel()?.style.right).toBe('20px');
+    expect(panel()?.classList.contains('panel-beside-timers')).toBe(false);
+  });
+
+  test('taps on the strip while a Panel shows send only the timer answers: the Panel stays open', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_BUILT, TIMERS);
+    const box = strip();
+    if (box === null) {
+      throw new Error('no strip');
+    }
+    await pointerDown(box);
+    await click("Set 'Time to sleep'");
+    await click('Timer Ended');
+    expect(socket.sent).toEqual(['{"type":"confirm_timer","id":3}', '{"type":"cancel_timer","id":4}']);
+    expect(builtPanel()).not.toBeNull();
+  });
+
+  test('a tap on the strip with no Panel is not a Tap on the Orb', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(TIMERS);
+    const box = strip();
+    if (box === null) {
+      throw new Error('no strip');
+    }
+    await pointerDown(box);
+    await click("Don't set 'Time to sleep'");
+    expect(socket.sent).toEqual(['{"type":"reject_timer","id":3}']);
+  });
+
+  test('a dropped connection clears the strip until Jarvis sends the timers again', async () => {
+    const { socket, receive } = await mountScreen();
+    await receive(SHOW_STATS, TIMERS);
+    await act(async () => socket.fail());
+    expect(strip()).toBeNull();
+  });
+
+  test('a timers message is one React commit, and state and level messages cause none while the strip shows', async () => {
+    const { receive, commits } = await mountScreen();
+    await receive(SHOW_STATS, STATS);
+    let before = commits();
+    await receive(TIMERS);
+    expect(commits()).toBe(before + 1);
+    before = commits();
+    await receive(
+      '{"type":"state","state":"speaking"}',
+      ...Array.from({ length: 30 }, (_, index) => JSON.stringify({ type: 'level', level: index / 30, source: 'speech' })),
+    );
+    expect(commits()).toBe(before);
+  });
+});

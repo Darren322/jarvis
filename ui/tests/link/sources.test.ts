@@ -17,10 +17,17 @@ test('the sources were found', () => {
   expect(PANEL_SOURCES.length).toBeGreaterThanOrEqual(5);
 });
 
-test('no fetch, no XMLHttpRequest and no setInterval in the Orb, the link or the Panels', () => {
+test('no fetch and no XMLHttpRequest in the Orb, the link or the Panels', () => {
   for (const [path, text] of Object.entries(SOURCES)) {
-    expect([path, /\bfetch\s*\(|XMLHttpRequest|setInterval/.test(text)]).toEqual([path, false]);
+    expect([path, /\bfetch\s*\(|XMLHttpRequest/.test(text)]).toEqual([path, false]);
   }
+});
+
+test('the only interval is the timer strip clock, one for the whole strip (timers 09)', () => {
+  const intervals = Object.entries(SOURCES).flatMap(([path, text]) =>
+    [...text.matchAll(/\bsetInterval\s*\(/g)].map(() => path),
+  );
+  expect(intervals).toEqual(['../../src/panels/Timers.tsx']);
 });
 
 test('the only timer is the reconnect timer in the link', () => {
