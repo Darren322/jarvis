@@ -397,7 +397,9 @@ impl TimersInbox {
     }
 
     /// Confirms `id` unless its window is over at `now`, whether or not a pass has
-    /// expired it yet: the window, not the order of events, decides (D4).
+    /// expired it yet: the window, not the order of events, decides (D4). A late
+    /// confirm only refuses; the pass that follows every request expires and
+    /// reports it, with any other pending timer whose window is over.
     async fn confirm(
         &self,
         repository: &TimersRepository,
@@ -408,10 +410,6 @@ impl TimersInbox {
             && timer.state == TimerState::Pending
             && plan::is_window_over(&timer, now)
         {
-            repository
-                .delete_pending_created_through(plan::expired_created_through(now))
-                .await?;
-            self.report(TimerEvent::Expired { timer });
             return Err(TimerServiceError::WindowOver { id });
         }
         Ok(repository.confirm(id).await?)
