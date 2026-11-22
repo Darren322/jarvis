@@ -1,7 +1,7 @@
 # Jarvis UI
 
 Status: active
-Resume here: 01 to 16 are done. 12 (catalog panels) was closed on 2026-11-21: a flat `build_panel` tool (`title`, `text`, `items`, `gauges`), because Gemma's chat template cannot show the model nested `anyOf` parts; gauge requests open the stats Dashboard instead. 11's sideways camera picture is left for later (Q14 in 11). Next: 17 (a timer, needs-triage, by grilling). Gemma runs 2 slots of 5,120 tokens since 2026-11-21. Latest handoff: the newest `notes/HANDOFF_*.md`.
+Resume here: 01 to 16 are done. 12 (catalog panels) was closed on 2026-11-21: a flat `build_panel` tool (`title`, `text`, `items`, `gauges`), because Gemma's chat template cannot show the model nested `anyOf` parts; gauge requests open the stats Dashboard instead. 11's sideways camera picture is left for later (Q14 in 11). 17 (a timer) moved to its own spec, [timers](../timers/spec.md), on 2026-11-22; nothing in this spec is open. Gemma runs 2 slots of 5,120 tokens since 2026-11-21. Latest handoff: the newest `notes/HANDOFF_*.md`.
 
 Written 2026-11-15 from Darren's decisions. D1 was confirmed by the Pi measurement (ADR 0001). Tickets are in `issues/`; their `Status:` lines are the progress record.
 

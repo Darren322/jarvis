@@ -1,6 +1,6 @@
 # 17: A timer on the screen
 
-Status: needs-triage
+Status: wontfix
 Stories: US5
 Blocked by: 12
 Assignee: unassigned
@@ -20,3 +20,5 @@ Traces to: D2, D8, ticket 12 (E2)
 - To be written when the questions are settled.
 
 ## Comments
+
+- 2026-11-22 (coordinator): moved to its own spec, [timers](../../timers/spec.md). The grilling settled every open question above, and the answers made this a feature, not a UI ticket: a model run when a timer ends, storage at schema v7, voice commands, and Darren's confirmation before each timer is set (8B). Closed here as `wontfix` because the work continues in that spec.
