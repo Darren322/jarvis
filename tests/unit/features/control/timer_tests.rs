@@ -13,8 +13,8 @@ use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
 use super::{
-    AnswerOutcome, REJECTED_LINE, TimerAnswer, TimerReaction, answer_timer, expired_line,
-    proposal_line, react_to, set_line,
+    AnswerOutcome, REJECTED_LINE, TimerAnswer, TimerReaction, TimerTap, answer_tap, answer_timer,
+    cancelled_line, expired_line, proposal_line, react_to, set_line,
 };
 use crate::features::control::Notice;
 use crate::features::timers::{TimerEvent, TimersHandle, WallClock, channel};
@@ -244,6 +244,211 @@ async fn with_no_timer_waiting_yes_and_no_are_for_the_model() {
             answer_timer(&service.handle, answer).await,
             AnswerOutcome::NotForATimer
         );
+    }
+}
+
+/// A proposed timer, confirmed through the service.
+async fn running(service: &Service, label: Option<&str>, minutes: i64) -> Timer {
+    let proposed = service.propose(label, minutes).await;
+    service
+        .handle
+        .confirm(proposed.id)
+        .await
+        .expect("confirmed in its window")
+}
+
+/// Moves the clock past the end of `timer` and waits until the service has ended
+/// it. Any request wakes the service for the pass that ends it; an unknown id is
+/// refused and changes nothing.
+async fn let_end(service: &Service, timer: &Timer) {
+    service
+        .clock
+        .store(timer.ends_at_unix_ms + 1, Ordering::SeqCst);
+    let _ = service.handle.cancel(TimerId(i64::MAX)).await;
+    service
+        .handle
+        .watch_shown()
+        .wait_for(|timers| {
+            timers
+                .iter()
+                .any(|shown| shown.id == timer.id && shown.state == TimerState::Ended)
+        })
+        .await
+        .expect("the service is running");
+}
+
+/// Waits until the shown timers no longer carry `id`, then says whether any timer
+/// is still running.
+async fn still_running_once_gone(service: &Service, id: TimerId) -> bool {
+    let shown = service
+        .handle
+        .watch_shown()
+        .wait_for(|timers| timers.iter().all(|timer| timer.id != id))
+        .await
+        .expect("the service is running")
+        .clone();
+    shown.iter().any(|timer| timer.state == TimerState::Running)
+}
+
+#[tokio::test]
+async fn a_tap_on_set_sets_the_pending_timer_and_says_so() {
+    let service = Service::start().await;
+    let proposed = service.propose(Some("Time to sleep"), 60).await;
+
+    let notice = answer_tap(&service.handle, TimerTap::Confirm(proposed.id)).await;
+
+    let Some(Notice::Info(line)) = notice else {
+        panic!("a line: {notice:?}");
+    };
+    assert!(line.starts_with("Set. 'Time to sleep' ends at "), "{line}");
+    assert_eq!(
+        service.state_of(proposed.id).await,
+        Some(TimerState::Running)
+    );
+}
+
+#[tokio::test]
+async fn a_tap_on_dont_drops_the_pending_timer_and_says_so() {
+    let service = Service::start().await;
+    let proposed = service.propose(None, 10).await;
+
+    let notice = answer_tap(&service.handle, TimerTap::Reject(proposed.id)).await;
+
+    assert_eq!(notice, Some(Notice::Info(REJECTED_LINE.to_owned())));
+    assert_eq!(service.state_of(proposed.id).await, None);
+}
+
+#[tokio::test]
+async fn a_tap_on_set_at_30_seconds_sets_the_timer_and_just_after_sets_nothing() {
+    for (waited_ms, sets_it) in [(30_000, true), (30_001, false)] {
+        let service = Service::start().await;
+        let proposed = service.propose(None, 10).await;
+        service.clock.fetch_add(waited_ms, Ordering::SeqCst);
+
+        let notice = answer_tap(&service.handle, TimerTap::Confirm(proposed.id)).await;
+
+        assert_eq!(
+            notice.is_some(),
+            sets_it,
+            "after {waited_ms} ms: {notice:?}"
+        );
+        let state = service.state_of(proposed.id).await;
+        assert_eq!(
+            state,
+            sets_it.then_some(TimerState::Running),
+            "after {waited_ms} ms"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_running_timer_from_the_screen_removes_it_and_says_so() {
+    let cases = [
+        (Some("Time to sleep"), "Cancelled 'Time to sleep'."),
+        (None, "Cancelled the timer."),
+    ];
+    for (label, expected) in cases {
+        let service = Service::start().await;
+        let timer = running(&service, label, 60).await;
+
+        let notice = answer_tap(&service.handle, TimerTap::Cancel(timer.id)).await;
+
+        assert_eq!(notice, Some(Notice::Info(expected.to_owned())));
+        assert!(
+            !still_running_once_gone(&service, timer.id).await,
+            "the only timer is gone"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_pending_timer_from_the_screen_says_so() {
+    let service = Service::start().await;
+    let proposed = service.propose(Some("Pasta"), 10).await;
+
+    let notice = answer_tap(&service.handle, TimerTap::Cancel(proposed.id)).await;
+
+    assert_eq!(notice, Some(Notice::Info("Cancelled 'Pasta'.".to_owned())));
+    assert_eq!(service.state_of(proposed.id).await, None);
+}
+
+#[tokio::test]
+async fn tapping_an_ended_timer_removes_its_row_and_says_nothing() {
+    let service = Service::start().await;
+    let timer = running(&service, Some("Pasta"), 5).await;
+    let other = running(&service, Some("Time to sleep"), 600).await;
+    let_end(&service, &timer).await;
+
+    let notice = answer_tap(&service.handle, TimerTap::Cancel(timer.id)).await;
+
+    assert_eq!(notice, None);
+    // The row is gone, and the other timer is untouched.
+    assert!(
+        still_running_once_gone(&service, timer.id).await,
+        "the other one runs"
+    );
+    assert_eq!(service.state_of(other.id).await, Some(TimerState::Running));
+}
+
+#[tokio::test]
+async fn a_tap_that_the_timers_do_not_allow_changes_nothing_and_says_nothing() {
+    let service = Service::start().await;
+    let timer = running(&service, Some("Time to sleep"), 60).await;
+    let unknown = TimerId(i64::MAX - 1);
+    let cancelled = running(&service, None, 30).await;
+    answer_tap(&service.handle, TimerTap::Cancel(cancelled.id)).await;
+    // Proposed last: a new proposal replaces a pending one (D23).
+    let waiting = service.propose(Some("Pasta"), 10).await;
+
+    let taps = [
+        // An id that never was.
+        TimerTap::Confirm(unknown),
+        TimerTap::Reject(unknown),
+        TimerTap::Cancel(unknown),
+        // An id already cancelled.
+        TimerTap::Confirm(cancelled.id),
+        TimerTap::Reject(cancelled.id),
+        TimerTap::Cancel(cancelled.id),
+        // A timer that is already running is not waiting for an answer.
+        TimerTap::Confirm(timer.id),
+        TimerTap::Reject(timer.id),
+    ];
+    for tap in taps {
+        assert_eq!(answer_tap(&service.handle, tap).await, None, "{tap:?}");
+    }
+
+    // Still there, still as they were.
+    assert_eq!(service.state_of(timer.id).await, Some(TimerState::Running));
+    let still_waiting = service
+        .handle
+        .shown()
+        .into_iter()
+        .find(|shown| shown.id == waiting.id)
+        .map(|shown| shown.state);
+    assert_eq!(still_waiting, Some(TimerState::Pending));
+}
+
+#[tokio::test]
+async fn a_tap_while_the_timers_are_not_running_is_a_warning() {
+    let (handle, inbox, _events) = channel();
+    drop(inbox);
+    for tap in [TimerTap::Confirm(TimerId(1)), TimerTap::Reject(TimerId(1))] {
+        let notice = answer_tap(&handle, tap).await;
+        assert!(
+            matches!(&notice, Some(Notice::Warning(text)) if text.contains("not running")),
+            "{tap:?}: {notice:?}"
+        );
+    }
+}
+
+#[test]
+fn cancelling_is_said_with_the_timers_name() {
+    let cases = [
+        (Some("Time to sleep"), "Cancelled 'Time to sleep'."),
+        (None, "Cancelled the timer."),
+    ];
+    for (label, expected) in cases {
+        assert_eq!(cancelled_line(&timer(label, 5)), expected);
     }
 }
 

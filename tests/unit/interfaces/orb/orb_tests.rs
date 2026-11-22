@@ -8,6 +8,7 @@ use tokio_tungstenite::{
 };
 
 use super::*;
+use crate::{features::control::TimerTap, storage::TimerId};
 
 /// Long enough for anything the server will ever send; the clock is paused, so
 /// waiting it out costs nothing.
@@ -27,6 +28,7 @@ pub(super) struct Served<'a> {
     pub(super) mic: &'a watch::Sender<f32>,
     pub(super) taps: &'a mut mpsc::Receiver<Tap>,
     pub(super) handle: &'a mut OrbHandle,
+    pub(super) timer_taps: &'a mut TimerTaps,
 }
 
 /// A camera feed whose camera Panel is never shown, so `/camera` refuses every
@@ -51,7 +53,8 @@ pub(super) async fn serving_with<T>(
     let (tap_sender, mut taps) = mpsc::channel(TAP_QUEUE);
     let websocket = WebSocketEndpoint::bind(0).unwrap();
     let address = websocket.local_addr().unwrap();
-    let (server, mut handle) = OrbServer::new(websocket, vec![ALLOWED_ORIGIN.to_owned()]);
+    let (server, mut handle, mut timer_taps) =
+        OrbServer::new(websocket, vec![ALLOWED_ORIGIN.to_owned()]);
     let feeds = OrbFeeds {
         states: &states,
         mic_level,
@@ -65,6 +68,7 @@ pub(super) async fn serving_with<T>(
         mic: &mic,
         taps: &mut taps,
         handle: &mut handle,
+        timer_taps: &mut timer_taps,
     };
     tokio::select! {
         never = server.serve(feeds) => match never {},
@@ -413,9 +417,19 @@ async fn a_port_already_in_use_is_reported_once_and_serves_once_it_is_free() {
     // The other program still has its port.
     assert!(occupant.local_addr().is_ok());
 
-    // Once the port is free the same configuration serves.
+    // Once the port is free the same configuration serves. Another test asking
+    // for any free port may be handed this one the moment it is freed, and holds
+    // it only briefly, so a taken port is tried again for up to a second.
     drop(occupant);
-    let (server, _handle) = OrbServer::bind(&config).unwrap();
+    let mut bound = OrbServer::bind(&config);
+    for _ in 0..20 {
+        if !matches!(bound, Err(OrbError::WebSocketBind { .. })) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        bound = OrbServer::bind(&config);
+    }
+    let (server, _handle, _timer_taps) = bound.unwrap();
     drop(server);
 }
 
@@ -450,4 +464,152 @@ async fn a_panel_closed_from_a_websocket_client_reaches_the_handle_and_not_the_t
         assert!(served.taps.try_recv().is_err());
     })
     .await;
+}
+
+fn timer_list(ids: &[u64]) -> ToOrb {
+    ToOrb::Timers {
+        timers: ids
+            .iter()
+            .map(|&id| {
+                orb_protocol::Timer::new(id, None, 1_000, orb_protocol::TimerState::Running)
+                    .expect("no label")
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_is_sent_the_timers_each_time_they_change_and_a_later_client_is_told_the_current_list()
+ {
+    serving(async |served| {
+        let mut first = Browser::connect(served.address).await;
+        assert_eq!(first.read().await, state(OrbState::Idle));
+
+        for list in [timer_list(&[1]), timer_list(&[1, 2])] {
+            served.handle.to_orb.send(list.clone()).await.unwrap();
+            assert_eq!(first.read().await, Read::Message(list));
+        }
+
+        // Connecting later (or again): the state, then the list as it is now.
+        let mut late = Browser::connect(served.address).await;
+        assert_eq!(late.read().await, state(OrbState::Idle));
+        assert_eq!(late.read().await, Read::Message(timer_list(&[1, 2])));
+        assert_eq!(late.read().await, Read::Quiet);
+
+        drop(first);
+        let mut again = Browser::connect(served.address).await;
+        assert_eq!(again.read().await, state(OrbState::Idle));
+        assert_eq!(again.read().await, Read::Message(timer_list(&[1, 2])));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_messages_from_a_client_reach_the_timer_taps_and_neither_the_panel_loop_nor_the_tap_queue()
+ {
+    serving(async |served| {
+        let mut browser = Browser::connect(served.address).await;
+        assert_eq!(browser.read().await, state(OrbState::Idle));
+
+        browser.send(r#"{"type":"confirm_timer","id":3}"#).await;
+        browser.send(r#"{"type":"reject_timer","id":4}"#).await;
+        browser.send(r#"{"type":"cancel_timer","id":5}"#).await;
+        for expected in [
+            TimerTap::Confirm(TimerId(3)),
+            TimerTap::Reject(TimerId(4)),
+            TimerTap::Cancel(TimerId(5)),
+        ] {
+            assert_eq!(
+                timeout(WAIT, served.timer_taps.next()).await,
+                Ok(Some(expected))
+            );
+        }
+        assert!(served.handle.from_orb.try_recv().is_err());
+        assert!(served.taps.try_recv().is_err());
+    })
+    .await;
+}
+
+fn inbox() -> (
+    Inbox,
+    mpsc::Receiver<Tap>,
+    mpsc::Receiver<FromOrb>,
+    mpsc::Receiver<FromOrb>,
+) {
+    let (taps, tap_queue) = mpsc::channel(TAP_QUEUE);
+    let (timers, timer_queue) = mpsc::channel(TIMER_QUEUE);
+    let (events, event_queue) = mpsc::channel(FROM_ORB_QUEUE);
+    (
+        Inbox {
+            taps,
+            timers,
+            events,
+        },
+        tap_queue,
+        timer_queue,
+        event_queue,
+    )
+}
+
+#[test]
+fn each_message_from_an_orb_goes_to_exactly_one_queue() {
+    // (message, taps, timers, events)
+    let cases = [
+        (FromOrb::Tap {}, 1, 0, 0),
+        (FromOrb::PanelClosed {}, 0, 0, 1),
+        (FromOrb::ConfirmTimer { id: 1 }, 0, 1, 0),
+        (FromOrb::RejectTimer { id: 1 }, 0, 1, 0),
+        (FromOrb::CancelTimer { id: 1 }, 0, 1, 0),
+    ];
+    for (message, in_taps, in_timers, in_events) in cases {
+        let (inbox, mut taps, mut timers, mut events) = inbox();
+        inbox.deliver(message);
+        let mut counts = (0, 0, 0);
+        while taps.try_recv().is_ok() {
+            counts.0 += 1;
+        }
+        while timers.try_recv().is_ok() {
+            counts.1 += 1;
+        }
+        while events.try_recv().is_ok() {
+            counts.2 += 1;
+        }
+        assert_eq!(counts, (in_taps, in_timers, in_events), "{message:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_timer_queue_holds_this_many_messages_and_the_next_is_dropped_without_waiting() {
+    for sent in [TIMER_QUEUE, TIMER_QUEUE + 1] {
+        serving(async |served| {
+            let mut browser = Browser::connect(served.address).await;
+            assert_eq!(browser.read().await, state(OrbState::Idle));
+
+            // Nobody reads the timer taps while the orb sends them all.
+            for id in 0..sent {
+                browser
+                    .send(format!(r#"{{"type":"cancel_timer","id":{id}}}"#))
+                    .await;
+            }
+            tokio::time::sleep(WAIT).await;
+
+            let mut heard = Vec::new();
+            while let Ok(Some(tap)) =
+                timeout(Duration::from_millis(1), served.timer_taps.next()).await
+            {
+                heard.push(tap);
+            }
+            // The oldest are kept, in order; the one over the limit is dropped.
+            let expected: Vec<TimerTap> = (0..TIMER_QUEUE)
+                .map(|id| TimerTap::Cancel(TimerId(id as i64)))
+                .collect();
+            assert_eq!(heard, expected, "{sent} sent");
+            // The spill went nowhere else, and the server still answers.
+            assert!(served.handle.from_orb.try_recv().is_err());
+            assert!(served.taps.try_recv().is_err());
+            browser.send(r#"{"type":"tap"}"#).await;
+            assert_eq!(timeout(WAIT, served.taps.recv()).await, Ok(Some(Tap)));
+        })
+        .await;
+    }
 }

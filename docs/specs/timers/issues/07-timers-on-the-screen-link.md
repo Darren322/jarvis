@@ -1,6 +1,6 @@
 # 07: Sending timers to the screen and hearing taps
 
-Status: ready-for-agent
+Status: in-review
 Stories: US4, US5
 Blocked by: 05, 06
 Assignee: unassigned
@@ -23,3 +23,4 @@ Traces to: D11, D14
 - [ ] Pi check (Darren's eyes and touch, after ticket 09): T1's timer appears on the screen with Set and Don't; tapping Set sets it; tapping a running row asks to cancel and cancelling works.
 
 ## Comments
+- 2026-11-22 (coordinator): built by a Sonnet agent (high effort) from `09c014d`; reviewed, then three-way merged with 08's changes to `control/timer.rs`. What it adds: `interfaces/orb/timers.rs` (the conversion and `publish_timers`), a hub that replays the last `timers` message after the state, a third inbox route (`TIMER_QUEUE = 8`), and `control::answer_tap` with `cancelled_line`. `app.rs` answers taps beside the REPL and sends their lines through the announcements queue (now `ANNOUNCEMENT_QUEUE` = 4). One criterion is accepted unmet: a refused tap does not resend the list, because the UI never hides a row by itself and a reconnect replays the list. Evidence: `scripts/verify.sh --repeat interfaces::orb` 20 of 20, after a retry fix to the older flaky port test (it failed 2 in 40 runs before 07 too). Also seen once under full parallel load: `a_websocket_client_that_leaves_closes_the_panel` (paused clock plus a real socket). It passed 150 of 150 runs alone, with and without 07; follow-up. The Pi checks (taps on the 5 inch screen) are open.

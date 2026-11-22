@@ -1,9 +1,9 @@
 # 08: When a timer ends: the sound and Jarvis's own model run
 
-Status: in-progress
+Status: in-review
 Stories: US3, US7
 Blocked by: 07
-Assignee: Claude
+Assignee: unassigned
 Owns: `src/features/speech/cues.rs`, `src/config/cues.rs`, `src/features/assistant/**` (the run's no-tool setting, `preamble.txt` only if Darren agrees), `src/interfaces/cli/repl/**`, `src/interfaces/cli/input.rs`, `src/features/conversation/**` (only the 30-minute rule's hook, if needed), `src/app.rs` (only sound loading and the event wiring), `tests/unit/features/speech/**`, `tests/unit/config/cues_tests.rs`, `tests/unit/features/assistant/**`, `tests/unit/interfaces/cli/**`. The WAV file itself (`data/sounds/` on the Pi, not in git) is Darren's to pick (D21); until it is there the cue is a warning and silence.
 Traces to: D6, D7, D8, D9, D12
 
@@ -28,3 +28,4 @@ Traces to: D6, D7, D8, D9, D12
 - [ ] Pi check (Darren's ears): a 1-minute version of T1 or T2 ends with the sound and a spoken line that fits the label ("Time to sleep" sounds like a reminder, not a beep); one that ends while he is talking waits until Jarvis is idle; a restart with a running timer still ends it on time; a timer that ended while Jarvis was off (stop the service, wait, start) runs late and says so. Gemma's wording can only be judged on the Pi.
 
 ## Comments
+- 2026-11-22 (coordinator): implemented by the coordinator. Part 1 (`026905c`) is the reminder run: no tools (`ToolUse::Forbidden`), waits for idle, follows the 30-minute rule. Part 2 is the sound: `Cue::TimerEnded` (`timer_ended.wav`) and `features/timers/ring.rs`, which follows the shown timers and rings once per timer that ends, at once. Missed timers are only printed. Evidence: `scripts/verify.sh --repeat timer` 20 of 20 (737 tests). Open: the WAV (D21; not on the Pi yet, so the cue stays silent with a warning) and the Pi checks.

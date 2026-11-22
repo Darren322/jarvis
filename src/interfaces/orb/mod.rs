@@ -15,16 +15,20 @@
 //! (`features::control::tap_action`); here a tap is only passed on.
 //!
 //! Features that need the orb for more than state and loudness (panels) use the
-//! [`OrbHandle`]: they send any `ToOrb` and read any `FromOrb` other than a tap,
-//! without this module learning what the messages mean.
+//! [`OrbHandle`]: they send any `ToOrb` and read any `FromOrb` other than a tap
+//! or a timer message, without this module learning what the messages mean.
+//! Timers have their own routes ([`timers`]): the list goes out through the same
+//! `to_orb` queue, and a tap on a timer's Set, Don't or Cancel comes back as a
+//! [`TimerTaps`] item, so the panel loop never sees it.
 //!
 //! The orb is optional. No orb connected, an orb that disconnects, and an orb
 //! that sends rubbish are all normal and silent: orb input is untrusted, and the
 //! only thing it can cause is one `Tap` in a bounded queue or one event in a
-//! bounded handle queue.
+//! bounded handle or timer queue.
 
 mod camera;
 mod hub;
+mod timers;
 mod websocket;
 
 use std::{convert::Infallible, io, time::Duration};
@@ -36,6 +40,7 @@ use tokio::{
     time::MissedTickBehavior,
 };
 
+pub(crate) use self::timers::{TimerTaps, publish_timers};
 use self::{hub::Hub, websocket::WebSocketEndpoint};
 use crate::{
     config::OrbConfig,
@@ -64,6 +69,13 @@ const TO_ORB_QUEUE: usize = 16;
 /// When a feature is not reading, the newest are dropped: the orb must never be
 /// able to make Jarvis wait.
 const FROM_ORB_QUEUE: usize = 16;
+/// Timer messages (Set, Don't, Cancel) waiting to be handled. Unlike taps, two of
+/// these can differ (two rows tapped one after the other), so there is room for
+/// the most timers there are ([`orb_protocol::MAX_TIMERS`]) answered once and
+/// then some; a tap is handled in one storage write, far faster than a person
+/// taps. When full, the newest are dropped: the row is still on the screen, and
+/// the orb must never be able to make Jarvis wait.
+const TIMER_QUEUE: usize = 8;
 
 #[derive(Debug, Error)]
 pub(crate) enum OrbError {
@@ -96,10 +108,11 @@ pub(crate) struct OrbHandle {
     pub(crate) from_orb: mpsc::Receiver<FromOrb>,
 }
 
-/// Where what an orb sends goes.
+/// Where what an orb sends goes: taps, timer messages, and everything else.
 #[derive(Clone)]
 struct Inbox {
     taps: mpsc::Sender<Tap>,
+    timers: mpsc::Sender<FromOrb>,
     events: mpsc::Sender<FromOrb>,
 }
 
@@ -108,11 +121,19 @@ impl Inbox {
     /// thing is already waiting; a closed one means nobody acts on it. Neither is
     /// the orb's problem.
     ///
-    /// Taps are told apart from the rest with `matches!`, so a new kind of message
-    /// from the orb reaches the handle without this module changing.
+    /// Taps and the three timer messages are told apart from the rest with
+    /// `matches!`, so a new kind of message from the orb reaches the handle
+    /// without this module changing.
     fn deliver(&self, message: FromOrb) {
         if matches!(message, FromOrb::Tap {}) {
             let _ = self.taps.try_send(Tap);
+        } else if matches!(
+            message,
+            FromOrb::ConfirmTimer { .. }
+                | FromOrb::RejectTimer { .. }
+                | FromOrb::CancelTimer { .. }
+        ) {
+            let _ = self.timers.try_send(message);
         } else {
             let _ = self.events.try_send(message);
         }
@@ -129,26 +150,37 @@ pub(crate) struct OrbServer {
     messages: mpsc::Receiver<ToOrb>,
     /// The other end of [`OrbHandle::from_orb`].
     events: mpsc::Sender<FromOrb>,
+    /// The other end of [`TimerTaps`].
+    timers: mpsc::Sender<FromOrb>,
 }
 
 impl OrbServer {
     /// Opens the WebSocket port. If it cannot be opened the failure is reported
     /// and Jarvis runs without an orb. Must be called inside the Tokio runtime.
-    pub(crate) fn bind(config: &OrbConfig) -> Result<(Self, OrbHandle), OrbError> {
+    pub(crate) fn bind(config: &OrbConfig) -> Result<(Self, OrbHandle, TimerTaps), OrbError> {
         let websocket = WebSocketEndpoint::bind(config.port.get())?;
         Ok(Self::new(websocket, config.allowed_origins.clone()))
     }
 
-    fn new(websocket: WebSocketEndpoint, allowed_origins: Vec<String>) -> (Self, OrbHandle) {
+    fn new(
+        websocket: WebSocketEndpoint,
+        allowed_origins: Vec<String>,
+    ) -> (Self, OrbHandle, TimerTaps) {
         let (to_orb, messages) = mpsc::channel(TO_ORB_QUEUE);
         let (events, from_orb) = mpsc::channel(FROM_ORB_QUEUE);
+        let (timers, timer_taps) = mpsc::channel(TIMER_QUEUE);
         let server = Self {
             websocket,
             allowed_origins,
             messages,
-            events: events.clone(),
+            events,
+            timers,
         };
-        (server, OrbHandle { to_orb, from_orb })
+        (
+            server,
+            OrbHandle { to_orb, from_orb },
+            TimerTaps::new(timer_taps),
+        )
     }
 
     /// Serves orbs until dropped. It never completes and never fails.
@@ -162,11 +194,13 @@ impl OrbServer {
             allowed_origins,
             messages,
             events,
+            timers,
         } = self;
         let states = feeds.states.observe();
         let hub = Hub::new(orb_state(states.current()));
         let inbox = Inbox {
             taps: feeds.taps.clone(),
+            timers,
             events,
         };
         // Both never complete. `biased` makes the hub hear of a state change

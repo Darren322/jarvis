@@ -133,3 +133,72 @@ async fn orbs_are_let_go_when_the_hub_is() {
     assert_eq!(outbox.next().await, Err(Gone));
     assert!(handle.subscribe().is_none());
 }
+
+/// A timers message whose ids say which one it is.
+fn timers(ids: &[u64]) -> ToOrb {
+    ToOrb::Timers {
+        timers: ids
+            .iter()
+            .map(|&id| {
+                orb_protocol::Timer::new(id, None, 1_000, orb_protocol::TimerState::Running)
+                    .expect("no label")
+            })
+            .collect(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_orb_is_told_the_state_and_then_the_timers_as_they_are() {
+    let hub = Hub::new(OrbState::Idle);
+    // Before any timers message there is nothing to tell but the state.
+    let mut early = hub.handle().subscribe().unwrap();
+    assert_eq!(early.next().await, Ok(state(OrbState::Idle)));
+    assert!(is_quiet(&mut early).await);
+
+    hub.publish(timers(&[1]));
+    hub.publish(state(OrbState::Thinking));
+    hub.publish(timers(&[1, 2]));
+
+    let mut late = hub.handle().subscribe().unwrap();
+    assert_eq!(late.next().await, Ok(state(OrbState::Thinking)));
+    // Only the newest list, never the one before it.
+    assert_eq!(late.next().await, Ok(timers(&[1, 2])));
+    assert!(is_quiet(&mut late).await);
+
+    // The orb that was already there still gets every message in order.
+    assert_eq!(early.next().await, Ok(timers(&[1])));
+    assert_eq!(early.next().await, Ok(state(OrbState::Thinking)));
+    assert_eq!(early.next().await, Ok(timers(&[1, 2])));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_change_reaches_the_orb_once_and_a_reconnecting_orb_is_told_the_list_as_it_is() {
+    let hub = Hub::new(OrbState::Idle);
+    hub.publish(timers(&[1]));
+    let mut first = hub.handle().subscribe().unwrap();
+    assert_eq!(first.next().await, Ok(state(OrbState::Idle)));
+    assert_eq!(first.next().await, Ok(timers(&[1])));
+
+    hub.publish(timers(&[]));
+    assert_eq!(first.next().await, Ok(timers(&[])));
+    assert!(is_quiet(&mut first).await);
+
+    // The orb goes away and comes back: the list now, not the one it left with.
+    drop(first);
+    let mut again = hub.handle().subscribe().unwrap();
+    assert_eq!(again.next().await, Ok(state(OrbState::Idle)));
+    assert_eq!(again.next().await, Ok(timers(&[])));
+    assert!(is_quiet(&mut again).await);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_orb_that_left_costs_the_others_nothing_when_the_timers_change() {
+    let hub = Hub::new(OrbState::Idle);
+    let mut staying = hub.handle().subscribe().unwrap();
+    let leaving = hub.handle().subscribe().unwrap();
+    assert_eq!(staying.next().await, Ok(state(OrbState::Idle)));
+    drop(leaving);
+
+    hub.publish(timers(&[7]));
+    assert_eq!(staying.next().await, Ok(timers(&[7])));
+}

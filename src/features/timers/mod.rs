@@ -22,6 +22,7 @@
 
 mod matching;
 mod plan;
+mod ring;
 
 use std::{convert::Infallible, time::Duration};
 
@@ -35,6 +36,7 @@ use tokio::{
 use crate::storage::{StorageError, Timer, TimerError, TimerId, TimerState, TimersRepository};
 
 pub(crate) use matching::Matches;
+pub(crate) use ring::ring_when_timers_end;
 
 /// How long a proposed timer waits for Darren's "yes" or a tap on Set (D4).
 pub(crate) const TIMER_CONFIRM_WINDOW: Duration = Duration::from_secs(30);

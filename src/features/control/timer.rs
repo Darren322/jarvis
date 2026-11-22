@@ -10,7 +10,7 @@ use jiff::{Timestamp, Zoned};
 
 use super::Notice;
 use crate::features::timers::{TimerEvent, TimerServiceError, TimersHandle};
-use crate::storage::{Timer, TimerState};
+use crate::storage::{Timer, TimerError, TimerId, TimerState};
 use crate::tools::timers::resolve::{SPOKEN_TIME_FORMAT, spoken_at};
 
 /// Darren's answer to the timer Jarvis just proposed.
@@ -66,6 +66,78 @@ pub(crate) async fn answer_timer(timers: &TimersHandle, answer: TimerAnswer) -> 
     }
 }
 
+/// A tap on the screen about one timer. The id is whatever the screen sent: it is
+/// checked against the timers, never trusted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TimerTap {
+    /// Set, on a proposed timer.
+    Confirm(TimerId),
+    /// Don't, on a proposed timer.
+    Reject(TimerId),
+    /// Cancel, on a running timer (after the screen asked "Cancel it?"), or a tap
+    /// on an ended row.
+    Cancel(TimerId),
+}
+
+/// Does what a tap on the screen asks and returns the line to show and say, if
+/// there is one (D11). No model run: the taps are fixed answers.
+///
+/// A tap that changes nothing (an unknown id, a timer in the wrong state, a Set
+/// after its 30 seconds) gives no line: the service refuses it and the list the
+/// screen is sent stays the truth. Cancelling an ended timer removes its row and
+/// says nothing (D17). Only a failure of the service or of storage is a warning.
+pub(crate) async fn answer_tap(timers: &TimersHandle, tap: TimerTap) -> Option<Notice> {
+    let result = match tap {
+        TimerTap::Confirm(id) => timers
+            .confirm(id)
+            .await
+            .map(|timer| Some(set_line(&timer, &Zoned::now()))),
+        TimerTap::Reject(id) => timers
+            .reject(id)
+            .await
+            .map(|_| Some(REJECTED_LINE.to_owned())),
+        TimerTap::Cancel(id) => cancel_tapped(timers, id).await,
+    };
+    match result {
+        Ok(line) => line.map(Notice::Info),
+        Err(error) => refusal_notice(&error),
+    }
+}
+
+/// Cancels the shown timer `id`. The line is for a timer that was counting or
+/// waiting; an ended one is only removed. An id that is not shown is nobody's
+/// timer: nothing is cancelled.
+async fn cancel_tapped(
+    timers: &TimersHandle,
+    id: TimerId,
+) -> Result<Option<String>, TimerServiceError> {
+    let Some(shown) = timers.shown().into_iter().find(|timer| timer.id == id) else {
+        return Ok(None);
+    };
+    let cancelled = timers.cancel(id).await?;
+    Ok(match shown.state {
+        // `shown` never lists a cancelled timer, and `cancel` refuses one.
+        TimerState::Ended | TimerState::Cancelled => None,
+        TimerState::Pending | TimerState::Running => Some(cancelled_line(&cancelled)),
+    })
+}
+
+/// A refused tap is silent; a broken service or storage is worth a warning.
+fn refusal_notice(error: &TimerServiceError) -> Option<Notice> {
+    match error {
+        TimerServiceError::WindowOver { .. }
+        | TimerServiceError::NotPending { .. }
+        | TimerServiceError::Timer(
+            TimerError::NotInExpectedState { .. } | TimerError::LimitReached { .. },
+        ) => None,
+        TimerServiceError::Unavailable
+        | TimerServiceError::Timer(TimerError::Storage(_))
+        | TimerServiceError::Storage(_) => Some(Notice::Warning(format!(
+            "could not change the timer: {error}"
+        ))),
+    }
+}
+
 /// Said after "no" (or Don't).
 pub(crate) const REJECTED_LINE: &str = "Okay, no timer.";
 
@@ -83,6 +155,11 @@ pub(crate) fn set_line(timer: &Timer, now: &Zoned) -> String {
         Some(when) => format!("Set. {} ends at {when}.", capitalised(&name(timer))),
         None => "Set.".to_owned(),
     }
+}
+
+/// Said when Darren cancels a timer on the screen.
+fn cancelled_line(timer: &Timer) -> String {
+    format!("Cancelled {}.", name(timer))
 }
 
 /// Said when a proposed timer was never confirmed in its window.

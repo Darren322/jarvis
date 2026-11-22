@@ -46,7 +46,8 @@ pub(crate) const FRAME_RATE: u32 = 30;
 pub(crate) const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 /// What Jarvis says when the camera cannot be shown (C6).
 pub(crate) const CAMERA_UNAVAILABLE: &str = "The camera isn't available.";
-/// Failures waiting to be told. One is enough: a second says the same thing.
+/// The camera's share of the announcements queue (`app.rs` adds the timers'):
+/// one failure waiting to be told is enough, since a second says the same thing.
 pub(crate) const FAILURE_QUEUE: usize = 1;
 
 /// One JPEG, as `rpicam-vid` wrote it.

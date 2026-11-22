@@ -16,14 +16,17 @@ use crate::config::{
 use crate::features::{
     assistant::{Assistant, FactExtractor, SYSTEM_PREAMBLE},
     camera::{CAMERA_PROGRAM, Camera, FAILURE_QUEUE},
+    control::answer_tap,
     conversation::ConversationSession,
     listening::{Listener, Recorder, run_level_meter},
     memory::{FactNoter, MemoryService},
     panel::{self, PanelHandle, PanelInbox},
-    speech::{CueSounds, SpeechOutput, run_state_cues},
+    speech::{Cue, CueSounds, SpeechOutput, run_state_cues},
     state::StateFeed,
     stats::{StatsSource, StatsVisibility, machine::SystemMachine, mirror_panel},
-    timers::{self, SystemClock, TimerEvent, TimerLink, TimersHandle, TimersInbox},
+    timers::{
+        self, SystemClock, TimerEvent, TimerLink, TimersHandle, TimersInbox, ring_when_timers_end,
+    },
 };
 use crate::interfaces::cli::{
     diagnostics::error_chain,
@@ -31,11 +34,22 @@ use crate::interfaces::cli::{
     presentation::{StatePublishing, TerminalPresenter},
     repl::run_input_loop,
 };
-use crate::interfaces::orb::{OrbFeeds, OrbHandle, OrbServer, TAP_QUEUE};
+use crate::interfaces::orb::{
+    OrbFeeds, OrbHandle, OrbServer, TAP_QUEUE, TimerTaps, publish_timers,
+};
 use crate::tools;
 
 /// The ALSA recording program; tests substitute a fake script.
 const CAPTURE_PROGRAM: &str = "arecord";
+
+/// Lines from taps on a timer that may wait for the REPL to be idle, beside the
+/// camera's one failure. A person taps a few rows, not dozens, in the time one
+/// answer takes.
+const TIMER_ANNOUNCEMENTS: usize = 3;
+/// Lines background features have for Darren (the camera failing, a tap on a timer)
+/// while the REPL is busy; it says them once it is idle. A full queue drops the
+/// newest line: telling is never worth making a feature wait.
+const ANNOUNCEMENT_QUEUE: usize = FAILURE_QUEUE + TIMER_ANNOUNCEMENTS;
 
 // LEARNING: `App` is like a Java class's related fields; its `impl` block below
 // supplies methods, while Rust declares data and behavior in separate blocks.
@@ -162,9 +176,9 @@ impl App {
         let states = StateFeed::new();
         let (mic_levels, mic_level) = watch::channel(0.0);
         let (tap_sender, tap_receiver) = mpsc::channel(TAP_QUEUE);
-        let (orb, orb_handle) = match self.open_orb() {
-            Some((orb, handle)) => (Some(orb), Some(handle)),
-            None => (None, None),
+        let (orb, orb_handle, timer_taps) = match self.open_orb() {
+            Some((orb, handle, taps)) => (Some(orb), Some(handle), Some(taps)),
+            None => (None, None, None),
         };
         let taps = match orb {
             Some(_) => Taps::new(tap_receiver),
@@ -195,6 +209,20 @@ impl App {
         // device: without speech there is no device and so no cue.
         let cue_states = states.observe();
         let cue_player = speech.as_ref().map(SpeechOutput::cue_player);
+        // A timer that ends rings at once, whatever Jarvis is doing (timers D6);
+        // its spoken reminder waits for idle in the REPL.
+        let ring_player = cue_player.clone();
+        let ring_timers = async {
+            match ring_player {
+                Some(player) => {
+                    ring_when_timers_end(self.timers.watch_shown(), move || {
+                        player.play(Cue::TimerEnded);
+                    })
+                    .await
+                }
+                None => std::future::pending().await,
+            }
+        };
         let play_cues = async {
             match cue_player {
                 Some(player) => run_state_cues(cue_states, player).await,
@@ -210,6 +238,8 @@ impl App {
             .and_then(|mut inbox| inbox.take());
         // The stats go only to an orb: they are the Dashboard's data.
         let stats_to_orb = orb_handle.as_ref().map(|handle| handle.to_orb.clone());
+        // The timers go only to an orb too: the screen's strip is where they show.
+        let timers_to_orb = stats_to_orb.clone();
         // The camera films only for an orb: without a screen nobody would see it.
         let films_for_orb = orb_handle.is_some();
         let dashboard_timeout = self.panel_config.dashboard_timeout;
@@ -238,7 +268,9 @@ impl App {
 
         // The camera runs exactly while the camera panel is shown. Its failures
         // are told by the REPL, shown and said once it is idle (ticket 11, C6).
-        let (camera_failures, announcements) = mpsc::channel(FAILURE_QUEUE);
+        let (camera_failures, announcements) = mpsc::channel(ANNOUNCEMENT_QUEUE);
+        // What a tap on a timer says goes the same way, to be said once idle.
+        let tap_announcements = camera_failures.clone();
         let serve_camera = async {
             if films_for_orb {
                 camera.run(camera_failures).await;
@@ -260,6 +292,25 @@ impl App {
                 return std::future::pending().await;
             };
             inbox.run(repository, SystemClock).await
+        };
+        // The timers on the screen (timers 07): the list is sent on every change, and
+        // a tap on Set, Don't or Cancel is answered here, at once, beside the REPL
+        // (so a tap on Set works while Jarvis is speaking). Only the line it gets is
+        // left to the REPL, which says it while idle.
+        let serve_timers_screen = async {
+            let (Some(to_orb), Some(mut taps)) = (timers_to_orb, timer_taps) else {
+                return std::future::pending().await;
+            };
+            let follow_list = publish_timers(self.timers.watch_shown(), to_orb);
+            let answer_taps = async {
+                while let Some(tap) = taps.next().await {
+                    if let Some(notice) = answer_tap(&self.timers, tap).await {
+                        let _ = tap_announcements.try_send(notice);
+                    }
+                }
+            };
+            tokio::join!(follow_list, answer_taps);
+            std::future::pending::<std::convert::Infallible>().await
         };
         // The REPL answers timers and says their events while idle (timers 06).
         let timer_link = timer_events.map(|events| TimerLink {
@@ -296,6 +347,8 @@ impl App {
             never = serve_stats => match never {},
             never = serve_camera => match never {},
             never = serve_timers => match never {},
+            never = serve_timers_screen => match never {},
+            never = ring_timers => match never {},
         }
     }
 
@@ -348,7 +401,7 @@ impl App {
 
     /// Opens the orb's WebSocket port. The orb is optional, so one that
     /// cannot be opened is a warning and Jarvis runs without it.
-    fn open_orb(&self) -> Option<(OrbServer, OrbHandle)> {
+    fn open_orb(&self) -> Option<(OrbServer, OrbHandle, TimerTaps)> {
         match OrbServer::bind(&self.orb_config) {
             Ok(opened) => Some(opened),
             Err(error) => {

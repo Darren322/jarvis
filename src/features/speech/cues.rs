@@ -19,7 +19,7 @@ use crate::features::state::{AssistantState, StateObserver};
 const MAX_CUE_MILLIS: u32 = 2_000;
 const EXPECTED_CHANNELS: u16 = 1;
 const EXPECTED_BITS_PER_SAMPLE: u16 = 16;
-const CUE_COUNT: usize = 6;
+const CUE_COUNT: usize = 7;
 /// A cue is cut from a longer sound, so its first sample is rarely zero and would
 /// click; this ramps it up from silence.
 const FADE_IN_MILLIS: u32 = 5;
@@ -39,6 +39,9 @@ pub(crate) enum Cue {
     Idle,
     /// A turn that ended with nothing spoken.
     Error,
+    /// A timer reached its end (timers D6): played at once, whatever Jarvis is
+    /// doing. It is not a state cue.
+    TimerEnded,
 }
 
 impl Cue {
@@ -49,6 +52,7 @@ impl Cue {
         Cue::Speaking,
         Cue::Idle,
         Cue::Error,
+        Cue::TimerEnded,
     ];
 
     /// The file this cue is loaded from, inside the cue folder.
@@ -60,6 +64,7 @@ impl Cue {
             Cue::Speaking => "speaking.wav",
             Cue::Idle => "idle.wav",
             Cue::Error => "error.wav",
+            Cue::TimerEnded => "timer_ended.wav",
         }
     }
 
@@ -71,6 +76,7 @@ impl Cue {
             Cue::Speaking => 3,
             Cue::Idle => 4,
             Cue::Error => 5,
+            Cue::TimerEnded => 6,
         }
     }
 }

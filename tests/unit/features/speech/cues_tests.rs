@@ -177,7 +177,13 @@ fn a_cue_may_last_exactly_2_seconds_and_not_one_sample_more() {
 #[test]
 fn loading_a_folder_reports_each_cue_that_did_not_load_and_keeps_the_rest() {
     let dir = tempfile::tempdir().expect("temporary directory should open");
-    for cue in [Cue::Listening, Cue::Transcribing, Cue::Speaking, Cue::Idle] {
+    for cue in [
+        Cue::Listening,
+        Cue::Transcribing,
+        Cue::Speaking,
+        Cue::Idle,
+        Cue::TimerEnded,
+    ] {
         write_good_wav(&dir.path().join(cue.file_name()), 44_100, &[100; 50]);
     }
     // `Cue::Thinking` has no file; `Cue::Error` has a broken one.

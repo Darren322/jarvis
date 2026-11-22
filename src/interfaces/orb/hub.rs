@@ -4,6 +4,10 @@
 //! transport, reads its own copy through an [`Outbox`]. Each orb has its own
 //! bounded queues, so a slow one costs the others nothing.
 //!
+//! A new orb is told, before anything else, what is true now: the state, then
+//! the timers (a screen that opens late or reloads is correct at once). The hub
+//! keeps the newest of each for that.
+//!
 //! Two kinds of message, two policies:
 //!
 //! - **Events** (state changes and whatever features send) are never dropped
@@ -13,7 +17,10 @@
 //! - **Levels** are only worth the newest. An orb that falls [`LEVEL_QUEUE`]
 //!   levels behind loses the oldest ones.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
+};
 
 use orb_protocol::{OrbState, ToOrb};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -30,6 +37,9 @@ pub(super) const LEVEL_QUEUE: usize = 8;
 struct Shared {
     /// The newest state published. Told to every orb as it connects.
     state: OrbState,
+    /// The newest [`ToOrb::Timers`] published, told to every orb right after the
+    /// state. `None` until a feature has sent one.
+    timers: Option<ToOrb>,
     events: broadcast::Sender<ToOrb>,
     levels: broadcast::Sender<ToOrb>,
 }
@@ -57,6 +67,7 @@ impl Hub {
         Self {
             shared: Arc::new(Mutex::new(Shared {
                 state,
+                timers: None,
                 events: broadcast::channel(EVENT_QUEUE).0,
                 levels: broadcast::channel(LEVEL_QUEUE).0,
             })),
@@ -72,10 +83,10 @@ impl Hub {
     /// Sends `message` to every connected orb. Never waits; nobody connected is
     /// normal.
     ///
-    /// A level is a level; anything else is an event, and a state also becomes
-    /// the state new orbs are told. Sorting by "is it a level" rather than by
-    /// matching every variant lets new message kinds travel as events without
-    /// this module changing.
+    /// A level is a level; anything else is an event, and a state or a timers
+    /// message also becomes what new orbs are told first. Sorting by "is it a
+    /// level" rather than by matching every variant lets new message kinds travel
+    /// as events without this module changing.
     pub(super) fn publish(&self, message: ToOrb) {
         let mut shared = lock(&self.shared);
         if matches!(message, ToOrb::Level { .. }) {
@@ -84,6 +95,8 @@ impl Hub {
         }
         if let ToOrb::State { state } = &message {
             shared.state = *state;
+        } else if matches!(message, ToOrb::Timers { .. }) {
+            shared.timers = Some(message.clone());
         }
         let _ = shared.events.send(message);
     }
@@ -91,7 +104,7 @@ impl Hub {
 
 impl HubHandle {
     /// A new orb's queues, or `None` once the hub is gone. Its first message is
-    /// the current state.
+    /// the current state, then the current timers if any have been sent.
     pub(super) fn subscribe(&self) -> Option<Outbox> {
         let shared = self.shared.upgrade()?;
         Some(Outbox::new(&lock(&shared)))
@@ -106,30 +119,34 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 
 /// One orb's view of the hub: what to send it next.
 pub(super) struct Outbox {
-    /// The state at the moment of subscribing, until it has been handed out.
-    first: Option<ToOrb>,
+    /// What was true at the moment of subscribing (the state, then the timers),
+    /// until it has been handed out.
+    first: VecDeque<ToOrb>,
     events: broadcast::Receiver<ToOrb>,
     levels: broadcast::Receiver<ToOrb>,
 }
 
 impl Outbox {
     fn new(shared: &Shared) -> Self {
+        let mut first = VecDeque::with_capacity(2);
+        first.push_back(ToOrb::State {
+            state: shared.state,
+        });
+        first.extend(shared.timers.clone());
         Self {
-            first: Some(ToOrb::State {
-                state: shared.state,
-            }),
+            first,
             events: shared.events.subscribe(),
             levels: shared.levels.subscribe(),
         }
     }
 
-    /// The next message for this orb: the current state first, then events in
-    /// order, and levels whenever no event is waiting.
+    /// The next message for this orb: the current state first, then the current
+    /// timers, then events in order, and levels whenever no event is waiting.
     ///
     /// A state also clears the levels still queued: they were measured in the
     /// state before and must not follow the change. Safe to drop at any `.await`.
     pub(super) async fn next(&mut self) -> Result<ToOrb, Gone> {
-        if let Some(first) = self.first.take() {
+        if let Some(first) = self.first.pop_front() {
             return Ok(first);
         }
         loop {
