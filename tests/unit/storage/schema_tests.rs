@@ -1,8 +1,8 @@
 use rusqlite::Connection;
 
 use super::{
-    CREATE_SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V4_TO_V5, OpenResult,
-    SCHEMA_VERSION, initialize,
+    CREATE_SCHEMA_V1, MIGRATE_V1_TO_V2, MIGRATE_V2_TO_V3, MIGRATE_V4_TO_V5, MIGRATE_V5_TO_V6,
+    OpenResult, SCHEMA_VERSION, initialize,
 };
 
 /// A v3 database with one of each case the migration must handle.
@@ -349,6 +349,94 @@ fn migrates_v5_to_v6_marking_every_existing_turn_examined_and_keeping_every_row(
         ),
         1
     );
+}
+
+/// A v6 database as Jarvis has run it: the v5 fixture plus the examined flag.
+fn v6_database() -> Connection {
+    let connection = v5_database();
+    connection
+        .execute_batch(MIGRATE_V5_TO_V6)
+        .expect("v6 schema builds");
+    assert_eq!(count(&connection, "PRAGMA user_version"), 6);
+    connection
+}
+
+#[test]
+fn migrates_v6_to_v7_keeping_every_row_and_adding_an_empty_timers_table() {
+    let mut connection = v6_database();
+    let tables = [
+        "SELECT COUNT(*) FROM sessions",
+        "SELECT COUNT(*) FROM turns",
+        "SELECT COUNT(*) FROM sources",
+        "SELECT COUNT(*) FROM memories",
+        "SELECT COUNT(*) FROM facts",
+        "SELECT COUNT(*) FROM turns WHERE facts_examined = 1",
+    ];
+    let before = tables.map(|sql| count(&connection, sql));
+    assert_eq!(before, [2, 6, 6, 6, 2, 6]);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'timers'"
+        ),
+        0
+    );
+
+    assert!(matches!(
+        initialize(&mut connection, 600).expect("migration runs"),
+        OpenResult::Ready(_)
+    ));
+
+    assert_eq!(SCHEMA_VERSION, 7);
+    assert_eq!(count(&connection, "PRAGMA user_version"), 7);
+    // The migration's own session is the only new row.
+    let after = tables.map(|sql| count(&connection, sql));
+    assert_eq!(after, [3, 6, 6, 6, 2, 6]);
+    assert_eq!(count(&connection, "SELECT COUNT(*) FROM timers"), 0);
+    assert_eq!(
+        count(
+            &connection,
+            "SELECT user_text = 'My cat is called Miso.' FROM turns WHERE id = 1"
+        ),
+        1,
+        "turn text is intact"
+    );
+
+    // The state is constrained to the four timer states.
+    connection
+        .execute(
+            "INSERT INTO timers (label, ends_at_unix_ms, created_at_unix_ms, state)
+             VALUES ('Tea', 700, 600, 'pending')",
+            [],
+        )
+        .expect("a pending timer inserts");
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO timers (ends_at_unix_ms, created_at_unix_ms, state)
+                 VALUES (700, 600, 'paused')",
+                [],
+            )
+            .is_err(),
+        "the state is constrained"
+    );
+}
+
+#[test]
+fn a_database_from_a_newer_version_is_unsupported() {
+    crate::storage::sqlite_vec::register();
+    let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+    // The first version this build does not know, and one far beyond it.
+    for version in [SCHEMA_VERSION + 1, SCHEMA_VERSION + 100] {
+        connection
+            .execute_batch(&format!("PRAGMA user_version = {version};"))
+            .expect("version is set");
+        assert!(matches!(
+            initialize(&mut connection, 1).expect("initialize runs"),
+            OpenResult::Unsupported(found) if found == version
+        ));
+    }
+    assert_eq!(SCHEMA_VERSION + 1, 8);
 }
 
 #[test]

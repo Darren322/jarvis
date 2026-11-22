@@ -1,6 +1,6 @@
 # 02: Timers storage at schema v7
 
-Status: ready-for-agent
+Status: done
 Stories: US1, US2, US5, US7
 Blocked by: 01
 Assignee: unassigned
@@ -18,13 +18,14 @@ Traces to: D3, D4, D9, D13
 - A typed `thiserror` error enum for the module; causes via `#[source]`.
 
 ## Acceptance criteria
-- [ ] A test in `schema_tests.rs` builds a v6 database with realistic rows (turns, sources, memories, facts) and asserts it migrates to v7 with every row kept and an empty `timers` table; `SCHEMA_VERSION` is 7; opening a v8 database is still `Unsupported`.
-- [ ] Boundary table: inserting the 5th pending or running timer succeeds and the 6th is refused with the typed limit error; a cancelled or ended timer does not count.
-- [ ] State changes: confirm moves `Pending` to `Running` once; a second confirm, and a confirm of a missing or cancelled id, return the typed error; cancel works from `Pending`, `Running` and `Ended`.
-- [ ] Deleting expired pending timers deletes only `Pending` rows at or before the given instant (one millisecond either side is tested), and leaves `Running` ones.
-- [ ] Listing returns soonest first and omits `Cancelled`; an `Ended` timer is listed when it ended exactly 2 minutes before the instant and not 1 ms earlier; the due-at-or-before query includes a timer ending exactly at the instant.
-- [ ] Timers survive closing and reopening the database file (temporary SQLite file with a `Drop` fixture).
-- [ ] No SQL outside `src/storage/`; no `unwrap()`; `scripts/verify.sh` passes.
+- [x] A test in `schema_tests.rs` builds a v6 database with realistic rows (turns, sources, memories, facts) and asserts it migrates to v7 with every row kept and an empty `timers` table; `SCHEMA_VERSION` is 7; opening a v8 database is still `Unsupported`.
+- [x] Boundary table: inserting the 5th pending or running timer succeeds and the 6th is refused with the typed limit error; a cancelled or ended timer does not count.
+- [x] State changes: confirm moves `Pending` to `Running` once; a second confirm, and a confirm of a missing or cancelled id, return the typed error; cancel works from `Pending`, `Running` and `Ended`.
+- [x] Deleting expired pending timers deletes only `Pending` rows at or before the given instant (one millisecond either side is tested), and leaves `Running` ones.
+- [x] Listing returns soonest first and omits `Cancelled`; an `Ended` timer is listed when it ended exactly 2 minutes before the instant and not 1 ms earlier; the due-at-or-before query includes a timer ending exactly at the instant.
+- [x] Timers survive closing and reopening the database file (temporary SQLite file with a `Drop` fixture).
+- [x] No SQL outside `src/storage/`; no `unwrap()`; `scripts/verify.sh` passes.
 - [ ] Before the Pi runs v7, Darren backs up `data/jarvis.sqlite3` (noted in the Comment when the ticket is deployed).
 
 ## Comments
+- 2026-11-22 (coordinator): built by a Sonnet agent in a worktree from `be452bb`; reviewed and integrated into `dev`. `storage::timers` exports `TimersRepository` (`insert_pending`, `confirm`, `mark_ended`, `cancel`, `delete_pending_created_through`, `list_shown`, `get`, `list_running_due`), `Timer`, `TimerId(i64)`, `TimerState`, and `TimerError` (`LimitReached`, `NotInExpectedState { found }`, `Storage`). v7 is the `timers` table (`AUTOINCREMENT`, so an old id never names a new timer) with a CHECK on the state and an index on (state, end). The limit and the 2-minute window are parameters, and every "now" comes from the caller. Pending timers expire by `created_at` (the window starts when the timer is proposed). `archive_tests.rs` now uses version 8 as the unsupported version. Left for 03: a `timers_repository()` accessor on `ConversationArchive`, and removing the `#[expect(dead_code)]` / `#[expect(unused_imports)]` markers. Spot-checks (agent): each of the four boundary comparisons moved by one made its test fail. Coordinator: `scripts/verify.sh` in the main checkout, all checks passed (640 tests in the main crate); `--repeat confirm_against_cancel_has_one_winner` 20 of 20. The Pi migration waits for Darren's backup (unticked criterion).

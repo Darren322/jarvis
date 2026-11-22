@@ -109,14 +109,14 @@ async fn rejects_newer_schema_and_rolls_back_partial_initialization() -> Result<
 {
     let unsupported_path = database_path("unsupported");
     let connection = rusqlite::Connection::open(&unsupported_path)?;
-    connection.pragma_update(None, "user_version", 7)?;
+    connection.pragma_update(None, "user_version", 8)?;
     drop(connection);
 
     let error = match ConversationArchive::open(&unsupported_path).await {
-        Ok(_) => panic!("schema version 7 should be rejected"),
+        Ok(_) => panic!("schema version 8 should be rejected"),
         Err(error) => error,
     };
-    assert!(matches!(error, StorageError::UnsupportedSchemaVersion(7)));
+    assert!(matches!(error, StorageError::UnsupportedSchemaVersion(8)));
 
     let connection = rusqlite::Connection::open(&unsupported_path)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -125,7 +125,7 @@ async fn rejects_newer_schema_and_rolls_back_partial_initialization() -> Result<
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     assert_eq!(table_count, 0);
     drop(connection);
     remove_database(&unsupported_path);

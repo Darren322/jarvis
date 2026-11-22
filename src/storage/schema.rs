@@ -2,7 +2,7 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 
 use super::chunking::{MAX_CHUNK_BYTES, conversation_text, split};
 
-pub(super) const SCHEMA_VERSION: i64 = 6;
+pub(super) const SCHEMA_VERSION: i64 = 7;
 
 const CREATE_SCHEMA_V1: &str = include_str!("migrations/v1.sql");
 
@@ -32,6 +32,12 @@ const MIGRATE_V4_TO_V5: &str = include_str!("migrations/v5.sql");
 /// The partial index keeps "the oldest turn still to examine" cheap on a large
 /// archive; the query in `storage/noting.rs` repeats its predicate.
 const MIGRATE_V5_TO_V6: &str = include_str!("migrations/v6.sql");
+
+/// v7 adds timers (timers spec D13): their own table, never rows in `memories`.
+/// Times are unix milliseconds and the state is text with a CHECK. The limit on
+/// pending and running timers and the label length are enforced by the callers
+/// (`storage/timers/`, the timer tool), so changing one never needs a table rebuild.
+const MIGRATE_V6_TO_V7: &str = include_str!("migrations/v7.sql");
 
 pub(super) enum OpenResult {
     Ready(i64),
@@ -70,6 +76,9 @@ pub(super) fn initialize(
     }
     if version < 6 {
         transaction.execute_batch(MIGRATE_V5_TO_V6)?;
+    }
+    if version < 7 {
+        transaction.execute_batch(MIGRATE_V6_TO_V7)?;
     }
     let session_id = create_session(&transaction, started_at_unix_ms)?;
 
