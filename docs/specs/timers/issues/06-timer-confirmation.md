@@ -23,6 +23,7 @@ Traces to: D4, D10, D11
 - [ ] Timing and `select!` tests pass `scripts/verify.sh --repeat <pattern>` (20 runs).
 - [ ] No new command is added without a `COMMANDS` help row where it belongs, or a recorded reason why not.
 - [ ] No `unwrap()`; `scripts/verify.sh` passes.
+- [ ] Pi check, timing: record the seconds from the proposal (inside the run) to Darren's "yes" being parsed, over three tries of T1; if any is over about 20 s, the 30 s window (D4) goes back to Darren.
 - [ ] Pi check (Darren's voice): T1 then "yes" sets the timer; T2 then "no" drops it; T6 after the window runs out drops it with the line. (Fully usable once ticket 07 lets him tap too.)
 
 ## Comments

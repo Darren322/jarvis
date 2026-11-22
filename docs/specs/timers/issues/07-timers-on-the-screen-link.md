@@ -10,6 +10,7 @@ Traces to: D11, D14
 **What to build:** The Rust side of D14, using the messages from ticket 05.
 - **Out:** `ToOrb::Timers` is sent on every change of the list and whenever the UI connects. Today `hub.rs` `publish` keeps only the last `OrbState` and `subscribe` replays only that, so the hub also keeps the last `timers` message and replays it on connect, so a screen opened late or reloaded is correct at once.
 - **In:** `Inbox::deliver` (`interfaces/orb/mod.rs`) routes `Tap` to its own queue and everything else to `from_orb`, which the panel loop owns alone. The timer messages get a third bounded route of their own. `FromOrb::ConfirmTimer`, `RejectTimer` and `CancelTimer` go to the same handlers as the voice commands in ticket 06 (service confirm, reject, cancel). Jarvis checks every id against storage and ignores one that is missing or in the wrong state; the UI decides nothing (jarvis-ui D2).
+- **Ids and times:** storage keeps `TimerId(i64)` and `i64` unix milliseconds; the wire uses `u64`. Convert with `try_from` both ways: a wire id that does not fit is ignored like an unknown id, and a stored timer that does not fit is left out of the message (never panics).
 - **Screen cancel (D11):** a `CancelTimer` from the UI cancels at once (the UI has already asked "Cancel 'Time to sleep'?" with Cancel and Keep) and Jarvis says the fixed line from ticket 06; no model run.
 - **A tap on an ended row (D17):** the UI sends `cancel_timer` with the ended id; Jarvis removes the row and says nothing.
 

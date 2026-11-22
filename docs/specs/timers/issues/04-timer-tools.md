@@ -23,7 +23,8 @@ Traces to: D2, D3, D4, D5, D10, D12
 - [ ] The access level is tested for every tool in `ALLOWED_TOOLS`: only `set_timer` needs approval.
 - [ ] `registered_tools_match_the_allowed_list` passes with 8 tools; existing tests whose tool counts change are updated and listed in the Comment.
 - [ ] The Comment records the proposed wording for AGENTS.md's "When to restructure" row on `src/tools/` (8 tools, every tool still offered, why).
-- [ ] The dead-code markers left by tickets 02 and 03 (`#![expect(dead_code)]` in `src/storage/timers/mod.rs`, `#[expect(unused_imports)]` in `src/storage/mod.rs`, and the one in `src/features/timers/`) are removed once the service is created in `app.rs`; `src/storage/mod.rs` and `src/storage/timers/mod.rs` join this ticket's files for that only.
+- [ ] Once `app.rs` creates the service, the markers in `src/storage/timers/mod.rs` (`#![expect(dead_code)]`) and on `ConversationArchive::timers_repository` in `src/storage/archive.rs` come off (both files join this ticket for that only; the build forces it, as both expectations become unfulfilled). The `features/timers` marker stays: `confirm`, `reject`, `has_pending` (ticket 06), `watch_shown` (07) and the `TimerEvent` fields (08) are still unused; whichever ticket leaves nothing dead there removes it.
+- [ ] `set_timer` refuses a label over `orb_protocol::MAX_TIMER_LABEL_CHARS` (60 characters) before calling `propose`, tested at 60 and 61: one stored long label would make ticket 07's `Timer::new` fail and the whole `timers` list unsendable.
 - [ ] No `unwrap()`; `scripts/verify.sh` passes.
 - [ ] Pi check (Darren's voice, after tickets 06 and 07 make it usable end to end): T1, T2, T3 (and E2) each lead Gemma to call `set_timer` with the right label and time, and T4 and T5 call `cancel_timer` and `list_timers`. Only the Pi shows whether Gemma picks the right tool and arguments.
 
