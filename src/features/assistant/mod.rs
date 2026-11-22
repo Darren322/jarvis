@@ -80,6 +80,17 @@ pub(crate) struct AssistantTextDelta {
     pub(crate) text: String,
 }
 
+/// Whether a run may call a tool. Either way every tool is listed, so the request
+/// starts as every other does and the server's prompt cache holds (fast-memory 10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ToolUse {
+    /// A prompt from Darren: the model may call one tool on its first turn.
+    Offered,
+    /// A run Jarvis starts on its own, such as a timer's reminder (timers D20):
+    /// the answer is text only, so nothing in it can make Jarvis act.
+    Forbidden,
+}
+
 // LEARNING: `Assistant` keeps a reusable Rig `Agent`; each `respond` call
 // configures a fresh runner for one bounded conversation turn.
 pub(crate) struct Assistant {
@@ -100,9 +111,14 @@ impl Assistant {
     ///
     /// The caller owns both this future and the bounded receiver, so dropping
     /// either side cannot leave a detached producer running in the background.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one request's prompt, tool rule, facts, history parts and recall"
+    )]
     pub(crate) async fn respond_stream(
         &self,
         prompt: &str,
+        tools: ToolUse,
         facts: Option<&Message>,
         earlier_history: &[Message],
         latest_exchange: &[Message],
@@ -119,6 +135,7 @@ impl Assistant {
             let stream = self
                 .configured_runner(
                     prompt,
+                    tools,
                     facts,
                     earlier_history,
                     latest_exchange,
@@ -184,9 +201,14 @@ impl Assistant {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one request's prompt, tool rule, facts, history parts and recall"
+    )]
     fn configured_runner(
         &self,
         prompt: &str,
+        tools: ToolUse,
         facts: Option<&Message>,
         earlier_history: &[Message],
         latest_exchange: &[Message],
@@ -205,7 +227,7 @@ impl Assistant {
             .runner(prompt)
             .history(request_history)
             .add_hook(observer.clone())
-            .add_hook(JarvisPolicyHook)
+            .add_hook(JarvisPolicyHook { tools })
             .max_turns(2)
             .tool_concurrency(1)
             .max_tokens(MAX_RESPONSE_TOKENS)

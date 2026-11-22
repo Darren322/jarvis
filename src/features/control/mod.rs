@@ -18,7 +18,7 @@ pub(crate) use command::{Command, MemoryCommand, help_text, parse};
 pub(crate) use memory::MemoryControl;
 pub(crate) use panel::{close_panel, show_panel};
 pub(crate) use tap::{Tap, TapAction, tap_action};
-pub(crate) use timer::{AnswerOutcome, answer_timer, event_notice, proposal_line};
+pub(crate) use timer::{AnswerOutcome, TimerReaction, answer_timer, proposal_line, react_to};
 
 /// One user-facing line produced by a command.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -3,8 +3,10 @@ use std::{future::Future, io, mem, pin::Pin, time::Duration};
 use tokio::io::AsyncBufRead;
 
 use crate::features::{
-    assistant::{Assistant, CacheWarmup},
-    control::{self, AnswerOutcome, Command, MemoryControl, Notice, TapAction, tap_action},
+    assistant::{Assistant, CacheWarmup, ToolUse},
+    control::{
+        self, AnswerOutcome, Command, MemoryControl, Notice, TapAction, TimerReaction, tap_action,
+    },
     conversation::ConversationSession,
     listening::Listener,
     memory::{MemoryService, RecallMode, wants_memory_search},
@@ -180,21 +182,38 @@ where
                     | TapAction::StopSpeakingThenListen => continue,
                 },
                 notice = announcements.next() => Wake::Announcement(notice),
-                Some(event) = next_timer_event(&mut timers) => match event {
-                    // A storage failure is for the log, not for the speaker.
-                    TimerEvent::Failed(error) => {
-                        eprintln!("Warning: timers: {}", error_chain(&error));
-                        continue;
+                Some(event) = next_timer_event(&mut timers) => {
+                    match control::react_to(&event, &jiff::Zoned::now()) {
+                        TimerReaction::Remind(prompt) => Wake::Reminder(prompt),
+                        TimerReaction::Say(notice) => Wake::Announcement(notice),
+                        TimerReaction::Show(notice) => Wake::Shown(notice),
                     }
-                    event => Wake::Announcement(control::event_notice(&event)),
-                },
+                }
             }
         };
         if let Some(fact) = last_noted.take() {
             memory_control.focus_on_noted_fact(fact);
         }
+        // A timer's reminder runs as a prompt Jarvis gives itself (timers D6).
+        let mut is_reminder = false;
         let (line, memory_warning) = match wake {
             Wake::Line(line, memory_warning) => (line, memory_warning),
+            Wake::Reminder(prompt) => {
+                // Only the idle read takes one, so the prompt line is open: end it.
+                println!();
+                is_reminder = true;
+                (InputLine::Prompt(prompt), None)
+            }
+            Wake::Shown(notice) => {
+                println!();
+                prompt_is_visible = false;
+                match &notice {
+                    Notice::Info(text) => presenter.notice(text)?,
+                    Notice::Warning(text) => eprintln!("Warning: {text}"),
+                }
+                idle_work_due = true;
+                continue;
+            }
             Wake::Announcement(notice) => {
                 // Only the idle read takes one, and the prompt is open then: end its
                 // line, so the notice starts a line of its own.
@@ -250,6 +269,48 @@ where
         match line {
             InputLine::Eof => return Ok(()),
             InputLine::Rejected(reason) => eprintln!("Input rejected: {}", reason.message()),
+            // A reminder is never parsed as a command: it is Jarvis's own line.
+            InputLine::Prompt(raw) if is_reminder => {
+                // The 30-minute rule applies as for any prompt (timers D8).
+                reset_after_quiet(session, &mut warmup, &mut memory_control).await;
+                let speaking = available(speech, speech_available);
+                let end = run_prompt(
+                    assistant,
+                    session,
+                    memory,
+                    presenter,
+                    &mut input,
+                    &mut taps,
+                    speaking,
+                    &mut warmup,
+                    PromptRequest {
+                        text: &raw,
+                        recall: RecallMode::Skip,
+                        filler: None,
+                        timers: None,
+                        tools: ToolUse::Forbidden,
+                    },
+                )
+                .await?;
+                if end.succeeded {
+                    memory_control.focus_on_turn(end.current_source_id);
+                }
+                prompt_is_visible = false;
+                listen_due = end.listen_next;
+                if let Some(outcome) = end.speech {
+                    settle_spoken(
+                        outcome,
+                        speech,
+                        presenter,
+                        end.prompt_shown,
+                        &mut speech_available,
+                        &mut prompt_is_visible,
+                        &mut state_awaiting_idle,
+                        &mut next_input,
+                    )?;
+                }
+                idle_work_due = true;
+            }
             InputLine::Prompt(raw) => {
                 let command = match control::parse(raw) {
                     // "yes" or "no" answers the proposed timer; with none waiting, the
@@ -350,15 +411,7 @@ where
                     Command::Prompt(prompt) | Command::Recall(prompt) => {
                         // `run_prompt` reports its own states, starting with `Thinking`.
                         state_awaiting_idle = false;
-                        if let Some(quiet) = session.quiet_for()
-                            && quiet >= QUIET_BEFORE_NEW_CONVERSATION
-                        {
-                            eprintln!(
-                                "New conversation after {} minutes of quiet.",
-                                quiet.as_secs() / 60
-                            );
-                            reset_conversation(session, &mut warmup, &mut memory_control).await;
-                        }
+                        reset_after_quiet(session, &mut warmup, &mut memory_control).await;
                         let speaking = available(speech, speech_available);
                         let end = run_prompt(
                             assistant,
@@ -374,6 +427,7 @@ where
                                 recall,
                                 filler: next_filler(recall, &mut filler_position),
                                 timers: timers.as_ref().map(|link| &link.handle),
+                                tools: ToolUse::Offered,
                             },
                         )
                         .await?;
@@ -382,45 +436,17 @@ where
                         }
                         prompt_is_visible = false;
                         listen_due = end.listen_next;
-                        if let Some(SpokenOutcome { wait, first_audio }) = end.speech {
-                            presenter.notice(&format_first_audio(first_audio))?;
-                            let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
-                            match wait {
-                                SpeechWait::Completed => {
-                                    if speech_disabled {
-                                        speech_available = false;
-                                    }
-                                    prompt_is_visible = true;
-                                }
-                                SpeechWait::Stopped { cleanup_ok } => {
-                                    if cleanup_ok {
-                                        println!("Speech stopped.");
-                                    }
-                                    if !cleanup_ok || speech_disabled {
-                                        speech_available = false;
-                                    }
-                                    prompt_is_visible = true;
-                                }
-                                SpeechWait::Input { line, cleanup_ok } => {
-                                    if !cleanup_ok || speech_disabled {
-                                        speech_available = false;
-                                    }
-                                    state_awaiting_idle = true;
-                                    next_input = Some(line);
-                                    prompt_is_visible = true;
-                                }
-                                SpeechWait::Aborted { cleanup_ok } => {
-                                    if !cleanup_ok || speech_disabled {
-                                        speech_available = false;
-                                    }
-                                }
-                                SpeechWait::Tapped { cleanup_ok } => {
-                                    if !cleanup_ok || speech_disabled {
-                                        speech_available = false;
-                                    }
-                                    prompt_is_visible = end.prompt_shown;
-                                }
-                            }
+                        if let Some(outcome) = end.speech {
+                            settle_spoken(
+                                outcome,
+                                speech,
+                                presenter,
+                                end.prompt_shown,
+                                &mut speech_available,
+                                &mut prompt_is_visible,
+                                &mut state_awaiting_idle,
+                                &mut next_input,
+                            )?;
                         }
                         idle_work_due = true;
                     }
@@ -428,6 +454,86 @@ where
             }
         }
     }
+}
+
+/// Starts a new conversation when a prompt (Darren's, or a timer's reminder)
+/// arrives after [`QUIET_BEFORE_NEW_CONVERSATION`] of quiet.
+async fn reset_after_quiet(
+    session: &mut ConversationSession,
+    warmup: &mut WarmupTask,
+    memory_control: &mut MemoryControl,
+) {
+    if let Some(quiet) = session.quiet_for()
+        && quiet >= QUIET_BEFORE_NEW_CONVERSATION
+    {
+        eprintln!(
+            "New conversation after {} minutes of quiet.",
+            quiet.as_secs() / 60
+        );
+        reset_conversation(session, warmup, memory_control).await;
+    }
+}
+
+/// After a spoken answer: reports the first audio and moves the loop on as the
+/// speech ended (finished, stopped, interrupted by a line, aborted or tapped).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the loop's speech, prompt and input state move together"
+)]
+fn settle_spoken<S, P>(
+    outcome: SpokenOutcome,
+    speech: &Option<S>,
+    presenter: &mut P,
+    prompt_shown: bool,
+    speech_available: &mut bool,
+    prompt_is_visible: &mut bool,
+    state_awaiting_idle: &mut bool,
+    next_input: &mut Option<InputLine>,
+) -> io::Result<()>
+where
+    S: SpeechControl,
+    P: AssistantPresenter,
+{
+    let SpokenOutcome { wait, first_audio } = outcome;
+    presenter.notice(&format_first_audio(first_audio))?;
+    let speech_disabled = speech.as_ref().is_some_and(S::is_disabled);
+    match wait {
+        SpeechWait::Completed => {
+            if speech_disabled {
+                *speech_available = false;
+            }
+            *prompt_is_visible = true;
+        }
+        SpeechWait::Stopped { cleanup_ok } => {
+            if cleanup_ok {
+                println!("Speech stopped.");
+            }
+            if !cleanup_ok || speech_disabled {
+                *speech_available = false;
+            }
+            *prompt_is_visible = true;
+        }
+        SpeechWait::Input { line, cleanup_ok } => {
+            if !cleanup_ok || speech_disabled {
+                *speech_available = false;
+            }
+            *state_awaiting_idle = true;
+            *next_input = Some(line);
+            *prompt_is_visible = true;
+        }
+        SpeechWait::Aborted { cleanup_ok } => {
+            if !cleanup_ok || speech_disabled {
+                *speech_available = false;
+            }
+        }
+        SpeechWait::Tapped { cleanup_ok } => {
+            if !cleanup_ok || speech_disabled {
+                *speech_available = false;
+            }
+            *prompt_is_visible = prompt_shown;
+        }
+    }
+    Ok(())
 }
 
 /// Ends the conversation: the single path for `/reset` and the quiet reset, so
@@ -498,6 +604,10 @@ enum Wake {
     },
     /// A background feature's line, shown and said while idle.
     Announcement(Notice),
+    /// A timer ended: its reminder prompt, run with no tools (timers D6).
+    Reminder(String),
+    /// A line only shown, never said (timers D9).
+    Shown(Notice),
 }
 
 /// The speech output, unless speech has been given up for this session.

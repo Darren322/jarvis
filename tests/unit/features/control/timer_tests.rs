@@ -13,8 +13,8 @@ use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
 use super::{
-    AnswerOutcome, REJECTED_LINE, TimerAnswer, answer_timer, event_notice, expired_line,
-    proposal_line, set_line,
+    AnswerOutcome, REJECTED_LINE, TimerAnswer, TimerReaction, answer_timer, expired_line,
+    proposal_line, react_to, set_line,
 };
 use crate::features::control::Notice;
 use crate::features::timers::{TimerEvent, TimersHandle, WallClock, channel};
@@ -150,43 +150,58 @@ fn the_fixed_lines_name_the_timer_and_its_time() {
 }
 
 #[test]
-fn each_timer_event_has_its_line() {
-    let sleep = timer(Some("Time to sleep"), 0);
+fn each_timer_event_has_its_reaction() {
+    // Set at 6 pm (`NOW`), ended five hours later.
+    let sleep = timer(Some("Time to sleep"), 5 * 60);
+    let plain = timer(None, 10);
     let cases = [
         (
             TimerEvent::Ended {
                 timer: sleep.clone(),
                 late_by: None,
             },
-            "'Time to sleep' has ended.",
+            TimerReaction::Remind(
+                "My timer 'Time to sleep', set at 6:00 pm, has just ended. Remind me in a sentence or two."
+                    .to_owned(),
+            ),
         ),
         (
             TimerEvent::Ended {
-                timer: timer(None, 0),
+                timer: plain.clone(),
                 late_by: Some(Duration::from_secs(40 * 60 + 59)),
             },
-            "The timer ended 40 minutes ago, while I was off.",
+            TimerReaction::Remind(
+                "My timer, set at 6:00 pm, ended 40 minutes ago, while you were off. Remind me in a sentence or two."
+                    .to_owned(),
+            ),
         ),
         (
             TimerEvent::Ended {
                 timer: sleep.clone(),
                 late_by: Some(Duration::from_secs(59)),
             },
-            "'Time to sleep' ended less than a minute ago, while I was off.",
+            TimerReaction::Remind(
+                "My timer 'Time to sleep', set at 6:00 pm, ended less than a minute ago, while you were off. Remind me in a sentence or two."
+                    .to_owned(),
+            ),
         ),
         (
             TimerEvent::Missed {
                 timer: sleep.clone(),
             },
-            "'Time to sleep' ended over an hour ago, while I was off.",
+            TimerReaction::Show(Notice::Info(
+                "'Time to sleep' ended over an hour ago, while I was off, so I let it go.".to_owned(),
+            )),
         ),
         (
             TimerEvent::Expired { timer: sleep },
-            "No yes came, so I dropped 'Time to sleep'.",
+            TimerReaction::Say(Notice::Info(
+                "No yes came, so I dropped 'Time to sleep'.".to_owned(),
+            )),
         ),
     ];
     for (event, expected) in cases {
-        assert_eq!(event_notice(&event), Notice::Info(expected.to_owned()));
+        assert_eq!(react_to(&event, &now()), expected);
     }
 }
 

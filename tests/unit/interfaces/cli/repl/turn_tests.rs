@@ -37,6 +37,7 @@ use crate::{
 };
 
 use super::*;
+use crate::features::assistant::ToolUse;
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -292,6 +293,7 @@ async fn run_request(
             recall,
             filler,
             timers: None,
+            tools: ToolUse::Offered,
         },
     )
     .await
@@ -655,6 +657,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
             recall: RecallMode::Skip,
             filler: None,
             timers: None,
+            tools: ToolUse::Offered,
         },
     )
     .await;
@@ -958,6 +961,7 @@ async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_s
                 recall: RecallMode::Skip,
                 filler: None,
                 timers: None,
+                tools: ToolUse::Offered,
             },
         )
         .await

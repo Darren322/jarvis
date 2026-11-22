@@ -14,7 +14,7 @@ use std::sync::{
 };
 
 use crate::features::assistant::{
-    Assistant, AssistantRun, AssistantRunError, run_report::ToolStageOutcome,
+    Assistant, AssistantRun, AssistantRunError, ToolUse, run_report::ToolStageOutcome,
 };
 
 #[derive(Debug, serde::Deserialize)]
@@ -63,6 +63,10 @@ struct Outcome {
 }
 
 async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
+    run_with(turns, should_fail, ToolUse::Offered).await
+}
+
+async fn run_with(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool, tools: ToolUse) -> Outcome {
     let executions = Arc::new(AtomicUsize::new(0));
     let tool = CountingStatusTool {
         executions: Arc::clone(&executions),
@@ -94,7 +98,20 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
             ))
             .build(),
     );
-    let result = assistant.respond("Check the system status.", &[]).await;
+    let (deltas, mut receiver) = tokio::sync::mpsc::channel(16);
+    let drain = async { while receiver.recv().await.is_some() {} };
+    let (result, ()) = tokio::join!(
+        assistant.respond_stream(
+            "Check the system status.",
+            tools,
+            None,
+            &[],
+            &[],
+            &[],
+            deltas
+        ),
+        drain
+    );
     Outcome {
         result,
         executions: executions.load(Ordering::SeqCst),
@@ -368,4 +385,32 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         ]
     );
     assert_eq!(requests.len(), 1);
+}
+
+#[tokio::test]
+async fn a_run_with_tools_forbidden_lists_every_tool_and_answers_in_text() {
+    let outcome = run_with(vec![text("Time to sleep, sir.")], false, ToolUse::Forbidden).await;
+
+    let run = outcome.result.expect("a text answer is accepted");
+    assert_eq!(run.response.output, "Time to sleep, sir.");
+    let [only] = outcome.requests.as_slice() else {
+        panic!("expected exactly one model request");
+    };
+    // Listed as on every request, so the prompt stays cached (timers D20).
+    assert_eq!(only.tools.len(), crate::tools::ALLOWED_TOOLS.len());
+    assert_eq!(only.tool_choice, Some(ToolChoice::None));
+}
+
+#[tokio::test]
+async fn a_tool_call_in_a_run_with_tools_forbidden_runs_nothing() {
+    let outcome = run_with(
+        vec![turn([status_call("call-1")]), text("unused")],
+        false,
+        ToolUse::Forbidden,
+    )
+    .await;
+
+    assert!(outcome.result.is_err(), "the tool call is rejected");
+    assert_eq!(outcome.executions, 0, "no tool ran");
+    assert_eq!(outcome.requests.len(), 1, "no second request");
 }

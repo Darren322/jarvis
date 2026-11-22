@@ -32,6 +32,10 @@ pub(super) enum PolicyTurn {
     // A tool has already executed. The model should now produce
     // the final response rather than request another tool.
     AfterTool,
+
+    // The first turn of a run that may call no tool at all (timers D20): the
+    // tools are listed, but the answer must be text only.
+    ToolsForbidden,
 }
 
 fn validate_finish_reason(final_reason: Option<&FinishReason>) -> Result<(), PolicyRejection> {
@@ -155,7 +159,7 @@ fn validate_policy_turn(
     match turn {
         PolicyTurn::Initial => Ok(()),
 
-        PolicyTurn::AfterTool => {
+        PolicyTurn::AfterTool | PolicyTurn::ToolsForbidden => {
             let has_tool_call = contents
                 .iter()
                 .any(|content| matches!(content, AssistantContent::ToolCall(_)));

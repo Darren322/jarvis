@@ -28,6 +28,7 @@ use crate::{
 };
 
 use super::{ConversationSession, ConversationTurn, merge_source_dependencies};
+use crate::features::assistant::ToolUse;
 
 impl ConversationSession {
     /// Drives the production `respond_stream` path with no memory and no search,
@@ -59,7 +60,7 @@ impl ConversationSession {
         let (deltas, mut receiver) = mpsc::channel(16);
         let drain = async { while receiver.recv().await.is_some() {} };
         let (turn, ()) = tokio::join!(
-            self.respond_stream(assistant, memory, mode, prompt, deltas),
+            self.respond_stream(assistant, memory, mode, ToolUse::Offered, prompt, deltas),
             drain
         );
         turn

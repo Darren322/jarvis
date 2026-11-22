@@ -783,6 +783,28 @@ async fn run_with_sources(
     startup_warmup: Option<CacheWarmup>,
     script: impl AsyncFnOnce(&mut Driver),
 ) -> Vec<Shown> {
+    run_with_timers(
+        harness,
+        speech,
+        taps,
+        announcements,
+        startup_warmup,
+        None,
+        script,
+    )
+    .await
+}
+
+/// `run_with_sources`, with a timer service as well (timers 06 and 08).
+async fn run_with_timers(
+    harness: &mut Harness,
+    speech: &mut Option<FailingSpeech>,
+    taps: Taps,
+    announcements: Announcements,
+    startup_warmup: Option<CacheWarmup>,
+    timers: Option<crate::features::timers::TimerLink>,
+    script: impl AsyncFnOnce(&mut Driver),
+) -> Vec<Shown> {
     let (writer, reader) = tokio::io::duplex(8192);
     let mut input = BufReader::new(reader);
     let screen = Screen::default();
@@ -804,7 +826,7 @@ async fn run_with_sources(
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
-        None,
+        timers,
     ));
     let user = async {
         script(&mut driver).await;
@@ -2849,4 +2871,57 @@ async fn yes_answers_a_pending_timer_without_the_model_and_is_a_prompt_otherwise
     let running = handle.shown();
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].state, crate::storage::TimerState::Running);
+}
+
+#[tokio::test]
+async fn a_timer_that_ends_while_idle_gets_a_reminder_run_with_no_tools() {
+    let mut harness = harness_answering(vec![vec![
+        MockStreamEvent::text("Time to sleep, sir."),
+        MockStreamEvent::final_response(Usage::new()),
+    ]])
+    .await;
+    let (link, service, _timers_directory) = timer_link().await;
+    let handle = link.handle.clone();
+    // A real timer on the real clock, ending a moment from now.
+    let proposed = handle
+        .propose(
+            Some("Time to sleep".to_owned()),
+            jiff::Timestamp::now().as_millisecond() + 300,
+        )
+        .await
+        .expect("proposed");
+    handle.confirm(proposed.id).await.expect("confirmed");
+
+    let shown = run_with_timers(
+        &mut harness,
+        &mut None,
+        Taps::none(),
+        no_announcements(),
+        None,
+        Some(link),
+        async |driver| {
+            driver.wait_for(AssistantState::Thinking).await;
+            driver.wait_for(AssistantState::Idle).await;
+        },
+    )
+    .await;
+    service.abort();
+
+    assert!(
+        shown.contains(&Shown::Answer("Time to sleep, sir.".to_owned())),
+        "{shown:?}"
+    );
+    let requests = harness.model.requests();
+    assert_eq!(requests.len(), 1);
+    // Every tool listed, none callable (timers D20).
+    assert_eq!(requests[0].tools.len(), crate::tools::ALLOWED_TOOLS.len());
+    assert_eq!(
+        requests[0].tool_choice,
+        Some(rig_core::message::ToolChoice::None)
+    );
+    let prompt = format!("{:?}", requests[0].chat_history.last());
+    assert!(
+        prompt.contains("My timer 'Time to sleep', set at ") && prompt.contains("has just ended"),
+        "{prompt}"
+    );
 }

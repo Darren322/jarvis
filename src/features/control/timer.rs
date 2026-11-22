@@ -4,12 +4,14 @@
 //! The model never confirms a timer: `set_timer` only proposes one, and only
 //! Darren's "yes" here (or a tap on Set, timers 07) makes it run.
 
-use jiff::Zoned;
+use std::time::Duration;
+
+use jiff::{Timestamp, Zoned};
 
 use super::Notice;
 use crate::features::timers::{TimerEvent, TimerServiceError, TimersHandle};
 use crate::storage::{Timer, TimerState};
-use crate::tools::timers::resolve::spoken_at;
+use crate::tools::timers::resolve::{SPOKEN_TIME_FORMAT, spoken_at};
 
 /// Darren's answer to the timer Jarvis just proposed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,35 +90,58 @@ pub(crate) fn expired_line(timer: &Timer) -> String {
     format!("No yes came, so I dropped {}.", name(timer))
 }
 
-/// The line for a timer event, said while idle. Until timers 08 a timer that ends
-/// is only announced; 08 gives it a model run of its own.
-pub(crate) fn event_notice(event: &TimerEvent) -> Notice {
+/// What Jarvis does about a timer event, while idle.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum TimerReaction {
+    /// Ask the model, with no tools, to remind Darren (D6): this is the prompt.
+    Remind(String),
+    /// Show and say this line.
+    Say(Notice),
+    /// Only show this line: a timer missed by an hour or more is dropped with a
+    /// printed notice (D9), and a storage failure is for the log.
+    Show(Notice),
+}
+
+/// How Jarvis reacts to `event`, as seen from `now`.
+pub(crate) fn react_to(event: &TimerEvent, now: &Zoned) -> TimerReaction {
     match event {
-        TimerEvent::Ended {
-            timer,
-            late_by: None,
-        } => Notice::Info(format!("{} has ended.", capitalised(&name(timer)))),
-        TimerEvent::Ended {
-            timer,
-            late_by: Some(late_by),
-        } => Notice::Info(format!(
-            "{} ended {} ago, while I was off.",
-            capitalised(&name(timer)),
-            minutes_ago(*late_by)
-        )),
-        TimerEvent::Missed { timer } => Notice::Info(format!(
-            "{} ended over an hour ago, while I was off.",
-            capitalised(&name(timer))
-        )),
-        TimerEvent::Expired { timer } => Notice::Info(expired_line(timer)),
-        TimerEvent::Failed(error) => {
-            Notice::Warning(format!("the timers could not be read: {error}"))
+        TimerEvent::Ended { timer, late_by } => {
+            TimerReaction::Remind(reminder_prompt(timer, *late_by, now))
         }
+        TimerEvent::Missed { timer } => TimerReaction::Show(Notice::Info(format!(
+            "{} ended over an hour ago, while I was off, so I let it go.",
+            capitalised(&name(timer))
+        ))),
+        TimerEvent::Expired { timer } => TimerReaction::Say(Notice::Info(expired_line(timer))),
+        TimerEvent::Failed(error) => TimerReaction::Show(Notice::Warning(format!(
+            "the timers could not be read: {error}"
+        ))),
     }
 }
 
+/// The prompt of a timer's reminder run (D6): Jarvis's own line, sent in the
+/// user's turn, with the label and when the timer was set; a late one says how
+/// late (D9). It is archived and joins the history like any prompt.
+pub(crate) fn reminder_prompt(timer: &Timer, late_by: Option<Duration>, now: &Zoned) -> String {
+    let what = match timer.label.as_deref().map(str::trim) {
+        Some(label) if !label.is_empty() => format!("My timer '{label}'"),
+        _ => "My timer".to_owned(),
+    };
+    let set = Timestamp::from_millisecond(timer.created_at_unix_ms)
+        .map(|set| {
+            let set = set.to_zoned(now.time_zone().clone());
+            format!(", set at {},", set.strftime(SPOKEN_TIME_FORMAT))
+        })
+        .unwrap_or_default();
+    let ended = match late_by {
+        None => "has just ended".to_owned(),
+        Some(late_by) => format!("ended {} ago, while you were off", minutes_ago(late_by)),
+    };
+    format!("{what}{set} {ended}. Remind me in a sentence or two.")
+}
+
 /// "40 minutes", "1 minute", or "less than a minute".
-fn minutes_ago(late_by: std::time::Duration) -> String {
+fn minutes_ago(late_by: Duration) -> String {
     match late_by.as_secs() / 60 {
         0 => "less than a minute".to_owned(),
         1 => "1 minute".to_owned(),

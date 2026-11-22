@@ -1,3 +1,4 @@
+use crate::features::assistant::ToolUse;
 use crate::features::assistant::policy::{PolicyTurn, validate_turn};
 use crate::tools::ALLOWED_TOOLS;
 use rig_agent::agent::{
@@ -5,7 +6,9 @@ use rig_agent::agent::{
 };
 use rig_core::message::ToolChoice;
 
-pub(super) struct JarvisPolicyHook;
+pub(super) struct JarvisPolicyHook {
+    pub(super) tools: ToolUse,
+}
 
 impl AgentHook for JarvisPolicyHook {
     // BEFORE LLM request:
@@ -20,10 +23,16 @@ impl AgentHook for JarvisPolicyHook {
         let turn = ctx.turn();
 
         let action = match turn {
+            // A run that may call no tool keeps the list too, for the same cache
+            // reason as the second request below (timers D20).
             1 => {
+                let choice = match self.tools {
+                    ToolUse::Offered => ToolChoice::Auto,
+                    ToolUse::Forbidden => ToolChoice::None,
+                };
                 let patch = RequestPatch::new()
                     .active_tools(ALLOWED_TOOLS.iter().map(|rule| rule.name))
-                    .tool_choice(ToolChoice::Auto);
+                    .tool_choice(choice);
                 CompletionCallAction::patch(patch)
             }
 
@@ -50,9 +59,10 @@ impl AgentHook for JarvisPolicyHook {
         _ctx: &rig_agent::prelude::HookContext,
         event: rig_agent::agent::ModelTurnFinished<'_>,
     ) -> rig_agent::agent::ModelTurnAction {
-        let policy_turn = match event.turn {
-            1 => PolicyTurn::Initial,
-            2 => PolicyTurn::AfterTool,
+        let policy_turn = match (event.turn, self.tools) {
+            (1, ToolUse::Offered) => PolicyTurn::Initial,
+            (1, ToolUse::Forbidden) => PolicyTurn::ToolsForbidden,
+            (2, _) => PolicyTurn::AfterTool,
             _ => return ModelTurnAction::stop("Unexpected model turn"),
         };
 

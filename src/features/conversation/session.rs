@@ -6,6 +6,7 @@ use tokio::{sync::mpsc, time::Instant};
 use super::history::{History, Recorded, merge_source_dependencies};
 use crate::features::assistant::{
     Assistant, AssistantError, AssistantRun, AssistantRunError, AssistantTextDelta, CacheWarmup,
+    ToolUse,
 };
 use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot, facts_message};
 use crate::storage::{
@@ -119,6 +120,7 @@ impl ConversationSession {
         assistant: &Assistant,
         memory: Option<&MemoryService>,
         recall_mode: RecallMode,
+        tools: ToolUse,
         prompt: &str,
         deltas: mpsc::Sender<AssistantTextDelta>,
     ) -> ConversationTurn {
@@ -143,6 +145,7 @@ impl ConversationSession {
         let run = assistant
             .respond_stream(
                 prompt,
+                tools,
                 facts.as_ref(),
                 &earlier_history,
                 &latest_exchange,

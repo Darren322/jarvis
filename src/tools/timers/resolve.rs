@@ -12,7 +12,7 @@ pub(crate) const MIN_TIMER_MINUTES: i64 = 1;
 pub(crate) const MAX_TIMER_MINUTES: i64 = 24 * 60;
 
 /// 12-hour, unpadded hour, lowercase `pm`, as Jarvis says it ("11:00 pm").
-const SPOKEN_TIME_FORMAT: &str = "%-I:%M %P";
+pub(crate) const SPOKEN_TIME_FORMAT: &str = "%-I:%M %P";
 /// For a day that is neither today nor tomorrow: "Monday 23 November".
 const SPOKEN_DAY_FORMAT: &str = "%A %-d %B";
 

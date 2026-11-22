@@ -35,7 +35,7 @@ use crate::{
     tools::system_status_tool::SystemStatusTool,
 };
 
-use super::{MAX_TEXT_DELTA_BYTES, consume_stream, send_text_deltas};
+use super::{MAX_TEXT_DELTA_BYTES, ToolUse, consume_stream, send_text_deltas};
 
 impl Assistant {
     /// Runs the production streaming path and drains visible deltas, as the
@@ -75,6 +75,7 @@ impl Assistant {
         let (result, ()) = tokio::join!(
             self.respond_stream(
                 prompt,
+                ToolUse::Offered,
                 facts,
                 earlier_history,
                 latest_exchange,
@@ -216,7 +217,7 @@ async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
     let (delta_tx, _delta_rx) = mpsc::channel(2);
 
     let error = assistant
-        .respond_stream("Hello", None, &[], &[], &[], delta_tx)
+        .respond_stream("Hello", ToolUse::Offered, None, &[], &[], &[], delta_tx)
         .await
         .expect_err("pending provider stream should hit the Assistant deadline");
 
@@ -429,6 +430,7 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     let run = assistant
         .respond_stream(
             "Check the system status.",
+            ToolUse::Offered,
             None,
             &earlier_history,
             &latest_exchange,
@@ -567,7 +569,15 @@ async fn streaming_policy_rejection_still_records_the_completed_model_call() {
     let (delta_tx, _delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Call status twice", None, &[], &[], &[], delta_tx)
+        .respond_stream(
+            "Call status twice",
+            ToolUse::Offered,
+            None,
+            &[],
+            &[],
+            &[],
+            delta_tx,
+        )
         .await
         .expect_err("policy must reject multiple tool calls");
 
@@ -601,7 +611,7 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
     let (delta_tx, mut delta_rx) = mpsc::channel(4);
 
     let error = assistant
-        .respond_stream("Hello", None, &[], &[], &[], delta_tx)
+        .respond_stream("Hello", ToolUse::Offered, None, &[], &[], &[], delta_tx)
         .await
         .expect_err("midstream provider failure must not produce success");
 

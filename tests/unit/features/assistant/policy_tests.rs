@@ -20,7 +20,7 @@ fn status() -> AssistantContent {
 #[test]
 fn every_policy_rule_is_checked_at_its_boundary() {
     use PolicyRejection as R;
-    use PolicyTurn::{AfterTool, Initial};
+    use PolicyTurn::{AfterTool, Initial, ToolsForbidden};
     type Case = (&'static str, PolicyTurn, Vec<AssistantContent>, Option<FinishReason>, Result<(), R>);
 
     let cases: Vec<Case> = vec![
@@ -48,6 +48,9 @@ fn every_policy_rule_is_checked_at_its_boundary() {
         // Turn: a tool may be proposed first, never after a tool ran.
         ("text after tool",           AfterTool, vec![text("Done.")], Some(FinishReason::Stop), Ok(())),
         ("tool after tool",           AfterTool, vec![status()],      None,                     Err(R::Content)),
+        // A run that may call no tool (timers D20): text only, from the first turn.
+        ("text with tools forbidden", ToolsForbidden, vec![text("Time to sleep.")], Some(FinishReason::Stop), Ok(())),
+        ("tool with tools forbidden", ToolsForbidden, vec![status()], Some(FinishReason::ToolCalls), Err(R::Content)),
         // Finish reason: absent or normal is fine; truncated or unknown is not.
         ("no finish reason",          Initial,   vec![text("ok")], None,                                  Ok(())),
         ("tool_calls without a call", Initial,   vec![text("ok")], Some(FinishReason::ToolCalls),         Err(R::FinishReason)),

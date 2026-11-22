@@ -1,6 +1,6 @@
 # 08: When a timer ends: the sound and Jarvis's own model run
 
-Status: ready-for-agent
+Status: in-progress
 Stories: US3, US7
 Blocked by: 07
 Assignee: Claude

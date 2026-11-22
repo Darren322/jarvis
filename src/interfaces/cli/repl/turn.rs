@@ -4,7 +4,7 @@ use jiff::Zoned;
 use tokio::{io::AsyncBufRead, sync::mpsc};
 
 use crate::features::{
-    assistant::{Assistant, AssistantTextDelta},
+    assistant::{Assistant, AssistantTextDelta, ToolUse},
     control::{TapAction, proposal_line, tap_action},
     conversation::{ConversationSession, ConversationTurn},
     memory::{MemoryService, RecallMode},
@@ -45,6 +45,8 @@ pub(super) struct PromptRequest<'a> {
     /// The timers, when this session has them: a run that proposes one says the
     /// fixed line instead of the model's reply (timers D16).
     pub(super) timers: Option<&'a TimersHandle>,
+    /// Whether the model may call a tool: Darren's prompts may, a reminder may not.
+    pub(super) tools: ToolUse,
 }
 
 /// Notices a timer proposed during one run (timers D16). From then on the model's
@@ -225,6 +227,7 @@ where
         recall,
         filler,
         timers,
+        tools,
     } = request;
     let mut proposal = Proposal::new(timers);
     let prompt_started = Instant::now();
@@ -237,7 +240,9 @@ where
     }
     let (sender, deltas) = mpsc::channel(TEXT_DELTA_QUEUE);
     let mut text = TextStream {
-        response: Box::pin(session.respond_stream(assistant, memory, recall, prompt, sender)),
+        response: Box::pin(
+            session.respond_stream(assistant, memory, recall, tools, prompt, sender),
+        ),
         deltas,
         deltas_open: true,
         is_done: false,
