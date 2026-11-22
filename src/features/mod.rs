@@ -8,3 +8,4 @@ pub(crate) mod panel;
 pub(crate) mod speech;
 pub(crate) mod state;
 pub(crate) mod stats;
+pub(crate) mod timers;

@@ -16,8 +16,4 @@ pub(crate) use facts::{
 };
 pub(crate) use memory_repository::*;
 pub(crate) use noting::{Examination, TurnId};
-#[expect(
-    unused_imports,
-    reason = "the timer service (timers 03) is the first user"
-)]
 pub(crate) use timers::{Timer, TimerError, TimerId, TimerState, TimersRepository};

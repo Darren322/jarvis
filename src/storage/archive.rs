@@ -6,8 +6,8 @@ use tokio_rusqlite::Connection;
 use super::error::StorageError;
 use super::time::unix_time_ms;
 use super::{
-    FactsRepository, MemoryRepository, MemorySaveState, SourceId, memory_repository, schema,
-    sqlite_vec,
+    FactsRepository, MemoryRepository, MemorySaveState, SourceId, TimersRepository,
+    memory_repository, schema, sqlite_vec,
 };
 
 // LEARNING: Raw SQL stays in this storage seam. Services receive typed values
@@ -55,6 +55,17 @@ impl ConversationArchive {
 
     pub(crate) fn facts_repository(&self) -> FactsRepository {
         FactsRepository {
+            connection: self.connection.clone(),
+        }
+    }
+
+    /// The timers (timers spec), on the same SQLite worker.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "timers 04 creates the service in app.rs")
+    )]
+    pub(crate) fn timers_repository(&self) -> TimersRepository {
+        TimersRepository {
             connection: self.connection.clone(),
         }
     }
