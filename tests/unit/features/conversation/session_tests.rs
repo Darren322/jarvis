@@ -186,6 +186,7 @@ async fn history_reaches_next_request_once_and_failed_prompt_is_not_retained() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -280,6 +281,7 @@ async fn reset_starts_fresh_context_and_preserves_archive_rows() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -328,6 +330,7 @@ async fn archive_write_failure_keeps_model_result_and_allows_the_next_run() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -460,6 +463,7 @@ async fn recalled_memory_is_sent_with_the_run_but_never_stored_in_history() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -531,6 +535,7 @@ async fn a_run_without_a_search_sends_no_memory_and_no_warning_but_is_still_stor
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -579,6 +584,7 @@ async fn only_a_search_that_cannot_run_warns_that_memory_is_unavailable() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -619,6 +625,7 @@ async fn requests_between_trims_share_their_history_and_a_trim_hands_back_the_wa
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -675,6 +682,7 @@ fn mock_assistant(turns: usize) -> (Assistant, MockCompletionModel) {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );

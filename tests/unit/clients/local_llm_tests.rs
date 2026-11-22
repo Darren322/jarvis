@@ -85,6 +85,7 @@ fn local_assistant(origin: &str) -> (LocalLlm, Assistant) {
         crate::tools::register(
             AgentBuilder::new(local_llm.model()),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -219,7 +220,7 @@ async fn streams_a_tool_call_roundtrip_with_a_correlated_result() {
     let first_tools = first_request["tools"]
         .as_array()
         .expect("first request should offer the system status tool");
-    assert_eq!(first_tools.len(), 5);
+    assert_eq!(first_tools.len(), 8);
     assert_eq!(
         first_tools[0],
         rig_core::serde_json::json!({

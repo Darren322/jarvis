@@ -170,7 +170,14 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>) -> (bool, Vec<ToOrb>) {
             .await {}
     });
     let model = MockCompletionModel::from_stream_turns(turns);
-    let assistant = Assistant::new(register(AgentBuilder::new(model), panels).build());
+    let assistant = Assistant::new(
+        register(
+            AgentBuilder::new(model),
+            panels,
+            crate::features::timers::channel().0,
+        )
+        .build(),
+    );
 
     let succeeded = assistant.respond("Bring up the stats.", &[]).await.is_ok();
     // Let the panel task pass on what it was asked.

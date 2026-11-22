@@ -89,6 +89,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -210,6 +211,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -330,6 +332,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -434,6 +437,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -674,6 +678,7 @@ async fn harness_answering(turns: Vec<Vec<MockStreamEvent>>) -> Harness {
         crate::tools::register(
             AgentBuilder::new(model.clone()),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -1715,6 +1720,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -1815,6 +1821,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );

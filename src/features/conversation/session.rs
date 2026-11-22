@@ -10,7 +10,7 @@ use crate::features::assistant::{
 use crate::features::memory::{MemoryService, RecallMode, RecallSnapshot, facts_message};
 use crate::storage::{
     ArchiveOutcome, ConversationArchive, FactsRepository, MemoryEligibility, MemoryRepository,
-    MemorySaveState, SourceId, StorageError,
+    MemorySaveState, SourceId, StorageError, TimersRepository,
 };
 
 /// Stands in for the first prompt in the start-up warm-up: the server caches the
@@ -94,6 +94,13 @@ impl ConversationSession {
         self.archive
             .as_ref()
             .map(ConversationArchive::facts_repository)
+    }
+
+    /// Where timers are kept (timers 04); the timer service runs on it.
+    pub(crate) fn timers_repository(&self) -> Option<TimersRepository> {
+        self.archive
+            .as_ref()
+            .map(ConversationArchive::timers_repository)
     }
 
     pub(crate) fn clear_history(&mut self) {

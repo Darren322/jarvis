@@ -60,10 +60,6 @@ impl ConversationArchive {
     }
 
     /// The timers (timers spec), on the same SQLite worker.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "timers 04 creates the service in app.rs")
-    )]
     pub(crate) fn timers_repository(&self) -> TimersRepository {
         TimersRepository {
             connection: self.connection.clone(),

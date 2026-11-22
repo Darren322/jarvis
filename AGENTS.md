@@ -95,8 +95,8 @@ Split or add structure when one of these triggers is hit, and not before:
 
 | Area | Trigger | Then |
 | --- | --- | --- |
-| `src/tools/` | About 8 tools, or measured wrong tool choices | Group by domain (`tools/calendar/{read,create}.rs`) and offer only the relevant tools per request via `RequestPatch::active_tools`. |
-| Tool permissions | The first tool that writes or acts (roadmap 8B) | Add an access level to `ToolRule`. The approval prompt belongs to the interface, not the tool. |
+| `src/tools/` | About 8 tools, or measured wrong tool choices | Reached 2026-11-22 (8 tools with the timers). Group by domain in the source tree (`src/tools/timers/` is the first) but keep one flat `ALLOWED_TOOLS`, and offer every tool on every request: changing the tool list changes the start of the prompt and empties Gemma's prompt cache (fast-memory 10: 9.6 s vs 0.8 s). Narrow per request with `RequestPatch::active_tools` only if wrong tool choices are measured, accepting the cold cache then. |
+| Tool permissions | The first tool that writes or acts (roadmap 8B) | Done 2026-11-22 (timers 04): `ToolRule` has `ToolAccess::{NoApproval, NeedsApproval}`; `set_timer` is the only `NeedsApproval` and only proposes. The approval prompt belongs to the interface, not the tool (timers 06). |
 | Tool clients | A tool needs the network | Transport in `src/clients/` with the `local_endpoint.rs` protections; a thin `Tool` wrapper in `src/tools/`. Secrets come from config, never from tool arguments. |
 | `src/storage/schema.rs` | About six schema versions | Move each migration's SQL into `storage/migrations/vN.sql`, loaded with `include_str!`. |
 | New storage domain | Calendar cache, observations, enrollment | Its own `storage/<domain>/` module with its own types and SQL; the schema stays in `schema.rs`. |

@@ -130,6 +130,7 @@ async fn assistant_text_run_returns_success_report_without_tools() {
     let agent = crate::tools::register(
         AgentBuilder::new(model),
         crate::features::panel::channel().0,
+        crate::features::timers::channel().0,
     )
     .build();
     let assistant = Assistant::new(agent);
@@ -171,6 +172,7 @@ async fn assistant_reports_usage_per_run_and_marks_missing_usage_unavailable() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -207,6 +209,7 @@ async fn streaming_run_times_out_while_waiting_for_the_provider_stream() {
     let agent = crate::tools::register(
         AgentBuilder::new(PendingCompletionModel),
         crate::features::panel::channel().0,
+        crate::features::timers::channel().0,
     )
     .build();
     let assistant = Assistant::new(agent);
@@ -232,6 +235,7 @@ async fn provider_prompt_failure_reports_incomplete_model_stage_and_keeps_error_
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -408,6 +412,7 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -461,8 +466,8 @@ async fn assistant_stream_keeps_documents_out_of_history_and_preserves_tool_repo
     assert!(requests[0].documents.is_empty());
     assert!(requests[1].documents.is_empty());
     assert_eq!(requests[0].max_tokens, Some(1024));
-    assert_eq!(requests[0].tools.len(), 5);
-    assert_eq!(requests[1].tools.len(), 5);
+    assert_eq!(requests[0].tools.len(), 8);
+    assert_eq!(requests[1].tools.len(), 8);
     let memory_message = Message::User {
         content: vec![UserContent::document(
             document.to_string(),
@@ -555,6 +560,7 @@ async fn streaming_policy_rejection_still_records_the_completed_model_call() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -588,6 +594,7 @@ async fn midstream_provider_failure_returns_stream_error_and_partial_text_only()
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -665,6 +672,7 @@ fn wire_assistant(server: &MockServer) -> Assistant {
         crate::tools::register(
             AgentBuilder::new(local_llm.model()).preamble("system prompt"),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     )
@@ -1059,6 +1067,7 @@ async fn the_facts_message_starts_every_request_and_stays_out_of_history() {
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );

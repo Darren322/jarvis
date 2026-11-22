@@ -281,8 +281,14 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>) -> Run {
     let (panels, mut shown_to_orb, task) = panel_service();
     let model = MockCompletionModel::from_stream_turns(turns);
     let handle = model.clone();
-    let assistant =
-        Assistant::new(crate::tools::register(AgentBuilder::new(model), panels).build());
+    let assistant = Assistant::new(
+        crate::tools::register(
+            AgentBuilder::new(model),
+            panels,
+            crate::features::timers::channel().0,
+        )
+        .build(),
+    );
 
     let answer = assistant
         .respond("Show my facts as a list.", &[])

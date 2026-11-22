@@ -261,6 +261,7 @@ async fn run_request(
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -623,6 +624,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
         crate::tools::register(
             AgentBuilder::new(MockCompletionModel::from_stream_turns([answer_turn()])),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );
@@ -923,6 +925,7 @@ async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_s
         crate::tools::register(
             AgentBuilder::new(model),
             crate::features::panel::channel().0,
+            crate::features::timers::channel().0,
         )
         .build(),
     );

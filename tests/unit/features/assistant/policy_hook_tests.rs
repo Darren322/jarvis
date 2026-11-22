@@ -83,6 +83,15 @@ async fn run(turns: Vec<Vec<MockStreamEvent>>, should_fail: bool) -> Outcome {
             .tool(crate::tools::build_panel::BuildPanelTool::new(
                 crate::features::panel::channel().0,
             ))
+            .tool(crate::tools::timers::set_timer::SetTimerTool::new(
+                crate::features::timers::channel().0,
+            ))
+            .tool(crate::tools::timers::cancel_timer::CancelTimerTool::new(
+                crate::features::timers::channel().0,
+            ))
+            .tool(crate::tools::timers::list_timers::ListTimersTool::new(
+                crate::features::timers::channel().0,
+            ))
             .build(),
     );
     let result = assistant.respond("Check the system status.", &[]).await;
@@ -165,7 +174,10 @@ async fn first_request_offers_allowed_tools_and_the_final_request_offers_none() 
             "show_panel",
             "close_panel",
             "current_time",
-            "build_panel"
+            "build_panel",
+            "set_timer",
+            "cancel_timer",
+            "list_timers"
         ]
     );
     assert_eq!(first.tool_choice, Some(ToolChoice::Auto));
@@ -320,6 +332,15 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
         .tool(crate::tools::build_panel::BuildPanelTool::new(
             crate::features::panel::channel().0,
         ))
+        .tool(crate::tools::timers::set_timer::SetTimerTool::new(
+            crate::features::timers::channel().0,
+        ))
+        .tool(crate::tools::timers::cancel_timer::CancelTimerTool::new(
+            crate::features::timers::channel().0,
+        ))
+        .tool(crate::tools::timers::list_timers::ListTimersTool::new(
+            crate::features::timers::channel().0,
+        ))
         .build();
 
     let result = Assistant::new(agent)
@@ -340,7 +361,10 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
             "show_panel",
             "close_panel",
             "current_time",
-            "build_panel"
+            "build_panel",
+            "set_timer",
+            "cancel_timer",
+            "list_timers"
         ]
     );
     assert_eq!(requests.len(), 1);

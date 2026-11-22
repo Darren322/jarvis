@@ -135,7 +135,14 @@ async fn the_policy_accepts_close_panel_as_the_runs_one_tool_call() {
     let (succeeded, sent) = beside_a_panel_service(async |panels| {
         show_stats(&panels).await;
         let model = MockCompletionModel::from_stream_turns(turns);
-        let assistant = Assistant::new(register(AgentBuilder::new(model), panels).build());
+        let assistant = Assistant::new(
+            register(
+                AgentBuilder::new(model),
+                panels,
+                crate::features::timers::channel().0,
+            )
+            .build(),
+        );
         assistant
             .respond("You may close the panel.", &[])
             .await

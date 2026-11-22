@@ -4,10 +4,6 @@
 //! "now" takes the instant (unix milliseconds) from its caller, so the timer service
 //! can drive it with an injected clock. Every write is one immediate transaction, so
 //! two callers racing for one timer (confirm against expiry) cannot both win.
-#![expect(
-    dead_code,
-    reason = "the timer service (timers 03) is the first caller"
-)]
 
 use std::time::Duration;
 

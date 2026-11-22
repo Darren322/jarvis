@@ -7,8 +7,8 @@ use rig_core::{
     test_utils::{MockCompletionModel, MockStreamEvent},
 };
 
-use super::{ALLOWED_TOOLS, register};
-use crate::features::panel::channel;
+use super::{ALLOWED_TOOLS, ToolAccess, register};
+use crate::features::{panel, timers};
 
 /// Runs one turn with no Jarvis policy attached, so the request lists every
 /// tool registered with Rig rather than only the allowed ones.
@@ -19,7 +19,12 @@ async fn registered_tools_match_the_allowed_list() {
         MockStreamEvent::final_response(Usage::new()),
     ]]);
     let handle = model.clone();
-    let agent = register(AgentBuilder::new(model), channel().0).build();
+    let agent = register(
+        AgentBuilder::new(model),
+        panel::channel().0,
+        timers::channel().0,
+    )
+    .build();
 
     let mut stream = agent.runner("hello").stream().await;
     while let Some(item) = stream.next().await {
@@ -40,4 +45,34 @@ async fn registered_tools_match_the_allowed_list() {
         "every tool must be both registered in `register` and listed in `ALLOWED_TOOLS`"
     );
     assert_eq!(allowed.len(), ALLOWED_TOOLS.len(), "tool names are unique");
+}
+
+#[test]
+fn eight_tools_are_allowed() {
+    let names: BTreeSet<_> = ALLOWED_TOOLS.iter().map(|rule| rule.name).collect();
+    assert_eq!(
+        names,
+        BTreeSet::from([
+            "build_panel",
+            "cancel_timer",
+            "close_panel",
+            "current_time",
+            "list_timers",
+            "set_timer",
+            "show_panel",
+            "system_status",
+        ])
+    );
+}
+
+#[test]
+fn only_set_timer_needs_approval() {
+    for rule in ALLOWED_TOOLS {
+        let expected = if rule.name == "set_timer" {
+            ToolAccess::NeedsApproval
+        } else {
+            ToolAccess::NoApproval
+        };
+        assert_eq!(rule.access(), expected, "{}", rule.name);
+    }
 }
