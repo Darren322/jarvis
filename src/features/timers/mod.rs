@@ -161,8 +161,9 @@ pub(crate) struct TimersHandle {
 
 impl TimersHandle {
     /// Proposes a timer ending at `ends_at_unix_ms`. It is only `Pending`: it runs
-    /// once confirmed within [`TIMER_CONFIRM_WINDOW`] (D4). Refused with
-    /// `TimerError::LimitReached` when [`MAX_TIMERS`] are already pending or running.
+    /// once confirmed within [`TIMER_CONFIRM_WINDOW`] (D4). It replaces a timer
+    /// still pending (D23), so at most one waits for a yes. Refused with
+    /// `TimerError::LimitReached` when [`MAX_TIMERS`] are already running.
     pub(crate) async fn propose(
         &self,
         label: Option<String>,
@@ -374,11 +375,8 @@ impl TimersInbox {
                 ends_at_unix_ms,
                 reply,
             } => {
-                let result = repository
-                    .insert_pending(label.as_deref(), ends_at_unix_ms, now, MAX_TIMERS)
-                    .await
-                    .map_err(TimerServiceError::from);
-                let _ = reply.send(result);
+                let _ =
+                    reply.send(propose(repository, label.as_deref(), ends_at_unix_ms, now).await);
             }
             Request::Confirm { id, reply } => {
                 let _ = reply.send(self.confirm(repository, id, now).await);
@@ -429,6 +427,28 @@ impl TimersInbox {
             TimerError::Storage(error) => self.report(TimerEvent::Failed(error)),
         }
     }
+}
+
+/// Adds a pending timer, first dropping any timer still waiting for a yes (D23),
+/// so "yes" always means the timer Jarvis asked about last. The replaced one goes
+/// without a word: the new proposal's own line follows.
+async fn propose(
+    repository: &TimersRepository,
+    label: Option<&str>,
+    ends_at_unix_ms: i64,
+    now: i64,
+) -> Result<Timer, TimerServiceError> {
+    for timer in repository.list_shown(now, ENDED_TIMER_SHOWN_FOR).await? {
+        if timer.state == TimerState::Pending {
+            match repository.cancel(timer.id).await {
+                Ok(_) | Err(TimerError::NotInExpectedState { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(repository
+        .insert_pending(label, ends_at_unix_ms, now, MAX_TIMERS)
+        .await?)
 }
 
 async fn reject(repository: &TimersRepository, id: TimerId) -> Result<Timer, TimerServiceError> {

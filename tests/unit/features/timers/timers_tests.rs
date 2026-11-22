@@ -292,6 +292,47 @@ async fn saying_no_drops_a_pending_timer_and_is_refused_for_a_running_one() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_new_proposal_replaces_the_timer_still_waiting_for_a_yes() {
+    let fixture = Fixture::open().await;
+    let service = fixture.start().await;
+    let first = service
+        .handle
+        .propose(Some("First".to_owned()), fixture.now() + MINUTE_MS)
+        .await
+        .expect("proposed");
+    let second = service
+        .handle
+        .propose(Some("Second".to_owned()), fixture.now() + MINUTE_MS)
+        .await
+        .expect("proposed");
+
+    let shown = service
+        .shown_until(|timers| timers.iter().all(|timer| timer.id == second.id))
+        .await;
+    assert_eq!(states(&shown), vec![(Some("Second"), TimerState::Pending)]);
+    let refused = service
+        .handle
+        .confirm(first.id)
+        .await
+        .expect_err("replaced");
+    assert!(
+        matches!(
+            refused,
+            TimerServiceError::Timer(TimerError::NotInExpectedState {
+                found: Some(TimerState::Cancelled),
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    service
+        .handle
+        .confirm(second.id)
+        .await
+        .expect("the newest is confirmed");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_sixth_timer_is_refused_until_one_is_cancelled() {
     let fixture = Fixture::open().await;
     let service = fixture.start().await;

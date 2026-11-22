@@ -61,6 +61,7 @@ Settled with Darren on 2026-11-22.
 | D20 | **"No tools" in D6 means the tool list stays in the request with tool choice `none`**, as on the second turn, so Gemma's prompt cache stays warm (fast-memory 10); a tool call in the answer is rejected and runs nothing. Not a request with no tools listed: that would start this run, and the next question, from a cold cache. (Q25, "lets go with option 1".) |
 | D21 | **Darren picks the timer-ended sound**, a WAV next to the state sounds in `data/sounds/` on the Pi (not in git). Until it is there the cue is a warning and silence. (Q26.) |
 | D22 | **A timer still pending when Jarvis restarts is deleted at start**, with no spoken line; its 30-second window is over. (Q27.) |
+| D23 | **A new proposal replaces a timer still pending**, without a word: at most one timer waits for a yes, so "yes" always means the one Jarvis asked about last. (Settled 2026-11-22, Q28: "yes okay".) Longest timer: 24 hours (`MAX_TIMER_MINUTES` = 1,440), accepted the same day. |
 
 ## Testing Decisions
 

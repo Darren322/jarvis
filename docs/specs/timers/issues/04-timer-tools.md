@@ -1,9 +1,9 @@
 # 04: The three timer tools and the access level on `ToolRule`
 
-Status: ready-for-agent
+Status: in-progress
 Stories: US1, US2, US5, US6
 Blocked by: 03
-Assignee: unassigned
+Assignee: agent:sonnet-04
 Owns: `src/tools/timers/**` (new: `mod.rs`, `set_timer.rs`, `cancel_timer.rs`, `list_timers.rs`, `resolve.rs`), `src/tools/mod.rs`, `src/app.rs` (only creating the service and passing the handle to `tools::register`; no other wiring), `tests/unit/tools/timers/**` (new), `tests/unit/tools/tools_tests.rs`, and, only if their expected tool lists must change to compile or pass, `tests/unit/clients/local_llm_tests.rs` and `tests/unit/features/assistant/*_tests.rs`. `AGENTS.md` is Darren's; propose the trigger-table wording in the Comment (D12).
 Traces to: D2, D3, D4, D5, D10, D12
 
