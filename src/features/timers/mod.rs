@@ -234,6 +234,13 @@ impl TimersHandle {
     }
 }
 
+/// What an interface holds of the timers: the handle that answers and cancels
+/// them, and the events it says while idle.
+pub(crate) struct TimerLink {
+    pub(crate) handle: TimersHandle,
+    pub(crate) events: mpsc::Receiver<TimerEvent>,
+}
+
 /// The timer service, waiting to be run.
 pub(crate) struct TimersInbox {
     requests: mpsc::Receiver<Request>,

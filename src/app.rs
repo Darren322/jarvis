@@ -23,7 +23,7 @@ use crate::features::{
     speech::{CueSounds, SpeechOutput, run_state_cues},
     state::StateFeed,
     stats::{StatsSource, StatsVisibility, machine::SystemMachine, mirror_panel},
-    timers::{self, SystemClock, TimerEvent, TimersInbox},
+    timers::{self, SystemClock, TimerEvent, TimerLink, TimersHandle, TimersInbox},
 };
 use crate::interfaces::cli::{
     diagnostics::error_chain,
@@ -54,8 +54,9 @@ pub struct App {
     panels: PanelHandle,
     /// Taken once by `run`.
     panel_inbox: Mutex<Option<PanelInbox>>,
-    /// Taken once by `run`. The tools hold clones of the handle. The events are
-    /// kept (unread until timers 06 and 08) so the service is never without a listener.
+    /// The handle the REPL answers and cancels timers with; the tools hold clones.
+    timers: TimersHandle,
+    /// Taken once by `run`: the service, and its events for the REPL.
     timers_service: Mutex<Option<(TimersInbox, mpsc::Receiver<TimerEvent>)>>,
     /// The Dashboard's health checks of the two servers on the 16 GB Pi.
     llama_health: HealthCheck,
@@ -80,7 +81,7 @@ impl App {
         let agent = tools::register(
             AgentBuilder::new(local_llm.model()).preamble(SYSTEM_PREAMBLE),
             panels.clone(),
-            timers,
+            timers.clone(),
         )
         .build();
         let assistant = Assistant::new(agent);
@@ -106,6 +107,7 @@ impl App {
             panel_config: config.panel.clone(),
             panels,
             panel_inbox: Mutex::new(Some(panel_inbox)),
+            timers,
             timers_service: Mutex::new(Some((timers_inbox, timer_events))),
             llama_health: HealthCheck::new(&config.local_llm.base_url)?,
             bge_health: HealthCheck::new(&config.embedding.base_url)?,
@@ -251,15 +253,19 @@ impl App {
             .lock()
             .ok()
             .and_then(|mut service| service.take());
+        let (timers_inbox, timer_events) = timers_service.unzip();
         let timers_repository = session.timers_repository();
         let serve_timers = async {
-            let (Some((inbox, events)), Some(repository)) = (timers_service, timers_repository)
-            else {
+            let (Some(inbox), Some(repository)) = (timers_inbox, timers_repository) else {
                 return std::future::pending().await;
             };
-            let _timer_events = events;
             inbox.run(repository, SystemClock).await
         };
+        // The REPL answers timers and says their events while idle (timers 06).
+        let timer_link = timer_events.map(|events| TimerLink {
+            handle: self.timers.clone(),
+            events,
+        });
 
         // Read before the loop borrows the session: the start of the first request,
         // sent ahead so the first question does not wait for a cold read.
@@ -282,6 +288,7 @@ impl App {
                 &mut presenter,
                 self.listener.as_ref(),
                 &self.panels,
+                timer_link,
             ) => result,
             never = serve_orb => match never {},
             never = play_cues => match never {},

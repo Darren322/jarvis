@@ -4,12 +4,13 @@ use tokio::io::AsyncBufRead;
 
 use crate::features::{
     assistant::{Assistant, CacheWarmup},
-    control::{self, Command, MemoryControl, Notice, TapAction, tap_action},
+    control::{self, AnswerOutcome, Command, MemoryControl, Notice, TapAction, tap_action},
     conversation::ConversationSession,
     listening::Listener,
     memory::{MemoryService, RecallMode, wants_memory_search},
     panel::PanelHandle,
     state::AssistantState,
+    timers::{TimerEvent, TimerLink},
 };
 use crate::interfaces::cli::diagnostics::{error_chain, format_first_audio, print_notices};
 use crate::interfaces::cli::input::{Announcements, InputLine, InputReader, Taps, read_input_line};
@@ -39,6 +40,8 @@ type InputFuture<'a> = Pin<Box<dyn Future<Output = io::Result<InputLine>> + 'a>>
 /// `taps` is a second input source beside the typed line (see [`Taps`]); pass
 /// `Taps::none()` for a keyboard-only session. `announcements` are lines from
 /// background features, shown and said while idle (see [`Announcements`]).
+/// `timers`, when given, answers "yes" and "no" for a proposed timer and says its
+/// events while idle (timers 06); pass `None` for a session without timers.
 /// `startup_warmup`, when given, is sent ahead before the first read so the first
 /// question does not wait for a cold read of the prompt (fast-memory 13).
 #[expect(
@@ -57,6 +60,7 @@ pub(crate) async fn run_input_loop<R, S, P>(
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
+    timers: Option<TimerLink>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
@@ -75,6 +79,7 @@ where
         presenter,
         listener,
         panels,
+        timers,
     )
     .await;
     if let Some(speech) = speech.as_mut()
@@ -104,6 +109,7 @@ async fn run_input_loop_inner<R, S, P>(
     presenter: &mut P,
     listener: Option<&Listener>,
     panels: &PanelHandle,
+    mut timers: Option<TimerLink>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     R: AsyncBufRead + Unpin,
@@ -155,9 +161,10 @@ where
                     read_input_line(&mut input).await.map(|line| (line, None))
                 }
             };
-            // Typed input wins over a tap, and both over an announcement. The losers
-            // are safe to drop: a half-read line stays in `input`, idle work commits
-            // each vector on its own, and an unread tap or announcement stays queued.
+            // Typed input wins over a tap, both over an announcement, and all over a
+            // timer event. The losers are safe to drop: a half-read line stays in
+            // `input`, idle work commits each vector on its own, and an unread tap,
+            // announcement or timer event stays queued.
             tokio::select! {
                 biased;
                 read = read => {
@@ -173,6 +180,14 @@ where
                     | TapAction::StopSpeakingThenListen => continue,
                 },
                 notice = announcements.next() => Wake::Announcement(notice),
+                Some(event) = next_timer_event(&mut timers) => match event {
+                    // A storage failure is for the log, not for the speaker.
+                    TimerEvent::Failed(error) => {
+                        eprintln!("Warning: timers: {}", error_chain(&error));
+                        continue;
+                    }
+                    event => Wake::Announcement(control::event_notice(&event)),
+                },
             }
         };
         if let Some(fact) = last_noted.take() {
@@ -236,7 +251,31 @@ where
             InputLine::Eof => return Ok(()),
             InputLine::Rejected(reason) => eprintln!("Input rejected: {}", reason.message()),
             InputLine::Prompt(raw) => {
-                let command = control::parse(raw);
+                let command = match control::parse(raw) {
+                    // "yes" or "no" answers the proposed timer; with none waiting, the
+                    // words are an ordinary prompt (timers D4).
+                    Command::TimerAnswer { answer, text } => {
+                        let outcome = match timers.as_ref() {
+                            Some(link) => control::answer_timer(&link.handle, answer).await,
+                            None => AnswerOutcome::NotForATimer,
+                        };
+                        match outcome {
+                            AnswerOutcome::Answered(notice) => {
+                                presenter.notice(notice.text())?;
+                                if let Some(speech) = available(speech, speech_available) {
+                                    speak_lines(speech, &[notice.text()]).await;
+                                    if speech.is_disabled() {
+                                        speech_available = false;
+                                    }
+                                }
+                                idle_work_due = true;
+                                continue;
+                            }
+                            AnswerOutcome::NotForATimer => Command::Prompt(text),
+                        }
+                    }
+                    command => command,
+                };
                 let recall = recall_mode(&command);
                 match command {
                     Command::Exit => return Ok(()),
@@ -264,6 +303,8 @@ where
                     Command::Show(panel) => {
                         print_notices(&[control::show_panel(panels, panel).await]);
                     }
+                    // Answered before this match; one with no timer became a prompt.
+                    Command::TimerAnswer { .. } => {}
                     Command::Help => println!("{}", control::help_text()),
                     Command::Usage(hint) => println!("{hint}"),
                     Command::Reset => {
@@ -332,6 +373,7 @@ where
                                 text: &prompt,
                                 recall,
                                 filler: next_filler(recall, &mut filler_position),
+                                timers: timers.as_ref().map(|link| &link.handle),
                             },
                         )
                         .await?;
@@ -420,7 +462,17 @@ fn recall_mode(command: &Command) -> RecallMode {
         | Command::Help
         | Command::Memory(_)
         | Command::Remember(_)
-        | Command::Usage(_) => RecallMode::Skip,
+        | Command::Usage(_)
+        | Command::TimerAnswer { .. } => RecallMode::Skip,
+    }
+}
+
+/// The next timer event, or never when this session has no timers. Safe to drop at
+/// any `.await`: an event is only taken when this returns.
+async fn next_timer_event(timers: &mut Option<TimerLink>) -> Option<TimerEvent> {
+    match timers {
+        Some(link) => link.events.recv().await,
+        None => std::future::pending().await,
     }
 }
 

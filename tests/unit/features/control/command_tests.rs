@@ -3,6 +3,7 @@ use orb_protocol::PanelName;
 use crate::storage::{FactId, MemoryId};
 
 use super::{COMMANDS, Command, MemoryCommand, REMEMBER_USAGE, help_text, parse};
+use crate::features::control::timer::TimerAnswer;
 
 const FACT_USAGE: &str =
     "Use /memory forget followed by a fact number from /memory facts. (Memories use /forget <id>.)";
@@ -14,6 +15,13 @@ fn remember(fact: &str) -> Command {
 
 fn memory(command: MemoryCommand) -> Command {
     Command::Memory(command)
+}
+
+fn answer(answer: TimerAnswer, text: &str) -> Command {
+    Command::TimerAnswer {
+        answer,
+        text: text.to_owned(),
+    }
 }
 
 #[rustfmt::skip]
@@ -34,6 +42,18 @@ fn parses_each_command_and_its_nearest_non_command() {
         ("don't close it yet", Command::Prompt("don't close it yet".into())),
         ("close it now", Command::Prompt("close it now".into())),
         ("hide", Command::Prompt("hide".into())),
+        ("yes", answer(TimerAnswer::Yes, "yes")),
+        ("Yes.", answer(TimerAnswer::Yes, "Yes.")),
+        ("  Yes please!  ", answer(TimerAnswer::Yes, "Yes please!")),
+        ("Yeah", answer(TimerAnswer::Yes, "Yeah")),
+        ("set it", answer(TimerAnswer::Yes, "set it")),
+        ("no", answer(TimerAnswer::No, "no")),
+        ("No, thanks.", answer(TimerAnswer::No, "No, thanks.")),
+        ("Nope", answer(TimerAnswer::No, "Nope")),
+        ("don't", answer(TimerAnswer::No, "don't")),
+        ("yes I think the sky is blue", Command::Prompt("yes I think the sky is blue".into())),
+        ("no way that is true", Command::Prompt("no way that is true".into())),
+        ("yes yes", Command::Prompt("yes yes".into())),
         ("bring up the stats", Command::Show(PanelName::Stats)),
         ("Bring up the stats.", Command::Show(PanelName::Stats)),
         ("Okay, bring up the stats again please.", Command::Show(PanelName::Stats)),

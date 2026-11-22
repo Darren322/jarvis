@@ -115,6 +115,7 @@ async fn piped_prompts_run_serially_and_failed_stream_closes_its_visible_line() 
         &mut presenter,
         None,
         &panels,
+        None,
     )
     .await
     .expect("piped input should complete after both serial model runs");
@@ -255,6 +256,7 @@ async fn loop_speaks_only_successful_final_and_keeps_partial_input_after_speech_
         &mut present_answer,
         None,
         &panels,
+        None,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait for speech release: {result:?}"),
@@ -376,6 +378,7 @@ async fn queued_playback_presents_once_and_preserves_partial_input() {
         &mut present_answer,
         None,
         &panels,
+        None,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait while queued speech is active: {result:?}"),
@@ -481,6 +484,7 @@ async fn cancellation_before_playback_presents_the_answer_once() {
         &mut present_answer,
         None,
         &panels,
+        None,
     ));
     tokio::select! {
         result = &mut loop_future => panic!("loop should wait while speech is preparing: {result:?}"),
@@ -800,6 +804,7 @@ async fn run_with_sources(
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
+        None,
     ));
     let user = async {
         script(&mut driver).await;
@@ -1023,6 +1028,7 @@ async fn end_of_input_while_listening_ends_the_loop() {
             &mut presenter,
             harness.listener.as_ref(),
             &harness.panels,
+            None,
         ),
         user
     );
@@ -1774,6 +1780,7 @@ async fn only_a_trigger_prompt_or_slash_recall_searches_memory() {
         &mut presenter,
         None,
         &panels,
+        None,
     )
     .await
     .expect("piped input should complete");
@@ -1847,6 +1854,7 @@ async fn filler_lines_rotate_across_searches_and_a_plain_prompt_does_not_advance
         &mut presenter,
         None,
         &panels,
+        None,
     )
     .await
     .expect("piped input should complete");
@@ -1989,6 +1997,7 @@ async fn run_with_cue_speech(
         &mut presenter,
         harness.listener.as_ref(),
         &harness.panels,
+        None,
     ));
     let user = async {
         script(&mut driver).await;
@@ -2746,4 +2755,98 @@ async fn a_startup_warmup_goes_first_and_the_first_prompt_still_runs() {
             .count(),
         1
     );
+}
+
+/// A timer service on its own temporary database, on the real clock, and the
+/// link the REPL holds. Tests finish well inside a confirmation window.
+async fn timer_link() -> (
+    crate::features::timers::TimerLink,
+    tokio::task::JoinHandle<()>,
+    TempDir,
+) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let archive = ConversationArchive::open(directory.path().join("timers.sqlite3"))
+        .await
+        .expect("archive opens");
+    let repository = archive.timers_repository();
+    let (handle, inbox, events) = crate::features::timers::channel();
+    let task = tokio::spawn(async move {
+        match inbox
+            .run(repository, crate::features::timers::SystemClock)
+            .await {}
+    });
+    (
+        crate::features::timers::TimerLink { handle, events },
+        task,
+        directory,
+    )
+}
+
+#[tokio::test]
+async fn yes_answers_a_pending_timer_without_the_model_and_is_a_prompt_otherwise() {
+    let model = MockCompletionModel::from_stream_turns(vec![vec![
+        MockStreamEvent::text("Yes to what?"),
+        MockStreamEvent::final_response(Usage::new()),
+    ]]);
+    let model_handle = model.clone();
+    let (link, service, _timers_directory) = timer_link().await;
+    let handle = link.handle.clone();
+    let assistant = Assistant::new(
+        crate::tools::register(
+            AgentBuilder::new(model),
+            crate::features::panel::channel().0,
+            handle.clone(),
+        )
+        .build(),
+    );
+    let archive_dir = tempfile::tempdir().expect("temporary archive directory should open");
+    let mut session = ConversationSession::new(archive_dir.path().join("conversation.sqlite3"));
+    assert!(session.reset().await.is_ok());
+    let proposed = handle
+        .propose(
+            Some("Time to sleep".to_owned()),
+            jiff::Timestamp::now().as_millisecond() + 10 * 60_000,
+        )
+        .await
+        .expect("proposed");
+    handle
+        .watch_shown()
+        .wait_for(|timers| timers.iter().any(|timer| timer.id == proposed.id))
+        .await
+        .expect("the service is running");
+
+    let mut speech = None::<FailingSpeech>;
+    // The first "yes" sets the timer; the second has nothing to answer.
+    let mut input = BufReader::new(std::io::Cursor::new(b"Yes.\nyes\n/exit\n"));
+    let mut presenter = TerminalPresenter::with_writer(Vec::new());
+    let panels = crate::features::panel::channel().0;
+    run_input_loop(
+        &assistant,
+        &mut session,
+        None,
+        &mut speech,
+        &mut input,
+        Taps::none(),
+        no_announcements(),
+        None,
+        &mut presenter,
+        None,
+        &panels,
+        Some(link),
+    )
+    .await
+    .expect("piped input should complete");
+    service.abort();
+
+    let output = String::from_utf8(presenter.into_writer()).expect("terminal output is UTF-8");
+    assert!(output.contains("Set. 'Time to sleep' ends at "), "{output}");
+    assert_eq!(model_handle.request_count(), 1, "only the second yes runs");
+    assert_eq!(
+        model_handle.requests()[0].chat_history,
+        vec![user_message("yes")]
+    );
+    assert!(output.contains("Jarvis: Yes to what?"), "{output}");
+    let running = handle.shown();
+    assert_eq!(running.len(), 1);
+    assert_eq!(running[0].state, crate::storage::TimerState::Running);
 }

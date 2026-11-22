@@ -1,5 +1,6 @@
 use orb_protocol::PanelName;
 
+use super::timer::TimerAnswer;
 use crate::storage::{FactId, MemoryId};
 
 /// What one line of user input asks for. Parsed the same way whether it was
@@ -26,6 +27,12 @@ pub(crate) enum Command {
     Remember(String),
     /// A recognized command with unusable arguments; holds the usage hint.
     Usage(&'static str),
+    /// "yes" or "no" on its own (timers D4). It answers the pending timer if there
+    /// is one; otherwise `text` goes to the model as an ordinary prompt.
+    TimerAnswer {
+        answer: TimerAnswer,
+        text: String,
+    },
     Prompt(String),
 }
 
@@ -77,6 +84,7 @@ pub(super) const COMMANDS: &[(&str, &str)] = &[
     ("bring up the stats", "show the stats on the screen (\"show the stats\" works too)"),
     ("show the camera",  "put the camera's live picture on the screen (\"bring up the camera\" works too)"),
     ("close it",         "hide the panel on the screen (\"hide that\" works too)"),
+    ("yes / no",         "set or drop the timer Jarvis just proposed (otherwise sent to the model)"),
     ("/stop",            "stop speaking"),
     ("/help",            "show this list"),
     ("/exit",            "quit"),
@@ -116,6 +124,12 @@ pub(crate) fn parse(input: String) -> Command {
 
     if is_close_phrase(trimmed) {
         return Command::Close;
+    }
+    if let Some(answer) = timer_answer(trimmed) {
+        return Command::TimerAnswer {
+            answer,
+            text: trimmed.to_owned(),
+        };
     }
     if let Some(panel) = shown_by_phrase(trimmed) {
         return Command::Show(panel);
@@ -300,6 +314,40 @@ fn is_unknown_command(trimmed: &str) -> bool {
         && name
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+/// The whole answers that set a proposed timer.
+const YES_PHRASES: &[&str] = &[
+    "yes",
+    "yes please",
+    "yeah",
+    "yep",
+    "yup",
+    "sure",
+    "set it",
+    "do it",
+];
+
+/// The whole answers that drop a proposed timer.
+const NO_PHRASES: &[&str] = &["no", "no thanks", "no thank you", "nope", "don't", "do not"];
+
+/// "yes" or "no" on its own (and their close variants), ignoring case and any
+/// punctuation speech-to-text puts around them ("Yes." "No, thanks."). Anything
+/// more ("yes I think the sky is blue") is left to the model.
+fn timer_answer(trimmed: &str) -> Option<TimerAnswer> {
+    let words: Vec<String> = trimmed
+        .split_whitespace()
+        .map(|word| word.trim_matches(is_punctuation).to_lowercase())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let phrase = words.join(" ");
+    if YES_PHRASES.contains(&phrase.as_str()) {
+        Some(TimerAnswer::Yes)
+    } else if NO_PHRASES.contains(&phrase.as_str()) {
+        Some(TimerAnswer::No)
+    } else {
+        None
+    }
 }
 
 /// "close it" or "hide that", ignoring case and any closing punctuation. Anything

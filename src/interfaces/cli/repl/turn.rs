@@ -1,20 +1,22 @@
 use std::{future::Future, io, pin::Pin, time::Instant};
 
+use jiff::Zoned;
 use tokio::{io::AsyncBufRead, sync::mpsc};
 
 use crate::features::{
     assistant::{Assistant, AssistantTextDelta},
-    control::{TapAction, tap_action},
+    control::{TapAction, proposal_line, tap_action},
     conversation::{ConversationSession, ConversationTurn},
     memory::{MemoryService, RecallMode},
     state::AssistantState,
+    timers::TimersHandle,
 };
 use crate::interfaces::cli::diagnostics::{
     print_run_diagnostics, report_turn_warnings, safe_error_message,
 };
 use crate::interfaces::cli::input::{InputLine, InputReader, Taps, read_input_line};
 use crate::interfaces::cli::presentation::AssistantPresenter;
-use crate::storage::SourceId;
+use crate::storage::{SourceId, TimerId, TimerState};
 
 use super::InputFuture;
 use super::speech::{
@@ -40,6 +42,56 @@ pub(super) struct PromptRequest<'a> {
     /// The line to show (and speak) at once because this run searches; `None` for a
     /// run that skips the search. It is not part of the answer.
     pub(super) filler: Option<&'static str>,
+    /// The timers, when this session has them: a run that proposes one says the
+    /// fixed line instead of the model's reply (timers D16).
+    pub(super) timers: Option<&'a TimersHandle>,
+}
+
+/// Notices a timer proposed during one run (timers D16). From then on the model's
+/// text is still printed and kept, but not spoken: the fixed line is, because it is
+/// what Darren says "yes" to.
+struct Proposal<'a> {
+    timers: Option<&'a TimersHandle>,
+    /// The timer already pending when the run started; it is not this run's.
+    before: Option<TimerId>,
+    line: Option<String>,
+}
+
+impl<'a> Proposal<'a> {
+    fn new(timers: Option<&'a TimersHandle>) -> Self {
+        Self {
+            timers,
+            before: timers.and_then(pending).map(|timer| timer.id),
+            line: None,
+        }
+    }
+
+    /// The fixed line, the first time a timer this run proposed is seen; `None`
+    /// before that and after.
+    fn newly_proposed(&mut self) -> Option<String> {
+        if self.line.is_some() {
+            return None;
+        }
+        let timer = self.timers.and_then(pending)?;
+        if Some(timer.id) == self.before {
+            return None;
+        }
+        let line = proposal_line(&timer, &Zoned::now());
+        self.line = Some(line.clone());
+        Some(line)
+    }
+
+    fn is_proposed(&self) -> bool {
+        self.line.is_some()
+    }
+}
+
+/// The timer waiting for a yes, if any (timers D23 keeps it to one).
+fn pending(timers: &TimersHandle) -> Option<crate::storage::Timer> {
+    timers
+        .shown()
+        .into_iter()
+        .find(|timer| timer.state == TimerState::Pending)
 }
 
 /// What the loop needs to know about a finished prompt.
@@ -97,13 +149,14 @@ impl TextStream<'_> {
     async fn land<P: AssistantPresenter>(
         &mut self,
         presenter: &mut P,
+        proposal: &mut Proposal<'_>,
         warming: Warming<'_>,
     ) -> io::Result<FinishedTurn> {
         loop {
             match self.next().await {
                 StreamItem::Delta(delta) => presenter.delta(&delta.text)?,
                 StreamItem::Done(turn) => {
-                    return complete_turn(*turn, self, presenter, None, warming);
+                    return complete_turn(*turn, self, presenter, None, proposal, warming);
                 }
             }
         }
@@ -171,7 +224,9 @@ where
         text: prompt,
         recall,
         filler,
+        timers,
     } = request;
+    let mut proposal = Proposal::new(timers);
     let prompt_started = Instant::now();
     warmup.cancel();
     presenter.state(AssistantState::Thinking)?;
@@ -269,7 +324,12 @@ where
                     if let Err(error) = presenter.delta(&delta.text) {
                         break SpeechExit::Io(error);
                     }
-                    answer.feed.feed_text(&delta.text);
+                    if let Some(line) = proposal.newly_proposed() {
+                        answer.feed.feed_line(&line);
+                    }
+                    if !proposal.is_proposed() {
+                        answer.feed.feed_text(&delta.text);
+                    }
                 }
                 Event::Text(StreamItem::Done(turn)) => {
                     let end = match complete_turn(
@@ -277,6 +337,7 @@ where
                         &mut text,
                         presenter,
                         Some(&mut answer.feed),
+                        &mut proposal,
                         Warming {
                             assistant,
                             task: &mut *warmup,
@@ -313,6 +374,7 @@ where
                             let end = text
                                 .land(
                                     presenter,
+                                    &mut proposal,
                                     Warming {
                                         assistant,
                                         task: &mut *warmup,
@@ -374,6 +436,7 @@ where
                     let end = text
                         .land(
                             presenter,
+                            &mut proposal,
                             Warming {
                                 assistant,
                                 task: &mut *warmup,
@@ -409,6 +472,7 @@ where
                         &mut text,
                         presenter,
                         None,
+                        &mut proposal,
                         Warming {
                             assistant,
                             task: &mut *warmup,
@@ -461,20 +525,30 @@ struct FinishedTurn {
 
 /// Handles the response completing: shows the text still buffered, tells speech the
 /// text is complete (only for a successful run), starts the cache warm-up the turn
-/// asked for, then prints the result.
+/// asked for, then prints the result. After a run that proposed a timer, the fixed
+/// line is spoken in place of the rest of the reply and printed after it (D16).
 fn complete_turn<P>(
     turn: ConversationTurn,
     text: &mut TextStream<'_>,
     presenter: &mut P,
     mut speech_text: Option<&mut ChunkFeed>,
+    proposal: &mut Proposal<'_>,
     warming: Warming<'_>,
 ) -> io::Result<FinishedTurn>
 where
     P: AssistantPresenter,
 {
+    // A run whose reply had no text (or a timer seen only now) still says the line.
+    if let Some(line) = proposal.newly_proposed()
+        && let Some(feed) = speech_text.as_deref_mut()
+    {
+        feed.feed_line(&line);
+    }
     while let Ok(delta) = text.deltas.try_recv() {
         presenter.delta(&delta.text)?;
-        if let Some(feed) = speech_text.as_deref_mut() {
+        if let Some(feed) = speech_text.as_deref_mut()
+            && !proposal.is_proposed()
+        {
             feed.feed_text(&delta.text);
         }
     }
@@ -513,6 +587,10 @@ where
             );
             print_run_diagnostics(&error.report);
         }
+    }
+    // Shown whether or not the run succeeded: the timer waits for a yes either way.
+    if let Some(line) = proposal.line.as_deref() {
+        presenter.notice(line)?;
     }
     Ok(FinishedTurn {
         succeeded,

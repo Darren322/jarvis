@@ -291,6 +291,7 @@ async fn run_request(
             text: "a question",
             recall,
             filler,
+            timers: None,
         },
     )
     .await
@@ -653,6 +654,7 @@ async fn a_terminal_failure_mid_stream_cancels_speech_and_stops_the_run() {
             text: "a question",
             recall: RecallMode::Skip,
             filler: None,
+            timers: None,
         },
     )
     .await;
@@ -955,6 +957,7 @@ async fn a_turn_that_trims_the_history_starts_a_warm_up_and_the_next_model_run_s
                 text: "a question",
                 recall: RecallMode::Skip,
                 filler: None,
+                timers: None,
             },
         )
         .await
@@ -1002,4 +1005,82 @@ async fn a_warm_up_still_running_when_the_loop_ends_is_stopped() {
     drop(warmup);
     let_background_tasks_run().await;
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
+}
+
+/// A timer service on its own temporary database, on the real clock.
+async fn timers_service() -> (
+    crate::features::timers::TimersHandle,
+    tokio::task::JoinHandle<()>,
+    tempfile::TempDir,
+) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let archive =
+        crate::storage::ConversationArchive::open(directory.path().join("timers.sqlite3"))
+            .await
+            .expect("archive opens");
+    let repository = archive.timers_repository();
+    let (handle, inbox, _events) = crate::features::timers::channel();
+    let task = tokio::spawn(async move {
+        match inbox
+            .run(repository, crate::features::timers::SystemClock)
+            .await {}
+    });
+    (handle, task, directory)
+}
+
+/// Proposes a timer and waits until the shown timers carry it.
+async fn propose(timers: &crate::features::timers::TimersHandle, label: &str) {
+    let timer = timers
+        .propose(
+            Some(label.to_owned()),
+            jiff::Timestamp::now().as_millisecond() + 10 * 60_000,
+        )
+        .await
+        .expect("proposed");
+    timers
+        .watch_shown()
+        .wait_for(|shown| shown.iter().any(|shown| shown.id == timer.id))
+        .await
+        .expect("the service is running");
+}
+
+#[tokio::test]
+async fn a_timer_proposed_during_the_run_gives_the_fixed_line_once() {
+    let (timers, service, _directory) = timers_service().await;
+    let mut proposal = super::Proposal::new(Some(&timers));
+    assert_eq!(proposal.newly_proposed(), None, "nothing proposed yet");
+    assert!(!proposal.is_proposed());
+
+    propose(&timers, "Time to sleep").await;
+
+    let line = proposal
+        .newly_proposed()
+        .expect("the run's proposal is seen");
+    assert!(line.starts_with("Set 'Time to sleep' for "), "{line}");
+    assert!(line.ends_with("? Say yes or tap Set."), "{line}");
+    assert!(proposal.is_proposed());
+    assert_eq!(proposal.newly_proposed(), None, "said once");
+    service.abort();
+}
+
+#[tokio::test]
+async fn a_timer_already_pending_before_the_run_is_not_its_proposal() {
+    let (timers, service, _directory) = timers_service().await;
+    propose(&timers, "Earlier").await;
+
+    let mut proposal = super::Proposal::new(Some(&timers));
+
+    assert_eq!(proposal.newly_proposed(), None);
+    // A new one in this run replaces it (D23) and is this run's.
+    propose(&timers, "Now").await;
+    let line = proposal.newly_proposed().expect("the new proposal is seen");
+    assert!(line.contains("'Now'"), "{line}");
+    service.abort();
+}
+
+#[test]
+fn a_session_without_timers_never_proposes() {
+    let mut proposal = super::Proposal::new(None);
+    assert_eq!(proposal.newly_proposed(), None);
+    assert!(!proposal.is_proposed());
 }
