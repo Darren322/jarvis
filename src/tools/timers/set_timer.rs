@@ -130,20 +130,21 @@ impl Tool for SetTimerTool {
     type Output = Value;
     type Error = TimerToolError;
 
+    /// Says only when to call it and how to fill the arguments. What to say afterwards
+    /// is in the result's `note`: with "say ..." lines here, Gemma said them without
+    /// calling the tool (seen on the Pi on 2026-11-26). D4 holds either way, because
+    /// this tool can only propose.
     fn description(&self) -> String {
         format!(
-            "Proposes a timer, for a length of time (\"set a timer for 10 minutes\", \"put a \
-             10-minute timer on the screen\", \"in 25 minutes, time to do work\") or for a clock \
-             time (\"set a timer for 11 pm, time to sleep\"). Give `label` when the user says \
-             what the timer is for, in a few words (\"Time to sleep\", \"Time to do work\"), and \
-             leave it out otherwise. Give exactly one of `minutes` (a whole number from \
-             {MIN_TIMER_MINUTES} to {MAX_TIMER_MINUTES}, for a length of time), `seconds` (only \
-             when the user says seconds, as in \"set a timer for 30 seconds\") or `at` (a \
-             24-hour HH:MM clock time: turn \"11 pm\" into \"23:00\" and \"7:30 am\" into \
-             \"07:30\"). Call this tool for every timer the user asks for, however short or \
-             long: it says what can be set. This only proposes the timer. It is NOT set until the user says yes or \
-             taps Set, so never say it is set: say the time this tool returns and that you are \
-             waiting for their yes. If the tool says no more timers can be added, say so."
+            "Puts a timer on the screen, where it waits for the user's yes. Use it for every \
+             request to set a timer, and never answer one without it: \"set a timer for 10 \
+             minutes\", \"put a 10-minute timer on the screen\", \"in 25 minutes, time to do \
+             work\", \"set a timer for 30 seconds\", \"set a timer for 11 pm, time to sleep\". \
+             Give `label` when the user says what the timer is for, in a few words (\"Time to \
+             sleep\", \"Time to do work\"), and leave it out otherwise. Give exactly one of \
+             `minutes` (a whole number from {MIN_TIMER_MINUTES} to {MAX_TIMER_MINUTES}), \
+             `seconds` (only when the user says seconds) or `at` (a 24-hour HH:MM clock time: \
+             turn \"11 pm\" into \"23:00\" and \"7:30 am\" into \"07:30\")."
         )
     }
 

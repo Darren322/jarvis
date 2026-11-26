@@ -104,18 +104,24 @@ fn the_name_schema_and_description_are_for_the_model() {
 
     let description = tool.description();
     for phrase in [
+        "Use it for every request to set a timer, and never answer one without it",
         "set a timer for 10 minutes",
         "10-minute timer on the screen",
         "in 25 minutes, time to do work",
+        "set a timer for 30 seconds",
         "set a timer for 11 pm, time to sleep",
         "\"23:00\"",
         "1 to 1440",
-        "set a timer for 30 seconds",
-        "Call this tool for every timer the user asks for, however short or long",
-        "NOT set until the user says yes or taps Set",
-        "never say it is set",
     ] {
         assert!(description.contains(phrase), "{phrase}: {description}");
+    }
+    // What to say after the call is in the result's note: Gemma said such lines
+    // without calling the tool.
+    for instruction in ["never say", "say the", "say so", "waiting for"] {
+        assert!(
+            !description.contains(instruction),
+            "{instruction}: {description}"
+        );
     }
 }
 
