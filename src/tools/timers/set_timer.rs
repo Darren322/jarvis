@@ -108,22 +108,51 @@ impl SetTimerTool {
     }
 }
 
-/// The label trimmed; none when it is empty. Refused when it has more than
-/// [`MAX_TIMER_LABEL_CHARS`] characters, so one stored label can never make
-/// the screen's `timers` message unsendable.
+/// The label trimmed, with a capital first letter; none when it is empty or only
+/// restates the time ("11 pm", "10 minutes"), which Gemma sends when the user gave
+/// no reason (seen on the Pi on 2026-11-26). Refused when it has more than
+/// [`MAX_TIMER_LABEL_CHARS`] characters, so one stored label can never make the
+/// screen's `timers` message unsendable.
 fn clean_label(label: Option<String>) -> Result<Option<String>, TimerToolError> {
     let Some(label) = label else {
         return Ok(None);
     };
     let label = label.trim();
-    if label.is_empty() {
+    if label.is_empty() || only_restates_the_time(label) {
         return Ok(None);
     }
+    let mut letters = label.chars();
+    let label: String = letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default();
+    // Counted after the capital, which can be longer ("ß" becomes "SS").
     let chars = label.chars().count();
     if chars > MAX_TIMER_LABEL_CHARS {
         return Err(TimerToolError::LabelTooLong { chars });
     }
-    Ok(Some(label.to_owned()))
+    Ok(Some(label))
+}
+
+/// Words that say how long or when, and nothing about what the timer is for.
+const TIME_WORDS: &[&str] = &[
+    "a", "an", "at", "for", "in", "timer", "minute", "minutes", "min", "mins", "second", "seconds",
+    "sec", "secs", "hour", "hours", "half", "am", "pm", "o", "clock", "oclock", "one", "two",
+    "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "fifteen",
+    "twenty", "thirty", "forty", "fifty", "sixty",
+];
+
+/// Whether every word of `label` is a number or a [`TIME_WORDS`] word.
+fn only_restates_the_time(label: &str) -> bool {
+    label
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .all(|word| {
+            word.bytes().all(|byte| byte.is_ascii_digit())
+                || TIME_WORDS
+                    .iter()
+                    .any(|time_word| word.eq_ignore_ascii_case(time_word))
+        })
 }
 
 impl Tool for SetTimerTool {

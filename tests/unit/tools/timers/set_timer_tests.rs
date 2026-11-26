@@ -257,7 +257,7 @@ async fn a_label_of_60_characters_is_proposed_and_one_of_61_is_refused_first() {
         .await
         .expect_err("61 characters are refused");
 
-    assert_eq!(kept["label"], json!(at_limit));
+    assert_eq!(kept["label"], json!(format!("É{}", "é".repeat(59))));
     assert!(
         matches!(error, TimerToolError::LabelTooLong { chars: 61 }),
         "{error:?}"
@@ -291,6 +291,44 @@ async fn a_blank_label_is_no_label_and_a_label_is_trimmed() {
 
     assert_eq!(blank["label"], Value::Null);
     assert_eq!(padded["label"], "Tea");
+}
+
+#[tokio::test]
+async fn a_label_that_only_restates_the_time_is_dropped_and_a_kept_one_starts_with_a_capital() {
+    let service = Service::start().await;
+    let tool = SetTimerTool::new(service.handle.clone());
+    // Labels Gemma sent when the user gave no reason (seen on the Pi).
+    let cases = [
+        ("11 pm", None),
+        ("10 minutes", None),
+        ("11:00 PM", None),
+        ("ten minutes", None),
+        ("a 10-minute timer", None),
+        ("Timer", None),
+        ("time to sleep", Some("Time to sleep")),
+        ("Time to do work", Some("Time to do work")),
+        ("call mum at 5", Some("Call mum at 5")),
+        ("éclair", Some("Éclair")),
+    ];
+    // 60 characters, but 61 once "ß" is capitalised as "SS".
+    let error = tool
+        .propose(
+            &now(),
+            args(json!({"label": format!("ß{}", "a".repeat(59)), "minutes": 5})),
+        )
+        .await
+        .expect_err("61 characters with the capital");
+    assert!(
+        matches!(error, TimerToolError::LabelTooLong { chars: 61 }),
+        "{error:?}"
+    );
+    for (label, expected) in cases {
+        let proposed = tool
+            .propose(&now(), args(json!({"label": label, "minutes": 5})))
+            .await
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(proposed["label"], json!(expected), "{label}");
+    }
 }
 
 #[tokio::test]
