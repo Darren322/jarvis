@@ -1,7 +1,7 @@
 # Timers
 
 Status: active
-Resume here: tickets 01 to 09 were written on 2026-11-22 and are `ready-for-agent` (03 and 08 the coordinator's). Further Notes' ticket 7 became 05 (protocol) and 07 (Rust side). Two chains can start at once: 01 (Sonnet) and 05 (Sonnet); 09 (Opus, UI) follows 05. Darren still has to pick the timer-ended WAV (D21).
+Resume here: as of 2026-11-26, 01 to 05 are done, and 06, 07, 08 and 09 are `in-review`. Everything through `1ee0f4c` is on the 8 GB Pi (copied as a git bundle, not pushed; schema v7; backup `data/jarvis.sqlite3.bak-2026-11-26`). Next: Darren's checks on the Pi: the T1 to T5 sentences by voice, the strip and the narrowed Panel by eye, the time from a proposal to his "yes" (06), and a tap on Set, Cancel and an ended row (07). The timer-ended sound stays silent until Darren picks a WAV (D21): drop it in `data/sounds/timer_ended.wav` on the Pi and restart Jarvis.
 
 Written 2026-11-22 from Darren's decisions (grilling on jarvis-ui ticket 17, rounds Q1 to Q20; "Sure no problem"). Replaces [jarvis-ui 17](../jarvis-ui/issues/17-timer-panel.md). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
