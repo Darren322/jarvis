@@ -161,7 +161,7 @@ fn each_timer_event_has_its_reaction() {
                 late_by: None,
             },
             TimerReaction::Remind(
-                "My timer 'Time to sleep', set at 6:00 pm, has just ended. Remind me in a sentence or two."
+                "My timer 'Time to sleep', set at 6:00 pm, has just ended. Tell me now that it is up and what it was for, in a sentence or two."
                     .to_owned(),
             ),
         ),
@@ -171,7 +171,7 @@ fn each_timer_event_has_its_reaction() {
                 late_by: Some(Duration::from_secs(40 * 60 + 59)),
             },
             TimerReaction::Remind(
-                "My timer, set at 6:00 pm, ended 40 minutes ago, while you were off. Remind me in a sentence or two."
+                "My timer, set at 6:00 pm, ended 40 minutes ago, while you were off. Tell me now that it is up, in a sentence or two."
                     .to_owned(),
             ),
         ),
@@ -181,7 +181,7 @@ fn each_timer_event_has_its_reaction() {
                 late_by: Some(Duration::from_secs(59)),
             },
             TimerReaction::Remind(
-                "My timer 'Time to sleep', set at 6:00 pm, ended less than a minute ago, while you were off. Remind me in a sentence or two."
+                "My timer 'Time to sleep', set at 6:00 pm, ended less than a minute ago, while you were off. Tell me now that it is up and what it was for, in a sentence or two."
                     .to_owned(),
             ),
         ),

@@ -207,10 +207,20 @@ pub(crate) fn react_to(event: &TimerEvent, now: &Zoned) -> TimerReaction {
 /// The prompt of a timer's reminder run (D6): Jarvis's own line, sent in the
 /// user's turn, with the label and when the timer was set; a late one says how
 /// late (D9). It is archived and joins the history like any prompt.
+///
+/// It asks to be told the timer is up, never to "remind me": Gemma read "Remind
+/// me in a sentence or two" as a request for a future reminder and answered that
+/// it could not remind proactively (seen on the Pi on 2026-11-26).
 pub(crate) fn reminder_prompt(timer: &Timer, late_by: Option<Duration>, now: &Zoned) -> String {
-    let what = match timer.label.as_deref().map(str::trim) {
-        Some(label) if !label.is_empty() => format!("My timer '{label}'"),
-        _ => "My timer".to_owned(),
+    let (what, ask) = match timer.label.as_deref().map(str::trim) {
+        Some(label) if !label.is_empty() => (
+            format!("My timer '{label}'"),
+            "Tell me now that it is up and what it was for, in a sentence or two.",
+        ),
+        _ => (
+            "My timer".to_owned(),
+            "Tell me now that it is up, in a sentence or two.",
+        ),
     };
     let set = Timestamp::from_millisecond(timer.created_at_unix_ms)
         .map(|set| {
@@ -222,7 +232,7 @@ pub(crate) fn reminder_prompt(timer: &Timer, late_by: Option<Duration>, now: &Zo
         None => "has just ended".to_owned(),
         Some(late_by) => format!("ended {} ago, while you were off", minutes_ago(late_by)),
     };
-    format!("{what}{set} {ended}. Remind me in a sentence or two.")
+    format!("{what}{set} {ended}. {ask}")
 }
 
 /// "40 minutes", "1 minute", or "less than a minute".
