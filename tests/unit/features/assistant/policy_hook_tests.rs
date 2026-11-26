@@ -388,6 +388,29 @@ async fn a_registered_tool_missing_from_the_allowed_list_is_never_offered_or_run
 }
 
 #[tokio::test]
+async fn a_run_with_a_tool_required_asks_for_a_call_first_and_text_after_it() {
+    let outcome = run_with(
+        vec![turn([status_call("call-1")]), text("Done, sir.")],
+        false,
+        ToolUse::Required,
+    )
+    .await;
+
+    let run = outcome
+        .result
+        .expect("the tool runs and the answer follows");
+    assert_eq!(run.response.output, "Done, sir.");
+    assert_eq!(outcome.executions, 1);
+    let [first, second] = outcome.requests.as_slice() else {
+        panic!("expected exactly two model requests");
+    };
+    // Listed as on every request, so the prompt stays cached.
+    assert_eq!(first.tools.len(), crate::tools::ALLOWED_TOOLS.len());
+    assert_eq!(first.tool_choice, Some(ToolChoice::Required));
+    assert_eq!(second.tool_choice, Some(ToolChoice::None));
+}
+
+#[tokio::test]
 async fn a_run_with_tools_forbidden_lists_every_tool_and_answers_in_text() {
     let outcome = run_with(vec![text("Time to sleep, sir.")], false, ToolUse::Forbidden).await;
 

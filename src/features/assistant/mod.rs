@@ -86,6 +86,11 @@ pub(crate) struct AssistantTextDelta {
 pub(crate) enum ToolUse {
     /// A prompt from Darren: the model may call one tool on its first turn.
     Offered,
+    /// A prompt from Darren that asks about timers: the first turn must call a
+    /// tool. Gemma often said "I have set a timer" without calling `set_timer`
+    /// (seen on the Pi on 2026-11-26). It forces a call, never which tool, and
+    /// grants nothing `Offered` does not.
+    Required,
     /// A run Jarvis starts on its own, such as a timer's reminder (timers D20):
     /// the answer is text only, so nothing in it can make Jarvis act.
     Forbidden,

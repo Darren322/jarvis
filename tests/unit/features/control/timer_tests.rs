@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 
 use super::{
     AnswerOutcome, REJECTED_LINE, TimerAnswer, TimerReaction, TimerTap, answer_tap, answer_timer,
-    cancelled_line, expired_line, proposal_line, react_to, set_line,
+    cancelled_line, expired_line, mentions_timer, proposal_line, react_to, set_line,
 };
 use crate::features::control::Notice;
 use crate::features::timers::{TimerEvent, TimersHandle, WallClock, channel};
@@ -470,5 +470,30 @@ async fn yes_at_30_seconds_sets_the_timer_and_just_after_is_for_the_model() {
             service.handle.confirm(proposed.id).await.is_err(),
             "after {waited_ms} ms the timer is no longer pending"
         );
+    }
+}
+
+#[test]
+fn a_prompt_mentions_a_timer_when_timer_or_timers_is_a_whole_word() {
+    let mentions = [
+        "Jarvis, set a timer for 2 minutes",
+        "Chubbies, set a timer for 2 minutes.",
+        "put a 10-minute TIMER on the screen",
+        "what timers do I have?",
+        "cancel the timer",
+        "Timer: 5 minutes",
+        "the egg-timers",
+    ];
+    let does_not = [
+        "What time is it?",
+        "set an alarm",
+        "timeranger is a word",
+        "",
+    ];
+    for text in mentions {
+        assert!(mentions_timer(text), "{text:?}");
+    }
+    for text in does_not {
+        assert!(!mentions_timer(text), "{text:?}");
     }
 }

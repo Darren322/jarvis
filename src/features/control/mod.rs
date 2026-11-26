@@ -19,7 +19,8 @@ pub(crate) use memory::MemoryControl;
 pub(crate) use panel::{close_panel, show_panel};
 pub(crate) use tap::{Tap, TapAction, tap_action};
 pub(crate) use timer::{
-    AnswerOutcome, TimerReaction, TimerTap, answer_tap, answer_timer, proposal_line, react_to,
+    AnswerOutcome, TimerReaction, TimerTap, answer_tap, answer_timer, mentions_timer,
+    proposal_line, react_to,
 };
 
 /// One user-facing line produced by a command.

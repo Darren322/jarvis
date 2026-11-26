@@ -28,6 +28,7 @@ impl AgentHook for JarvisPolicyHook {
             1 => {
                 let choice = match self.tools {
                     ToolUse::Offered => ToolChoice::Auto,
+                    ToolUse::Required => ToolChoice::Required,
                     ToolUse::Forbidden => ToolChoice::None,
                 };
                 let patch = RequestPatch::new()
@@ -60,7 +61,7 @@ impl AgentHook for JarvisPolicyHook {
         event: rig_agent::agent::ModelTurnFinished<'_>,
     ) -> rig_agent::agent::ModelTurnAction {
         let policy_turn = match (event.turn, self.tools) {
-            (1, ToolUse::Offered) => PolicyTurn::Initial,
+            (1, ToolUse::Offered | ToolUse::Required) => PolicyTurn::Initial,
             (1, ToolUse::Forbidden) => PolicyTurn::ToolsForbidden,
             (2, _) => PolicyTurn::AfterTool,
             _ => return ModelTurnAction::stop("Unexpected model turn"),

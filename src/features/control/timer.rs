@@ -142,6 +142,14 @@ fn refusal_notice(error: &TimerServiceError) -> Option<Notice> {
 pub(crate) const REJECTED_LINE: &str = "Okay, no timer.";
 
 /// Said in place of the model's reply after a run that proposed `timer` (D4, D16).
+/// Whether `text` is about timers, so its run must call a tool
+/// ([`crate::features::assistant::ToolUse::Required`]). A whole-word match on
+/// "timer" or "timers" in any case.
+pub(crate) fn mentions_timer(text: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("timer") || word.eq_ignore_ascii_case("timers"))
+}
+
 pub(crate) fn proposal_line(timer: &Timer, now: &Zoned) -> String {
     match when(timer, now) {
         Some(when) => format!("Set {} for {when}? Say yes or tap Set.", name(timer)),

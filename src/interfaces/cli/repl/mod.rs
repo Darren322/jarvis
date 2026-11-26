@@ -427,7 +427,11 @@ where
                                 recall,
                                 filler: next_filler(recall, &mut filler_position),
                                 timers: timers.as_ref().map(|link| &link.handle),
-                                tools: ToolUse::Offered,
+                                tools: if control::mentions_timer(&prompt) {
+                                    ToolUse::Required
+                                } else {
+                                    ToolUse::Offered
+                                },
                             },
                         )
                         .await?;
