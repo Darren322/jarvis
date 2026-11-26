@@ -343,8 +343,15 @@ impl SpeechOutput {
             .as_ref()
             .is_some_and(AudioPlayer::has_device_failed)
         {
-            self.count_failure_and_reset_player();
-            return Err(SpeechError::PlaybackDeviceFailed);
+            // The device went away since the last answer: on the Pi the USB speaker
+            // drops off the bus and comes back (8 times in 3 days, seen 2026-11-26).
+            // Open it again now, so this answer is heard instead of lost; a device
+            // that is still gone fails here, and that counts as the one failure.
+            if let Some(player) = self.player.as_mut() {
+                player.stop();
+            }
+            self.player = None;
+            self.ensure_player().await?;
         }
 
         self.active = Some(ActiveSpeech {
