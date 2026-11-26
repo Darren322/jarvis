@@ -1,7 +1,7 @@
 # Timers
 
 Status: active
-Resume here: as of 2026-11-26, 01 to 05 are done, and 06, 07, 08 and 09 are `in-review`. Everything through `1ee0f4c` is on the 8 GB Pi (copied as a git bundle, not pushed; schema v7; backup `data/jarvis.sqlite3.bak-2026-11-26`). Next: Darren's checks on the Pi: the T1 to T5 sentences by voice, the strip and the narrowed Panel by eye, the time from a proposal to his "yes" (06), and a tap on Set, Cancel and an ended row (07). The timer-ended sound stays silent until Darren picks a WAV (D21): drop it in `data/sounds/timer_ended.wav` on the Pi and restart Jarvis.
+Resume here: as of 2026-11-26, 01 to 05 are done, and 06 to 09 are `in-review`. Everything through `9d31243` is on the 8 GB Pi (schema v7; backup `data/jarvis.sqlite3.bak-2026-11-26`). On Darren's first try the model never called `set_timer`. Three fixes followed, measured on the Pi; see the 2026-11-26 Comment in ticket 04. Next: Darren's checks by voice and eye: T1 to T5, "yes" within 30 s (06), taps on Set, Cancel and an ended row (07), the strip and the narrowed Panel (09), and the reminder when a timer ends (08). The timer-ended sound stays silent until Darren picks a WAV (D21).
 
 Written 2026-11-22 from Darren's decisions (grilling on jarvis-ui ticket 17, rounds Q1 to Q20; "Sure no problem"). Replaces [jarvis-ui 17](../jarvis-ui/issues/17-timer-panel.md). Tickets are in `issues/`; their `Status:` lines are the progress record.
 
