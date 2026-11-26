@@ -15,13 +15,15 @@ fn args(value: Value) -> SetTimerArgs {
 }
 
 #[test]
-fn exactly_one_of_minutes_or_at_is_accepted_with_an_optional_label() {
+fn exactly_one_of_minutes_seconds_or_at_is_accepted_with_an_optional_label() {
     let accepted = [
         json!({"minutes": 10}),
         json!({"at": "23:00"}),
         json!({"label": "Time to do work", "minutes": 25}),
         json!({"label": "Time to sleep", "at": "23:00"}),
         json!({"label": null, "minutes": 5}),
+        json!({"seconds": 5}),
+        json!({"label": "Tea", "seconds": 90}),
     ];
     let rejected = [
         json!({}),
@@ -33,6 +35,11 @@ fn exactly_one_of_minutes_or_at_is_accepted_with_an_optional_label() {
         json!({"minutes": 2.5}),
         json!({"at": 2300}),
         json!({"minutes": 10, "extra": 1}),
+        json!({"minutes": 1, "seconds": 60}),
+        json!({"seconds": 30, "at": "23:00"}),
+        json!({"minutes": 1, "seconds": 60, "at": "23:00"}),
+        json!({"seconds": "5"}),
+        json!({"seconds": 2.5}),
         json!(null),
         json!([]),
     ];
@@ -54,8 +61,9 @@ fn exactly_one_of_minutes_or_at_is_accepted_with_an_optional_label() {
 }
 
 #[test]
-fn the_arguments_say_which_of_minutes_or_at_was_given() {
+fn the_arguments_say_which_of_minutes_seconds_or_at_was_given() {
     assert_eq!(args(json!({"minutes": 10})).when, TimerWhen::InMinutes(10));
+    assert_eq!(args(json!({"seconds": 5})).when, TimerWhen::InSeconds(5));
     assert_eq!(
         args(json!({"at": "23:00"})).when,
         TimerWhen::AtClock("23:00".to_owned())
@@ -78,10 +86,11 @@ fn the_name_schema_and_description_are_for_the_model() {
     let properties = schema["properties"].as_object().expect("properties");
     assert_eq!(
         properties.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["at", "label", "minutes"]
+        ["at", "label", "minutes", "seconds"]
     );
     assert_eq!(properties["label"]["type"], "string");
     assert_eq!(properties["minutes"]["type"], "integer");
+    assert_eq!(properties["seconds"]["type"], "integer");
     assert_eq!(properties["at"]["type"], "string");
     assert!(
         schema.get("required").is_none(),
@@ -101,6 +110,8 @@ fn the_name_schema_and_description_are_for_the_model() {
         "set a timer for 11 pm, time to sleep",
         "\"23:00\"",
         "1 to 1440",
+        "set a timer for 30 seconds",
+        "Call this tool for every timer the user asks for, however short or long",
         "NOT set until the user says yes or taps Set",
         "never say it is set",
     ] {
@@ -290,6 +301,39 @@ async fn minutes_of_1_and_1440_are_proposed_and_0_and_1441_are_refused_without_a
         |timer: &Timer| timer.ends_at_unix_ms - timer.created_at_unix_ms == 1440 * 60_000;
     let shown = service
         .shown_until(|timers| timers.iter().any(lasts_a_day))
+        .await;
+    assert_eq!(shown.len(), 1);
+}
+
+#[tokio::test]
+async fn sixty_seconds_is_proposed_as_a_minute_and_five_seconds_is_refused_without_a_timer() {
+    let service = Service::start().await;
+    let tool = SetTimerTool::new(service.handle.clone());
+
+    let error = tool
+        .propose(&now(), args(json!({"seconds": 5})))
+        .await
+        .expect_err("under a minute");
+    assert!(
+        matches!(
+            error,
+            TimerToolError::Resolve(ResolveError::NotWholeMinutes { seconds: 5 })
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("the shortest timer is 1 minute"),
+        "{error}"
+    );
+    assert!(service.handle.shown().is_empty(), "nothing was created");
+
+    tool.propose(&now(), args(json!({"seconds": 60})))
+        .await
+        .expect("a whole minute is proposed");
+    let lasts_a_minute =
+        |timer: &Timer| timer.ends_at_unix_ms - timer.created_at_unix_ms == MINUTE_MS;
+    let shown = service
+        .shown_until(|timers| timers.iter().any(lasts_a_minute))
         .await;
     assert_eq!(shown.len(), 1);
 }

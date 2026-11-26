@@ -177,6 +177,31 @@ fn minutes_are_accepted_from_1_to_1440_and_nothing_else_is() {
 }
 
 #[test]
+fn seconds_are_accepted_only_as_whole_minutes_from_1_to_1440() {
+    let now = zoned("2026-11-22T18:00:00[Asia/Singapore]");
+    for (seconds, minutes) in [(60, 1), (120, 2), (86_400, 1440)] {
+        assert_eq!(
+            resolve(&now, TimeRequest::InSeconds(seconds)).expect("whole minutes"),
+            resolve(&now, TimeRequest::InMinutes(minutes)).expect("in range"),
+            "{seconds}"
+        );
+    }
+    for seconds in [i64::MIN, -60, 0, 1, 5, 59, 61, 90, i64::MAX] {
+        assert!(
+            matches!(
+                resolve(&now, TimeRequest::InSeconds(seconds)),
+                Err(ResolveError::NotWholeMinutes { seconds: s }) if s == seconds
+            ),
+            "{seconds}"
+        );
+    }
+    assert!(matches!(
+        resolve(&now, TimeRequest::InSeconds(86_460)),
+        Err(ResolveError::MinutesOutOfRange { minutes: 1441 })
+    ));
+}
+
+#[test]
 fn a_full_day_ends_at_the_same_clock_time_tomorrow() {
     let resolved = resolve(
         &zoned("2026-11-22T18:00:00[Asia/Singapore]"),

@@ -21,6 +21,9 @@ const SPOKEN_DAY_FORMAT: &str = "%A %-d %B";
 pub(crate) enum TimeRequest<'a> {
     /// That many minutes from now, [`MIN_TIMER_MINUTES`] to [`MAX_TIMER_MINUTES`].
     InMinutes(i64),
+    /// That many seconds from now: set only when it is a whole number of minutes in
+    /// range, so the model can tell the user the shortest timer is a minute.
+    InSeconds(i64),
     /// A 24-hour `"HH:MM"`: today if it is still ahead, tomorrow otherwise.
     AtClock(&'a str),
 }
@@ -43,6 +46,12 @@ pub(crate) enum ResolveError {
     )]
     MinutesOutOfRange { minutes: i64 },
     #[error(
+        "{seconds} seconds is not allowed: a timer lasts whole minutes, from {MIN_TIMER_MINUTES} \
+         minute to 24 hours, and nothing was created; tell the user so, and that the shortest \
+         timer is {MIN_TIMER_MINUTES} minute"
+    )]
+    NotWholeMinutes { seconds: i64 },
+    #[error(
         "`at` must be a 24-hour time written HH:MM, such as \"23:00\" for 11 pm or \"07:30\" for \
          7:30 am, not {given:?}"
     )]
@@ -59,11 +68,12 @@ pub(crate) enum ResolveError {
 /// for. A time the clocks skip is moved forward by jiff's compatible rule.
 pub(crate) fn resolve(now: &Zoned, request: TimeRequest<'_>) -> Result<ResolvedTime, ResolveError> {
     let end = match request {
-        TimeRequest::InMinutes(minutes) => {
-            if !(MIN_TIMER_MINUTES..=MAX_TIMER_MINUTES).contains(&minutes) {
-                return Err(ResolveError::MinutesOutOfRange { minutes });
+        TimeRequest::InMinutes(minutes) => in_minutes(now, minutes)?,
+        TimeRequest::InSeconds(seconds) => {
+            if seconds <= 0 || seconds % SECONDS_PER_MINUTE != 0 {
+                return Err(ResolveError::NotWholeMinutes { seconds });
             }
-            now.checked_add(Span::new().minutes(minutes))?
+            in_minutes(now, seconds / SECONDS_PER_MINUTE)?
         }
         TimeRequest::AtClock(at) => {
             let (hour, minute) = parse_clock_time(at)?;
@@ -85,6 +95,15 @@ pub(crate) fn resolve(now: &Zoned, request: TimeRequest<'_>) -> Result<ResolvedT
         ends_at_unix_ms: end.timestamp().as_millisecond(),
         spoken: speak(now, &end),
     })
+}
+
+const SECONDS_PER_MINUTE: i64 = 60;
+
+fn in_minutes(now: &Zoned, minutes: i64) -> Result<Zoned, ResolveError> {
+    if !(MIN_TIMER_MINUTES..=MAX_TIMER_MINUTES).contains(&minutes) {
+        return Err(ResolveError::MinutesOutOfRange { minutes });
+    }
+    Ok(now.checked_add(Span::new().minutes(minutes))?)
 }
 
 /// The spoken form of `ends_at_unix_ms`, in `now`'s zone, relative to `now`'s day.

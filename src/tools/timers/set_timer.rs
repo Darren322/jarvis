@@ -9,13 +9,14 @@ use super::TimerToolError;
 use super::resolve::{MAX_TIMER_MINUTES, MIN_TIMER_MINUTES, TimeRequest, resolve};
 use crate::features::timers::{TIMER_CONFIRM_WINDOW, TimersHandle};
 
-/// What the model wrote, before the rule "exactly one of `minutes` or `at`" is
-/// applied. Only [`SetTimerArgs`] is ever used.
+/// What the model wrote, before the rule "exactly one of `minutes`, `seconds` or
+/// `at`" is applied. Only [`SetTimerArgs`] is ever used.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSetTimerArgs {
     label: Option<String>,
     minutes: Option<i64>,
+    seconds: Option<i64>,
     at: Option<String>,
 }
 
@@ -23,12 +24,16 @@ struct RawSetTimerArgs {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TimerWhen {
     InMinutes(i64),
+    /// Only so a request in seconds reaches the tool and is answered: a model with
+    /// no field for "five seconds" skipped the tool and said the timer was set
+    /// (seen on the Pi on 2026-11-26).
+    InSeconds(i64),
     /// 24-hour `"HH:MM"`; checked when it is resolved.
     AtClock(String),
 }
 
-/// Arguments of `set_timer`. Giving neither or both of `minutes` and `at`
-/// fails here, so the policy rejects such a call before it runs.
+/// Arguments of `set_timer`. Giving none or more than one of `minutes`,
+/// `seconds` and `at` fails here, so the policy rejects such a call before it runs.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "RawSetTimerArgs")]
 pub struct SetTimerArgs {
@@ -38,21 +43,24 @@ pub struct SetTimerArgs {
 
 #[derive(Debug, Error)]
 pub enum SetTimerArgsError {
-    #[error("give exactly one of `minutes` or `at`: both were given")]
-    BothMinutesAndAt,
-    #[error("give exactly one of `minutes` or `at`: neither was given")]
-    NeitherMinutesNorAt,
+    #[error("give exactly one of `minutes`, `seconds` or `at`: more than one was given")]
+    MoreThanOneTime,
+    #[error("give exactly one of `minutes`, `seconds` or `at`: none was given")]
+    NoTime,
 }
 
 impl TryFrom<RawSetTimerArgs> for SetTimerArgs {
     type Error = SetTimerArgsError;
 
     fn try_from(raw: RawSetTimerArgs) -> Result<Self, Self::Error> {
-        let when = match (raw.minutes, raw.at) {
-            (Some(minutes), None) => TimerWhen::InMinutes(minutes),
-            (None, Some(at)) => TimerWhen::AtClock(at),
-            (Some(_), Some(_)) => return Err(SetTimerArgsError::BothMinutesAndAt),
-            (None, None) => return Err(SetTimerArgsError::NeitherMinutesNorAt),
+        let when = match (raw.minutes, raw.seconds, raw.at) {
+            (Some(minutes), None, None) => TimerWhen::InMinutes(minutes),
+            (None, Some(seconds), None) => TimerWhen::InSeconds(seconds),
+            (None, None, Some(at)) => TimerWhen::AtClock(at),
+            (None, None, None) => return Err(SetTimerArgsError::NoTime),
+            (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
+                return Err(SetTimerArgsError::MoreThanOneTime);
+            }
         };
         Ok(Self {
             label: raw.label,
@@ -78,6 +86,7 @@ impl SetTimerTool {
         let label = clean_label(args.label)?;
         let request = match &args.when {
             TimerWhen::InMinutes(minutes) => TimeRequest::InMinutes(*minutes),
+            TimerWhen::InSeconds(seconds) => TimeRequest::InSeconds(*seconds),
             TimerWhen::AtClock(at) => TimeRequest::AtClock(at),
         };
         let resolved = resolve(now, request)?;
@@ -128,9 +137,11 @@ impl Tool for SetTimerTool {
              time (\"set a timer for 11 pm, time to sleep\"). Give `label` when the user says \
              what the timer is for, in a few words (\"Time to sleep\", \"Time to do work\"), and \
              leave it out otherwise. Give exactly one of `minutes` (a whole number from \
-             {MIN_TIMER_MINUTES} to {MAX_TIMER_MINUTES}, for a length of time) or `at` (a \
+             {MIN_TIMER_MINUTES} to {MAX_TIMER_MINUTES}, for a length of time), `seconds` (only \
+             when the user says seconds, as in \"set a timer for 30 seconds\") or `at` (a \
              24-hour HH:MM clock time: turn \"11 pm\" into \"23:00\" and \"7:30 am\" into \
-             \"07:30\"). This only proposes the timer. It is NOT set until the user says yes or \
+             \"07:30\"). Call this tool for every timer the user asks for, however short or \
+             long: it says what can be set. This only proposes the timer. It is NOT set until the user says yes or \
              taps Set, so never say it is set: say the time this tool returns and that you are \
              waiting for their yes. If the tool says no more timers can be added, say so."
         )
@@ -149,8 +160,13 @@ impl Tool for SetTimerTool {
                     "type": "integer",
                     "description": format!(
                         "A length of time in whole minutes, {MIN_TIMER_MINUTES} to \
-                         {MAX_TIMER_MINUTES}. Not together with `at`."
+                         {MAX_TIMER_MINUTES}. Not together with `seconds` or `at`."
                     )
+                },
+                "seconds": {
+                    "type": "integer",
+                    "description": "A length of time in seconds, only when the user says \
+                                    seconds. Not together with `minutes` or `at`."
                 },
                 "at": {
                     "type": "string",
