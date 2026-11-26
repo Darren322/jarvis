@@ -9,8 +9,8 @@ use super::TimerToolError;
 use super::resolve::{MAX_TIMER_MINUTES, MIN_TIMER_MINUTES, TimeRequest, resolve};
 use crate::features::timers::{TIMER_CONFIRM_WINDOW, TimersHandle};
 
-/// What the model wrote, before the rule "exactly one of `minutes`, `seconds` or
-/// `at`" is applied. Only [`SetTimerArgs`] is ever used.
+/// What the model wrote, before it is turned into one end time. Only
+/// [`SetTimerArgs`] is ever used.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSetTimerArgs {
@@ -32,8 +32,13 @@ pub enum TimerWhen {
     AtClock(String),
 }
 
-/// Arguments of `set_timer`. Giving none or more than one of `minutes`,
-/// `seconds` and `at` fails here, so the policy rejects such a call before it runs.
+/// Arguments of `set_timer`. Giving none of `minutes`, `seconds` and `at` fails
+/// here, so the policy rejects such a call before it runs.
+///
+/// More than one is not refused, because a refused call fails the whole run and
+/// Gemma sent `{"at": "23:00", "minutes": 120}` for "set a timer for 11 pm" (seen on
+/// the Pi on 2026-11-26). `at` wins, since a clock time is what the user said; else
+/// `minutes` and `seconds` add up, and the sum must still be whole minutes.
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "RawSetTimerArgs")]
 pub struct SetTimerArgs {
@@ -43,9 +48,7 @@ pub struct SetTimerArgs {
 
 #[derive(Debug, Error)]
 pub enum SetTimerArgsError {
-    #[error("give exactly one of `minutes`, `seconds` or `at`: more than one was given")]
-    MoreThanOneTime,
-    #[error("give exactly one of `minutes`, `seconds` or `at`: none was given")]
+    #[error("give one of `minutes`, `seconds` or `at`: none was given")]
     NoTime,
 }
 
@@ -54,13 +57,13 @@ impl TryFrom<RawSetTimerArgs> for SetTimerArgs {
 
     fn try_from(raw: RawSetTimerArgs) -> Result<Self, Self::Error> {
         let when = match (raw.minutes, raw.seconds, raw.at) {
+            (_, _, Some(at)) => TimerWhen::AtClock(at),
             (Some(minutes), None, None) => TimerWhen::InMinutes(minutes),
             (None, Some(seconds), None) => TimerWhen::InSeconds(seconds),
-            (None, None, Some(at)) => TimerWhen::AtClock(at),
-            (None, None, None) => return Err(SetTimerArgsError::NoTime),
-            (Some(_), Some(_), _) | (Some(_), _, Some(_)) | (_, Some(_), Some(_)) => {
-                return Err(SetTimerArgsError::MoreThanOneTime);
+            (Some(minutes), Some(seconds), None) => {
+                TimerWhen::InSeconds(minutes.saturating_mul(60).saturating_add(seconds))
             }
+            (None, None, None) => return Err(SetTimerArgsError::NoTime),
         };
         Ok(Self {
             label: raw.label,
@@ -139,9 +142,10 @@ impl Tool for SetTimerTool {
             "Puts a timer on the screen, where it waits for the user's yes. Use it for every \
              request to set a timer, and never answer one without it: \"set a timer for 10 \
              minutes\", \"put a 10-minute timer on the screen\", \"in 25 minutes, time to do \
-             work\", \"set a timer for 30 seconds\", \"set a timer for 11 pm, time to sleep\". \
-             Give `label` when the user says what the timer is for, in a few words (\"Time to \
-             sleep\", \"Time to do work\"), and leave it out otherwise. Give exactly one of \
+             work\", \"set a timer for 30 seconds\", \"set a timer for 11 pm\". Give `label` \
+             only when the user says what the timer is for, in their words (for \"in 25 \
+             minutes, time to do work\" it is \"Time to do work\"), and leave it out \
+             otherwise. Give exactly one of \
              `minutes` (a whole number from {MIN_TIMER_MINUTES} to {MAX_TIMER_MINUTES}), \
              `seconds` (only when the user says seconds) or `at` (a 24-hour HH:MM clock time: \
              turn \"11 pm\" into \"23:00\" and \"7:30 am\" into \"07:30\")."
@@ -154,8 +158,8 @@ impl Tool for SetTimerTool {
             "properties": {
                 "label": {
                     "type": "string",
-                    "description": "What the timer is for, in a few words, such as \"Time to \
-                                    sleep\". Leave it out when the user gave no reason."
+                    "description": "What the timer is for, in the user's own words. Leave it \
+                                    out when the user gave no reason."
                 },
                 "minutes": {
                     "type": "integer",

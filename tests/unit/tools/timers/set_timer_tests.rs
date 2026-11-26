@@ -15,7 +15,7 @@ fn args(value: Value) -> SetTimerArgs {
 }
 
 #[test]
-fn exactly_one_of_minutes_seconds_or_at_is_accepted_with_an_optional_label() {
+fn any_of_minutes_seconds_or_at_is_accepted_with_an_optional_label() {
     let accepted = [
         json!({"minutes": 10}),
         json!({"at": "23:00"}),
@@ -24,20 +24,20 @@ fn exactly_one_of_minutes_seconds_or_at_is_accepted_with_an_optional_label() {
         json!({"label": null, "minutes": 5}),
         json!({"seconds": 5}),
         json!({"label": "Tea", "seconds": 90}),
+        json!({"minutes": 10, "at": "23:00"}),
+        json!({"label": "x", "minutes": 10, "at": "23:00"}),
+        json!({"minutes": 1, "seconds": 60}),
+        json!({"seconds": 30, "at": "23:00"}),
+        json!({"minutes": 1, "seconds": 60, "at": "23:00"}),
     ];
     let rejected = [
         json!({}),
         json!({"label": "Time to sleep"}),
-        json!({"minutes": 10, "at": "23:00"}),
-        json!({"label": "x", "minutes": 10, "at": "23:00"}),
         json!({"minutes": null, "at": null}),
         json!({"minutes": "10"}),
         json!({"minutes": 2.5}),
         json!({"at": 2300}),
         json!({"minutes": 10, "extra": 1}),
-        json!({"minutes": 1, "seconds": 60}),
-        json!({"seconds": 30, "at": "23:00"}),
-        json!({"minutes": 1, "seconds": 60, "at": "23:00"}),
         json!({"seconds": "5"}),
         json!({"seconds": 2.5}),
         json!(null),
@@ -61,18 +61,34 @@ fn exactly_one_of_minutes_seconds_or_at_is_accepted_with_an_optional_label() {
 }
 
 #[test]
-fn the_arguments_say_which_of_minutes_seconds_or_at_was_given() {
-    assert_eq!(args(json!({"minutes": 10})).when, TimerWhen::InMinutes(10));
-    assert_eq!(args(json!({"seconds": 5})).when, TimerWhen::InSeconds(5));
-    assert_eq!(
-        args(json!({"at": "23:00"})).when,
-        TimerWhen::AtClock("23:00".to_owned())
-    );
-    let both = from_value::<SetTimerArgs>(json!({"minutes": 1, "at": "23:00"}))
-        .expect_err("both is refused");
-    assert!(both.to_string().contains("exactly one"), "{both}");
+fn the_arguments_say_when_and_a_clock_time_wins_over_a_length_of_time() {
+    let at = || TimerWhen::AtClock("23:00".to_owned());
+    let cases = [
+        (json!({"minutes": 10}), TimerWhen::InMinutes(10)),
+        (json!({"seconds": 5}), TimerWhen::InSeconds(5)),
+        (json!({"at": "23:00"}), at()),
+        // Gemma sent this for "set a timer for 11 pm": the clock time is what was said.
+        (json!({"at": "23:00", "minutes": 120}), at()),
+        (json!({"at": "23:00", "seconds": 30}), at()),
+        // A minute and a half: 90 seconds, which the resolver refuses as not whole minutes.
+        (
+            json!({"minutes": 1, "seconds": 30}),
+            TimerWhen::InSeconds(90),
+        ),
+        (
+            json!({"minutes": 2, "seconds": 0}),
+            TimerWhen::InSeconds(120),
+        ),
+        (
+            json!({"minutes": i64::MAX, "seconds": i64::MAX}),
+            TimerWhen::InSeconds(i64::MAX),
+        ),
+    ];
+    for (arguments, when) in cases {
+        assert_eq!(args(arguments.clone()).when, when, "{arguments}");
+    }
     let neither = from_value::<SetTimerArgs>(json!({"label": "x"})).expect_err("neither");
-    assert!(neither.to_string().contains("exactly one"), "{neither}");
+    assert!(neither.to_string().contains("none was given"), "{neither}");
 }
 
 #[test]
@@ -109,7 +125,7 @@ fn the_name_schema_and_description_are_for_the_model() {
         "10-minute timer on the screen",
         "in 25 minutes, time to do work",
         "set a timer for 30 seconds",
-        "set a timer for 11 pm, time to sleep",
+        "set a timer for 11 pm\"",
         "\"23:00\"",
         "1 to 1440",
     ] {
