@@ -1,6 +1,6 @@
 # 09: The timer strip on the screen
 
-Status: in-review
+Status: done
 Stories: US4, US5
 Blocked by: 05
 Assignee: unassigned
@@ -27,3 +27,4 @@ Traces to: D6, D11, D14, D15
 
 ## Comments
 - 2026-11-22 (coordinator): built by an Opus agent in a worktree from `be452bb`, with the UI skills; reviewed and integrated into `dev`. `link.ts` keeps a timers store separate from the Panel store (`ShownTimers`, `TimerSource`). A drop clears it, and Jarvis resends the list on connect. `Timers.tsx` is presentational. Pending rows have Set and Don't. A running row is one button that opens "Cancel '…'?" with Cancel and Keep. An ended row flashes (CSS only, none under `prefers-reduced-motion`) and a tap sends `cancel_timer` (D17). One `setInterval` (`COUNTDOWN_TICK_MS = 1000`) runs only while a row counts down. `countdown.ts` formats "m:ss" and "h:mm:ss" and clamps at "0:00". The component tests use react-dom `act` plus DOM queries, as the existing `ui/tests` do: React Testing Library is not installed, and no package was added. `sources.test.ts` now allows exactly one `setInterval`, in `Timers.tsx`. **Layout decision for Darren:** while timers show, an open Panel narrows from 596 to 432 px (right inset 20 to 184) and its Dashboard spacing tightens, so the 160 px strip at the top right (mirroring the corner Orb's column) never covers it. The full-size Orb's outer ring sits under the strip. The agent checked the layout at 800x480 with headless Chrome on the preview page (`?timers=…&panel=…`): the strip at x 628–788, the Panel at 184–616, the corner Orb at 12–172, and 5 pending rows with 60-character labels end at y 466 of 468. Coordinator: `scripts/verify.sh` in the main checkout, all checks passed (460 Vitest tests); `npm run build` passed. Still open: the Pi check, which needs tickets 03 and 07 to send `timers`, plus Darren's judgement of the narrowed Panel, the colours, the flash rate, the label truncation and the tap-target sizes.
+- 2026-11-26: closed by Darren after trying it on the Pi ("the feat works"). Darren saw the strip on the 5 inch screen after the kiosk restart at 13:54. The look and the narrowed Panel were accepted as they stand.

@@ -1,6 +1,6 @@
 # 06: Confirming a timer: "yes" and "no", and the fixed lines
 
-Status: in-review
+Status: done
 Stories: US2, US5
 Blocked by: 03, 04
 Assignee: unassigned
@@ -34,3 +34,4 @@ Traces to: D4, D10, D11
   - **D16:** `turn.rs` `Proposal` notes the pending timer at the start of a run. When a different pending timer appears (the run's own proposal), the fixed line is fed to speech once and the model's text stops being spoken. The text is still printed and archived, and the line is printed after the reply, also when the run fails or is landed after a tap.
   - **Tests:** the parse rows; 6 `control::timer` tests (the lines at a fixed instant; yes, no, nothing pending; 30 000 vs 30 001 ms against a real service on a set clock); 3 `Proposal` tests; and a REPL test where "Yes." sets a pending timer with no model request and the next "yes" goes to the model. Evidence: `scripts/verify.sh --repeat timer` (all checks passed, 711 tests in the main crate, 20 of 20).
   - **Not yet shown by a test** (so left unticked): an unrelated sentence leaving the pending timer and its window alone (true by construction, since a prompt never calls the service); the D16 swap inside a full streamed run with speech; the drop line through the REPL after a real window runs out (only its line and the idle-only read are tested). The voice cancel's "Cancelled" line comes from the model's reply to `cancel_timer`; the screen cancel's fixed line comes with 07.
+- 2026-11-26: closed by Darren after trying it on the Pi ("the feat works"). Seen in the Pi log at 13:52 to 13:54: a timer proposed by voice, then "Yes.", answered "Set. The timer ends at 1:54 pm today." Not checked on their own: "no" dropping a pending timer, the window running out, and the proposal-to-yes timing.

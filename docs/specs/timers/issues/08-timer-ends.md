@@ -1,6 +1,6 @@
 # 08: When a timer ends: the sound and Jarvis's own model run
 
-Status: in-review
+Status: done
 Stories: US3, US7
 Blocked by: 07
 Assignee: unassigned
@@ -29,3 +29,4 @@ Traces to: D6, D7, D8, D9, D12
 
 ## Comments
 - 2026-11-22 (coordinator): implemented by the coordinator. Part 1 (`026905c`) is the reminder run: no tools (`ToolUse::Forbidden`), waits for idle, follows the 30-minute rule. Part 2 is the sound: `Cue::TimerEnded` (`timer_ended.wav`) and `features/timers/ring.rs`, which follows the shown timers and rings once per timer that ends, at once. Missed timers are only printed. Evidence: `scripts/verify.sh --repeat timer` 20 of 20 (737 tests). Open: the WAV (D21; not on the Pi yet, so the cue stays silent with a warning) and the Pi checks.
+- 2026-11-26: closed by Darren after trying it on the Pi ("the feat works"). Seen in the Pi log at 13:54:06: the timer ended and the reminder run started. Its first wording got "I do not have the ability to proactively remind you", so the prompt now asks to be told that the timer is up (`aa2dba8`). The timer-ended sound stays silent until Darren picks a WAV (D21).
