@@ -45,6 +45,24 @@ Measured: Gemma reads about 58 prompt tokens a second, so every 58 uncached toke
 - The Orb is drawn by the screen UI (see "The screen UI" below), which reaches Jarvis on the WebSocket at 127.0.0.1:8765. The macroquad `jarvis-orb` and its Unix socket were removed by jarvis-ui ticket 06.
 - Jarvis prints its timing lines (`Model stage: ... first_text=... cached_input=...`, `Speech diagnostics ... time_to_first_audio=...`) to the terminal only. To see a real run's timings, ask Darren to paste them.
 
+## The model check
+
+Unit tests script the model, so they cannot show what Gemma does with a tool's description, its arguments, `preamble.txt`, the facts header or a run's prompt. After a change to any of these, build the release binary on the Pi and run:
+
+```sh
+printf '%s\n' "Jarvis, set a timer for 2 minutes" > /tmp/check.txt   # Darren's own sentences, one per line
+python3 scripts/pi/bench_first_text.py target/release/jarvis --tools /tmp/check.txt
+python3 scripts/pi/bench_first_text.py target/release/jarvis --tools --empty /tmp/check.txt
+```
+
+- **The sentences:** take them from the spec's example table, as Darren says them, and never naming the tool.
+- **The databases:** run on a copy of Darren's database (the default) and on an empty one (`--empty`). His saved facts change the model's choices: on 2026-11-26 one fact stopped every tool call.
+- **What passes:** each sentence shows a `Tool stage` line for the right tool, with the expected outcome. An `ANSWER` alone means the model answered without the tool, even if the answer claims success.
+- **Running them:** a sentence's first run in a conversation is the hard case, so give each sentence its own file and run. A conversation the copied database still holds (less than 30 minutes since Darren's last turn) carries his last answers into the check.
+- **The first run after a prompt change** reads the whole prompt cold and may time out; run one throwaway prompt first.
+
+To see the raw tool call the model sent (Jarvis never logs arguments), put a logging relay between the bench copy and the model server for that one run. Point `LOCAL_LLM_BASE_URL` and `LOCAL_LLM_HEALTH_URL` at it, and stop it when done. The 2026-11-26 relay is described in timers ticket 04.
+
 ## Measuring without touching Darren's data
 
 Both run on the 8 GB Pi from `~/jarvis` and need only Python's standard library:
@@ -70,7 +88,7 @@ Set up 2026-11-15 (jarvis-ui ticket 05). Chromium shows the React UI full screen
 
 | Piece | Where | Detail |
 | --- | --- | --- |
-| Built UI | `~/jarvis/ui/dist` on the Pi | Copied from the Mac by `scripts/deploy-ui.sh` (`npm ci`, `npm run build`, `rsync --delete`). `ui/dist/` is git-ignored, so the checkout stays clean. The Pi has no Node. `scripts/deploy-ui.sh --dry-run` builds, then prints the copy commands. The running kiosk keeps the page it loaded, so after a deploy restart it: `pkill -x chromium; XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 setsid nohup ~/.local/bin/jarvis-kiosk.sh >/tmp/kiosk.log 2>&1 &` (on 2026-11-26 it still showed the page from 21 November). |
+| Built UI | `~/jarvis/ui/dist` on the Pi | Copied from the Mac by `scripts/deploy-ui.sh` (`npm ci`, `npm run build`, `rsync --delete`). `ui/dist/` is git-ignored, so the checkout stays clean. The Pi has no Node. `scripts/deploy-ui.sh --dry-run` builds, then prints the copy commands. The script ends by restarting the kiosk, because a running Chromium keeps the page it loaded. To check which page it runs, see whether `journalctl --user-unit jarvis-ui` shows `GET /assets/<the new file>` after the deploy. |
 | UI server | `~/.config/systemd/user/jarvis-ui.service` (repo: `scripts/pi/jarvis-ui.service`) | `python3 -m http.server 8766 --bind 127.0.0.1 --directory %h/jarvis/ui/dist`, `Restart=on-failure`, enabled with `systemctl --user enable --now jarvis-ui`. Port 8766 is `DEFAULT_UI_PORT` in `src/config/orb.rs`; Jarvis's default allowed origin is `http://localhost:8766`. Log: `journalctl --user-unit jarvis-ui` (the access log; plain `-u` finds nothing for a user unit here). |
 | Launcher | `~/.local/bin/jarvis-kiosk.sh` (repo: `scripts/pi/jarvis-kiosk.sh`, copied by the deploy script) | Waits up to 60 s for 127.0.0.1:8766 to accept a connection (a bare TCP connect, so it adds nothing to the access log), then `exec chromium --user-data-dir=$HOME/.config/jarvis-ui-chromium --password-store=basic --ozone-platform=wayland --kiosk --no-first-run --noerrdialogs --disable-infobars http://localhost:8766/`. `--password-store=basic` is required: without it Chromium 154 never sends the page request (`notes/ui-spike/http-hang-2026-11-15.md`). No `--allow-file-access-from-files`. |
 | Autostart | `~/.config/labwc/autostart` (repo: `scripts/pi/labwc-autostart`) | labwc reads this file INSTEAD of `/etc/xdg/labwc/autostart`, so the file repeats that file's four lines (pcmanfm-pi, wf-panel-pi, kanshi, lxsession-xdg-autostart) and adds `$HOME/.local/bin/jarvis-kiosk.sh &`. If the system file changes, update the copy. |

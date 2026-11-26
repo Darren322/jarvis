@@ -2,7 +2,7 @@
 
 Run on the 8 GB Pi from the repo root (stdlib only):
 
-    python3 scripts/pi/bench_first_text.py <jarvis binary> [--empty] [--pause=SECONDS] [prompts.txt]
+    python3 scripts/pi/bench_first_text.py <jarvis binary> [--empty] [--tools] [--pause=SECONDS] [prompts.txt]
 
 It copies data/jarvis.sqlite3 to /tmp (or starts from an empty database with
 --empty), starts the binary with speech, voice input and the orb port (8767, so the
@@ -12,13 +12,17 @@ Prompts are one per line; the default five are the 2026-11-14 baseline.
 Without --pause the prompts are typed all at once and run back to back. With it,
 each prompt is typed SECONDS after the one before, which leaves Jarvis idle
 between answers, as in a real conversation (a cache warm-up needs that time).
+With --tools it also prints Jarvis's other output lines, so each prompt shows its
+`Tool stage` lines (which tool ran, and its outcome) and any fixed line, such as a
+timer's "Say yes or tap Set." This is the model check in docs/agents/pi.md.
 """
 import os, re, shutil, sqlite3, subprocess, sys, time
 
 DEFAULT_PROMPTS = ["Hello", "How's the weather?", "Who are you?", "What time is it?", "Thanks, that is all"]
 
-args = [a for a in sys.argv[1:] if a != "--empty" and not a.startswith("--pause=")]
+args = [a for a in sys.argv[1:] if a not in ("--empty", "--tools") and not a.startswith("--pause=")]
 empty = "--empty" in sys.argv[1:]
+tools = "--tools" in sys.argv[1:]
 pause = next((float(a.split("=", 1)[1]) for a in sys.argv[1:] if a.startswith("--pause=")), None)
 if not args:
     sys.exit(__doc__)
@@ -54,6 +58,8 @@ total, turns = 0.0, 0
 for line in output.splitlines():
     if line.startswith("Jarvis:"):
         print("ANSWER:", line[8:100])
+    elif tools and line.strip() and not re.match(r"(You>|\[|Model stage|Run diagnostics|Speech diagnostics)", line.strip()):
+        print("  " + re.sub(r' internal_call_id="[^"]*"', "", line.strip())[:160])
     stage = re.search(r"turn=(\d+) .*first_text=([0-9.]+)(ms|s) .*input=(\d+) .*cached_input=(\d+)", line)
     if stage:
         turn, value, unit, tokens, cached = stage.groups()

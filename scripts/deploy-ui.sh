@@ -48,9 +48,13 @@ pi rsync -a -e "$SSH_OPTS" scripts/pi/jarvis-ui.service "$PI_HOST:$PI_SERVICE_DI
 pi rsync -a -e "$SSH_OPTS" scripts/pi/jarvis-kiosk.sh "$PI_HOST:$PI_BIN_DIR/"
 pi ssh -o NumberOfPasswordPrompts=1 "$PI_HOST" \
     "chmod 755 ~/$PI_BIN_DIR/jarvis-kiosk.sh && systemctl --user daemon-reload"
+# The kiosk keeps the page it loaded (on 2026-11-26 it still ran the page from
+# 21 November), so restart it on the new one.
+pi ssh -o NumberOfPasswordPrompts=1 "$PI_HOST" \
+    "pkill -x chromium; sleep 2; (XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 setsid nohup ~/$PI_BIN_DIR/jarvis-kiosk.sh > /tmp/jarvis-kiosk.log 2>&1 &)"
 
 if $dry_run; then
     echo "dry run: nothing was copied"
 else
-    echo "deployed ui/dist to $PI_HOST:~/$PI_UI_DIST (the service serves it; no restart needed)"
+    echo "deployed ui/dist to $PI_HOST:~/$PI_UI_DIST and restarted the kiosk on it"
 fi
