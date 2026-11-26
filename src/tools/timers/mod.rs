@@ -9,6 +9,7 @@ pub(crate) mod resolve;
 pub(crate) mod set_timer;
 
 use orb_protocol::MAX_TIMER_LABEL_CHARS;
+use rig_agent::tool::ToolExecutionError;
 use thiserror::Error;
 
 use crate::features::timers::TimerServiceError;
@@ -33,6 +34,17 @@ pub(crate) enum TimerToolError {
     TooManyTimers { limit: usize },
     #[error("the timer service could not do it: tell the user the timers are unavailable")]
     Service(#[source] TimerServiceError),
+}
+
+impl TimerToolError {
+    /// What the model is told: the message itself. Each one says what to tell the
+    /// user, and Rig's default (`ToolExecutionError::from_error`) would replace it
+    /// with a bare "failed", after which Gemma said a refused timer was set (seen
+    /// on the Pi on 2026-11-26). No message carries a source's text.
+    pub(crate) fn for_model(self) -> ToolExecutionError {
+        let feedback = self.to_string();
+        ToolExecutionError::from_error(self).with_model_feedback(feedback)
+    }
 }
 
 impl From<TimerServiceError> for TimerToolError {

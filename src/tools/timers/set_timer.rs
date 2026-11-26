@@ -1,6 +1,6 @@
 use jiff::Zoned;
 use orb_protocol::MAX_TIMER_LABEL_CHARS;
-use rig_agent::tool::{Tool, ToolContext};
+use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
 use rig_core::serde_json::{Value, json};
 use serde::Deserialize;
 use thiserror::Error;
@@ -177,6 +177,10 @@ impl Tool for SetTimerTool {
             },
             "additionalProperties": false
         })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.for_model()
     }
 
     async fn call(

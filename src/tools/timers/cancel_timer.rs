@@ -1,5 +1,5 @@
 use jiff::Zoned;
-use rig_agent::tool::{Tool, ToolContext};
+use rig_agent::tool::{Tool, ToolContext, ToolExecutionError};
 use rig_core::serde_json::{Value, json};
 
 use super::TimerToolError;
@@ -77,6 +77,10 @@ impl Tool for CancelTimerTool {
             },
             "additionalProperties": false
         })
+    }
+
+    fn map_error(&self, error: Self::Error) -> ToolExecutionError {
+        error.for_model()
     }
 
     async fn call(

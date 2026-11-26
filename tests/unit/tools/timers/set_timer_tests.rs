@@ -332,6 +332,12 @@ async fn sixty_seconds_is_proposed_as_a_minute_and_five_seconds_is_refused_witho
         "{error}"
     );
     assert!(service.handle.shown().is_empty(), "nothing was created");
+    // The model is told the message itself, not Rig's redacted default.
+    let message = error.to_string();
+    assert_eq!(
+        tool.map_error(error).model_feedback(),
+        Some(message.as_str())
+    );
 
     tool.propose(&now(), args(json!({"seconds": 60})))
         .await
