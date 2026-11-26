@@ -323,3 +323,53 @@ fn keep_awake_noise_neither_counts_as_playing_nor_lights_the_level() {
     assert!(!player.is_playing());
     assert_eq!(level.level(), 0.0);
 }
+
+/// Stands in for cpal 0.17.3's ALSA stream after a write error: its worker retries the
+/// write forever without seeing the stop flag, so dropping the stream never returns.
+/// This one returns once the test lets it go, and says when it has been dropped.
+struct StuckOutput {
+    release: std::sync::mpsc::Receiver<()>,
+    dropped: std::sync::mpsc::Sender<()>,
+}
+
+impl Drop for StuckOutput {
+    fn drop(&mut self) {
+        let _ = self.release.recv();
+        let _ = self.dropped.send(());
+    }
+}
+
+#[test]
+fn a_player_whose_device_failed_is_dropped_without_waiting_for_its_output_stream() {
+    let (mixer, _source) = mixer::mixer(
+        OUTPUT_CHANNELS.try_into().expect("nonzero channel count"),
+        OUTPUT_SAMPLE_RATE.try_into().expect("nonzero sample rate"),
+    );
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let (dropped_tx, dropped) = std::sync::mpsc::channel();
+    let output = StuckOutput {
+        release: release_rx,
+        dropped: dropped_tx,
+    };
+    let player = AudioPlayer::from_mixer(mixer, output, Arc::new(AtomicBool::new(true)));
+
+    let (returned_tx, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(player);
+        let _ = returned_tx.send(());
+    });
+    let drop_returned = returned.recv_timeout(Duration::from_secs(5)).is_ok();
+    let still_dropping = dropped.try_recv().is_err();
+    release
+        .send(())
+        .expect("the stream is still waiting to be let go");
+
+    assert!(
+        drop_returned,
+        "dropping the player waited for its output stream"
+    );
+    assert!(still_dropping, "the stream was being dropped elsewhere");
+    dropped
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the stream is dropped once it can be");
+}

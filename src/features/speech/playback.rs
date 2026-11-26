@@ -58,7 +58,8 @@ pub(crate) enum PlaybackError {
 pub(super) struct AudioPlayer {
     mixer: Mixer,
     /// Owns the output stream that drains `mixer`; dropping it stops all audio.
-    _output: Box<dyn Any + Send>,
+    /// After a device failure it is dropped on its own thread (see [`release_failed_output`]).
+    output: Box<dyn Any + Send>,
     player: Option<Player>,
     device_failed: Arc<AtomicBool>,
     /// Loudness of what the mixer is pulling; 0 whenever nothing is playing.
@@ -127,7 +128,7 @@ impl AudioPlayer {
     ) -> Self {
         Self {
             mixer,
-            _output: Box::new(output),
+            output: Box::new(output),
             player: None,
             device_failed,
             level: PlaybackLevel::new(),
@@ -223,7 +224,25 @@ impl Drop for AudioPlayer {
         if let Some(cue_mixer) = &self.cue_mixer {
             cue_mixer.send_replace(None);
         }
+        if self.has_device_failed() {
+            release_failed_output(std::mem::replace(&mut self.output, Box::new(())));
+        }
     }
+}
+
+/// Drops a failed device's output stream on its own thread, so the caller never waits on it.
+///
+/// After a write error that is not an underrun, cpal 0.17.3's ALSA worker retries the
+/// write in a loop that never checks the stop flag, and the stream's `Drop` joins that
+/// worker: dropping it on the caller's thread froze Jarvis for good (seen on the Pi on
+/// 2026-11-26). The released thread may wait forever too; the caller goes on and opens
+/// a new player. If no thread can be started, the stream is leaked rather than waited on.
+fn release_failed_output(output: Box<dyn Any + Send>) {
+    let output = std::mem::ManuallyDrop::new(output);
+    // On a spawn error the closure is dropped, and `ManuallyDrop` keeps the stream alive.
+    let _ = std::thread::Builder::new()
+        .name("jarvis-audio-release".to_owned())
+        .spawn(move || drop(std::mem::ManuallyDrop::into_inner(output)));
 }
 
 fn samples_buffer(samples: Vec<f32>, sample_rate: rodio::SampleRate) -> SamplesBuffer {
